@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*.spec.bak
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Frontend
+hub/frontend/node_modules/
+hub/frontend/dist/
+frontend_dist/
+
+# PyInstaller
+*.manifest
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (user-specific)
+config.json
+
+# Build artifacts
+*.exe
