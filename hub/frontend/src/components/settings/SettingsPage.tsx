@@ -3,6 +3,7 @@ import { apiFetch } from '../../lib/api'
 import { PiConnectionCard } from './PiConnectionCard'
 import { McpSetupCard } from './McpSetupCard'
 import { GeneralCard } from './GeneralCard'
+import { UpdateCard } from './UpdateCard'
 
 export function SettingsPage() {
   const [config, setConfig] = useState<Record<string, unknown>>({})
@@ -98,11 +99,7 @@ export function SettingsPage() {
         <PiConnectionCard config={config} onChange={handleChange} />
         <McpSetupCard />
         <GeneralCard config={config} onChange={handleChange} />
-
-        {/* Version info */}
-        <div className="text-xs text-text-muted text-center py-4">
-          Cortex Desktop v0.1.0
-        </div>
+        <UpdateCard />
       </div>
     </div>
   )

@@ -332,3 +332,89 @@ async def get_mcp_config():
         "mcp_installed": mcp_installed,
         "pip_install_cmd": "pip install cortex-mcp",
     }
+
+
+# ── GET /settings/check-update ──
+
+GITHUB_REPO = "turfptax/cortex-desktop"
+
+def _current_version() -> str:
+    """Get the current app version."""
+    try:
+        from cortex_desktop import __version__
+        return __version__
+    except ImportError:
+        return "0.1.0"
+
+
+def _parse_version(v: str) -> tuple[int, ...]:
+    """Parse '0.1.0' or 'v0.1.0' into (0, 1, 0)."""
+    v = v.lstrip("vV").strip()
+    parts = []
+    for p in v.split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            break
+    return tuple(parts) or (0,)
+
+
+@router.get("/check-update")
+async def check_update():
+    """Check GitHub releases for a newer version."""
+    current = _current_version()
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url, headers={"Accept": "application/vnd.github+json"}, timeout=10.0)
+
+        if r.status_code == 404:
+            # No releases yet
+            return {
+                "ok": True,
+                "current_version": current,
+                "latest_version": current,
+                "update_available": False,
+                "message": "No releases published yet.",
+            }
+
+        if r.status_code != 200:
+            return {"ok": False, "error": f"GitHub API returned {r.status_code}"}
+
+        data = r.json()
+        latest_tag = data.get("tag_name", "")
+        latest_version = latest_tag.lstrip("vV")
+        html_url = data.get("html_url", f"https://github.com/{GITHUB_REPO}/releases")
+        published = data.get("published_at", "")
+        body = data.get("body", "")
+
+        # Find the Windows .zip asset download URL
+        download_url = ""
+        for asset in data.get("assets", []):
+            name = asset.get("name", "")
+            if name.endswith(".zip") and "windows" in name.lower():
+                download_url = asset.get("browser_download_url", "")
+                break
+        # Fallback: any .zip asset
+        if not download_url:
+            for asset in data.get("assets", []):
+                if asset.get("name", "").endswith(".zip"):
+                    download_url = asset.get("browser_download_url", "")
+                    break
+
+        update_available = _parse_version(latest_version) > _parse_version(current)
+
+        return {
+            "ok": True,
+            "current_version": current,
+            "latest_version": latest_version,
+            "update_available": update_available,
+            "release_url": html_url,
+            "download_url": download_url,
+            "published_at": published,
+            "release_notes": body[:500] if body else "",
+        }
+
+    except Exception as e:
+        return {"ok": False, "error": str(e), "current_version": current}
