@@ -90,6 +90,17 @@ def _start_server(host: str, port: int, backend_dir: str, static_dir: str):
     if static_dir:
         os.environ["CORTEX_STATIC_DIR"] = static_dir
 
+    # In PyInstaller bundle, backend files are data files in _internal/backend/.
+    # uvicorn's string import "main:app" executes main.py which does
+    # `from fastapi import FastAPI` — this works because backend_dir is on
+    # sys.path and fastapi is frozen in the bundle. But we need to ensure
+    # sys.path has the backend dir FIRST so `from config import settings`
+    # and `from routers import ...` resolve from the data files.
+    #
+    # We also need to set the working directory so relative paths work.
+    original_cwd = os.getcwd()
+    os.chdir(backend_dir)
+
     uvicorn.run(
         "main:app",
         host=host,

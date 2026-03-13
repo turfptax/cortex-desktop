@@ -45,6 +45,12 @@ a = Analysis(
         "uvicorn.protocols.websockets.wsproto_impl",
         "uvicorn.logging",
         # FastAPI / Starlette
+        "fastapi",
+        "fastapi.middleware",
+        "fastapi.middleware.cors",
+        "fastapi.staticfiles",
+        "fastapi.responses",
+        "fastapi.routing",
         "starlette.responses",
         "starlette.staticfiles",
         "starlette.routing",
