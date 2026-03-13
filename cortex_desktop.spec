@@ -67,6 +67,20 @@ a = Analysis(
         "PIL",
         "PIL.Image",
         "PIL.ImageDraw",
+        # MCP server
+        "mcp",
+        "mcp.server",
+        "mcp.server.fastmcp",
+        "cortex_mcp",
+        "cortex_mcp.server",
+        "cortex_mcp.bridge",
+        "cortex_mcp.protocol",
+        "cortex_mcp.wifi_bridge",
+        "cortex_mcp.daemon_client",
+        "serial",
+        "serial.tools",
+        "serial.tools.list_ports",
+        "click",
         # Other
         "h11",
         "email.mime.text",
@@ -98,7 +112,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,  # No console window — we use system tray
+    console=True,  # Needed for --mcp stdio mode; tray mode hides the window
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

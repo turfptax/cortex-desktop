@@ -99,8 +99,35 @@ def _start_server(host: str, port: int, backend_dir: str, static_dir: str):
     )
 
 
+def _run_mcp_server():
+    """Run the MCP server in stdio mode (for Claude Desktop integration)."""
+    # Import and run the cortex_mcp server
+    from cortex_mcp.server import main as mcp_main
+    mcp_main()
+
+
 def main():
-    """Main entry point for Cortex Desktop."""
+    """Main entry point for Cortex Desktop.
+
+    Usage:
+        cortex-desktop          Launch the Hub (tray + web UI)
+        cortex-desktop --mcp    Run as MCP server (stdio, for Claude Desktop)
+    """
+    # Check for --mcp flag
+    if "--mcp" in sys.argv:
+        _run_mcp_server()
+        return
+
+    # Hide console window in tray mode (Windows only)
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.user32.ShowWindow(
+                ctypes.windll.kernel32.GetConsoleWindow(), 0  # SW_HIDE
+            )
+        except Exception:
+            pass
+
     from cortex_desktop.config import load_config, apply_config_to_env
     from cortex_desktop.tray import CortexTray
 
