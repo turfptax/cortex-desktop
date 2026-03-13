@@ -7,8 +7,11 @@ Provides a Windows system tray icon with menu for:
 - Quitting the application
 """
 
+import os
+import sys
 import threading
 import webbrowser
+from pathlib import Path
 from typing import Callable, Optional
 
 import httpx
@@ -28,35 +31,61 @@ COLOR_GRAY = (158, 158, 158)
 COLOR_BRAIN = (139, 92, 246)  # Purple for Cortex
 
 
+def _find_icon_png() -> Optional[str]:
+    """Find the CortexIcon.png asset file."""
+    # PyInstaller bundle
+    if hasattr(sys, "_MEIPASS"):
+        p = Path(sys._MEIPASS) / "assets" / "CortexIcon.png"
+        if p.exists():
+            return str(p)
+
+    # Dev mode: relative to this file
+    this_dir = Path(__file__).resolve().parent
+    repo_root = this_dir.parent
+    p = repo_root / "assets" / "CortexIcon.png"
+    if p.exists():
+        return str(p)
+
+    return None
+
+
 def create_icon_image(connected: bool = False, size: int = 64) -> Image.Image:
-    """Create a simple tray icon — a brain-like circle with status dot.
+    """Create the tray icon using the real Cortex logo with a status dot overlay.
+
+    Falls back to a generated icon if the logo PNG is not found.
 
     Args:
         connected: Whether the Pi is reachable (green dot vs red dot).
         size: Icon size in pixels.
     """
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    icon_path = _find_icon_png()
+
+    if icon_path:
+        # Use the real logo
+        img = Image.open(icon_path).convert("RGBA")
+        img = img.resize((size, size), Image.LANCZOS)
+    else:
+        # Fallback: generated purple circle with "C"
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        padding = 4
+        draw.ellipse(
+            [padding, padding, size - padding, size - padding],
+            fill=COLOR_BRAIN,
+        )
+        cx, cy = size // 2, size // 2
+        r = size // 4
+        draw.arc(
+            [cx - r, cy - r, cx + r, cy + r],
+            start=45, end=315,
+            fill=(255, 255, 255),
+            width=max(3, size // 16),
+        )
+
+    # Draw status dot (bottom-right corner)
     draw = ImageDraw.Draw(img)
-
-    # Main circle (brain/cortex purple)
-    padding = 4
-    draw.ellipse(
-        [padding, padding, size - padding, size - padding],
-        fill=COLOR_BRAIN,
-    )
-
-    # "C" letter in white
-    cx, cy = size // 2, size // 2
-    r = size // 4
-    draw.arc(
-        [cx - r, cy - r, cx + r, cy + r],
-        start=45, end=315,
-        fill=(255, 255, 255),
-        width=max(3, size // 16),
-    )
-
-    # Status dot (bottom-right corner)
     dot_r = size // 8
+    padding = 4
     dot_cx = size - padding - dot_r - 2
     dot_cy = size - padding - dot_r - 2
     status_color = COLOR_GREEN if connected else COLOR_RED
@@ -64,7 +93,7 @@ def create_icon_image(connected: bool = False, size: int = 64) -> Image.Image:
         [dot_cx - dot_r, dot_cy - dot_r, dot_cx + dot_r, dot_cy + dot_r],
         fill=status_color,
         outline=(255, 255, 255),
-        width=1,
+        width=max(1, size // 32),
     )
 
     return img
