@@ -5,10 +5,11 @@ import { TrainingPage } from './components/training/TrainingPage'
 import { PiPage } from './components/pi/PiPage'
 import { GamesPage } from './components/games/GamesPage'
 import { DataPage } from './components/data/DataPage'
+import { SettingsPage } from './components/settings/SettingsPage'
 import { apiFetch } from './lib/api'
 import { type PetStatus } from './components/PetWidget'
 
-export type Page = 'chat' | 'training' | 'pi' | 'games' | 'data'
+export type Page = 'chat' | 'training' | 'pi' | 'games' | 'data' | 'settings'
 
 export interface StatusInfo {
   lmstudioOnline: boolean
@@ -65,6 +66,7 @@ function App() {
       {page === 'pi' && <PiPage status={status} />}
       {page === 'games' && <GamesPage />}
       {page === 'data' && <DataPage status={status} />}
+      {page === 'settings' && <SettingsPage />}
     </Layout>
   )
 }

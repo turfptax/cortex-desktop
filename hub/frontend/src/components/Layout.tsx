@@ -17,6 +17,7 @@ const navItems: { id: Page; label: string; icon: string }[] = [
   { id: 'pi', label: 'Pi', icon: '🥧' },
   { id: 'games', label: 'Games', icon: '🎮' },
   { id: 'data', label: 'Data', icon: '📊' },
+  { id: 'settings', label: 'Settings', icon: '⚙️' },
 ]
 
 export function Layout({ page, setPage, status, petStatus, children }: LayoutProps) {

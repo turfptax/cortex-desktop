@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from routers import chat, training, pi, games, data
+from routers import settings as settings_router
 
 app = FastAPI(title="Cortex Hub", version="0.1.0")
 
@@ -37,6 +38,7 @@ app.include_router(training.router, prefix="/api/training", tags=["training"])
 app.include_router(pi.router, prefix="/api/pi", tags=["pi"])
 app.include_router(games.router, prefix="/api/games", tags=["games"])
 app.include_router(data.router, prefix="/api/data", tags=["data"])
+app.include_router(settings_router.router, prefix="/api/settings", tags=["settings"])
 
 
 @app.get("/api/health")
