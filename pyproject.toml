@@ -15,6 +15,10 @@ dependencies = [
     "pydantic-settings>=2.0",
     "pystray>=0.19",
     "Pillow>=10.0",
+    # MCP server dependencies
+    "mcp>=1.0.0",
+    "pyserial>=3.5",
+    "click>=8.0",
 ]
 
 [project.optional-dependencies]
@@ -27,3 +31,4 @@ cortex-desktop = "cortex_desktop.app:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
+include = ["cortex_desktop*", "cortex_mcp*"]
