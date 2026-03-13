@@ -138,21 +138,55 @@ cortex-desktop/
 4. Runs **pystray** on the main thread for the Windows system tray icon
 5. The tray icon polls the Pi every 30s and updates the status dot (green/red)
 
-## MCP Server
+## Cortex Ecosystem
 
-The Cortex MCP server (for Claude Code / Claude Desktop integration) is a separate package:
-[cortex-mcp](https://github.com/turfptax/cortex-mcp)
+Cortex is a multi-device AI companion system. Here are all the repos:
 
-It communicates with the Pi independently via WiFi or BLE bridge.
+| Repo | Description |
+|------|-------------|
+| **[cortex-desktop](https://github.com/turfptax/cortex-desktop)** | This repo — Windows desktop app (system tray + browser UI) |
+| **[cortex-core](https://github.com/turfptax/cortex-core)** | Brain firmware for the Pi — pet engine, LLM inference, display, audio, BLE |
+| **[cortex-link](https://github.com/turfptax/cortex-link)** | ESP32-S3 BLE bridge — USB serial ↔ BLE relay between PC and Pi |
+| **[cortex-mcp](https://github.com/turfptax/cortex-mcp)** | MCP server for Claude Code / Claude Desktop integration |
+| **[cortex-plugin](https://github.com/turfptax/cortex-plugin)** | Claude Code plugin with skills and commands |
+| **[cortex-voice-training](https://github.com/turfptax/cortex-voice-training)** | Whisper fine-tuning pipeline for improved on-device STT |
+| **[orangepi-whisplay](https://github.com/turfptax/orangepi-whisplay)** | WhisPlay HAT setup for Orange Pi Zero 2W — device tree overlays, WM8960 audio, GPIO |
+
+### Architecture
+
+```
+┌──────────────┐     WiFi/HTTP      ┌──────────────────────┐
+│   Cortex     │◄──────────────────►│   Orange Pi Zero 2W  │
+│   Desktop    │     :8420          │   (cortex-core)      │
+│   (this app) │                    │   - Pet engine       │
+└──────┬───────┘                    │   - Qwen 0.8B LLM   │
+       │                            │   - LCD + Speaker    │
+       │ localhost:8003             │   - Gamepad input    │
+       ▼                            └──────────┬───────────┘
+  ┌──────────┐                                 │ BLE
+  │ Browser  │                                 ▼
+  │ (Hub UI) │                     ┌──────────────────────┐
+  └──────────┘                     │   ESP32-S3           │
+                                   │   (cortex-link)      │
+  ┌──────────────┐    USB serial   │   - BLE ↔ USB bridge │
+  │ Claude Code  │◄───────────────►│   - LCD status       │
+  │ (cortex-mcp) │    stdio        └──────────────────────┘
+  └──────────────┘
+```
 
 ## Hardware
 
 To build your own Cortex companion, you need:
-- **Orange Pi Zero 2W** (or Raspberry Pi Zero 2W)
-- **ST7789 SPI LCD** (240x280)
-- **WM8960 audio HAT** (speaker)
-- **8BitDo Micro** gamepad (Bluetooth)
-- **ESP32-S3** (optional, for BLE bridge)
+
+| Component | Purpose | Setup Guide |
+|-----------|---------|-------------|
+| **Orange Pi Zero 2W** (2GB) | Main brain — runs cortex-core | [orangepi-whisplay](https://github.com/turfptax/orangepi-whisplay) |
+| **WhisPlay HAT** (WM8960) | Audio output — speaker for pet sounds | [orangepi-whisplay](https://github.com/turfptax/orangepi-whisplay) |
+| **ST7789 SPI LCD** (240x280) | Display — pet face, status, menus | Included in cortex-core |
+| **8BitDo Micro** gamepad | Input — feed, clean, navigate | Bluetooth pairing |
+| **Waveshare ESP32-S3-LCD-1.47** | BLE bridge — connects PC to Pi wirelessly | [cortex-link](https://github.com/turfptax/cortex-link) |
+
+The ESP32 bridge is optional — Cortex Desktop communicates with the Pi directly over WiFi.
 
 ## License
 
