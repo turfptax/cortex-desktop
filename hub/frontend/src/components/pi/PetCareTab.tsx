@@ -239,7 +239,9 @@ export function PetCareTab({ isOnline }: Props) {
   const fetchHistory = useCallback(async () => {
     try {
       const res = await apiFetch(`/pi/pet/vitals-history?hours=${historyHours}`)
-      if (res?.data?.history) setHistory(res.data.history)
+      // API returns { data: [...] } — the array is the data itself
+      if (Array.isArray(res?.data)) setHistory(res.data)
+      else if (res?.data?.history) setHistory(res.data.history)
     } catch { /* offline */ }
   }, [historyHours])
 
