@@ -8,6 +8,7 @@ interface UpdateInfo {
   update_available: boolean
   release_url?: string
   download_url?: string
+  installer_url?: string
   published_at?: string
   release_notes?: string
   message?: string
@@ -17,9 +18,12 @@ interface UpdateInfo {
 export function UpdateCard() {
   const [info, setInfo] = useState<UpdateInfo | null>(null)
   const [checking, setChecking] = useState(false)
+  const [updating, setUpdating] = useState(false)
+  const [updateError, setUpdateError] = useState('')
 
   const handleCheck = async () => {
     setChecking(true)
+    setUpdateError('')
     try {
       const res = await apiFetch<UpdateInfo>('/settings/check-update')
       setInfo(res)
@@ -27,6 +31,30 @@ export function UpdateCard() {
       setInfo({ ok: false, error: 'Could not reach update server', current_version: '?', latest_version: '?', update_available: false })
     }
     setChecking(false)
+  }
+
+  const handleUpdate = async () => {
+    setUpdating(true)
+    setUpdateError('')
+    try {
+      const res = await apiFetch<{ ok: boolean; error?: string; release_url?: string }>('/settings/apply-update', {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        // If no installer available, fall back to opening release page
+        if (res.release_url) {
+          window.open(res.release_url, '_blank')
+          setUpdateError('No installer found — opened release page instead.')
+        } else {
+          setUpdateError(res.error || 'Update failed')
+        }
+        setUpdating(false)
+      }
+      // If ok, the app will exit and the installer will run — no need to update UI
+    } catch {
+      setUpdateError('Failed to start update. Try downloading manually.')
+      setUpdating(false)
+    }
   }
 
   return (
@@ -38,7 +66,7 @@ export function UpdateCard() {
       <div className="flex items-center gap-3 mb-4">
         <button
           onClick={handleCheck}
-          disabled={checking}
+          disabled={checking || updating}
           className="px-4 py-2 bg-surface-tertiary text-text-primary text-sm rounded-lg hover:bg-accent/15 hover:text-accent transition-colors disabled:opacity-50 cursor-pointer"
         >
           {checking ? 'Checking...' : 'Check for Updates'}
@@ -65,16 +93,13 @@ export function UpdateCard() {
               </p>
             </div>
             <div className="flex gap-2">
-              {info.download_url && (
-                <a
-                  href={info.download_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-3 py-1.5 bg-accent text-white text-xs rounded-lg hover:bg-accent-hover transition-colors"
-                >
-                  Download
-                </a>
-              )}
+              <button
+                onClick={handleUpdate}
+                disabled={updating}
+                className="px-3 py-1.5 bg-accent text-white text-xs rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                {updating ? 'Installing...' : 'Install Update'}
+              </button>
               {info.release_url && (
                 <a
                   href={info.release_url}
@@ -87,6 +112,16 @@ export function UpdateCard() {
               )}
             </div>
           </div>
+
+          {updating && (
+            <p className="text-xs text-accent animate-pulse">
+              Downloading update... The app will close and restart automatically.
+            </p>
+          )}
+
+          {updateError && (
+            <p className="text-xs text-red-400">{updateError}</p>
+          )}
 
           {info.release_notes && (
             <div className="text-xs text-text-secondary bg-surface-secondary rounded-lg p-3 max-h-32 overflow-y-auto whitespace-pre-wrap">
