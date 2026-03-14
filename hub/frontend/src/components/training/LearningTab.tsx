@@ -35,7 +35,6 @@ export function LearningTab() {
   const [knowledge, setKnowledge] = useState<KnowledgeResponse | null>(null)
   const [isLearning, setIsLearning] = useState(false)
   const [error, setError] = useState('')
-  const [jobId, setJobId] = useState<string | null>(null)
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -72,7 +71,6 @@ export function LearningTab() {
         { method: 'POST', body: JSON.stringify({ full_pipeline: false }) }
       )
       if (res?.ok && res.job_id) {
-        setJobId(res.job_id)
         // Poll until done
         const poll = setInterval(async () => {
           try {
