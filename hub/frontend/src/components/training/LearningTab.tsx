@@ -66,21 +66,21 @@ export function LearningTab() {
     setIsLearning(true)
     setError('')
     try {
-      const res = await apiFetch<{ ok: boolean; job_id?: string; error?: string }>(
+      const res = await apiFetch<{ ok: boolean; error?: string }>(
         '/learning/start',
         { method: 'POST', body: JSON.stringify({ full_pipeline: false }) }
       )
-      if (res?.ok && res.job_id) {
-        // Poll until done
+      if (res?.ok) {
+        // Poll /learning/result until done
         const poll = setInterval(async () => {
           try {
-            const jobRes = await apiFetch<{ status: string }>(`/training/jobs/${res.job_id}`)
-            if (jobRes?.status === 'completed' || jobRes?.status === 'failed') {
+            const r = await apiFetch<{ running: boolean; result: { ok: boolean; error?: string } | null }>('/learning/result')
+            if (r && !r.running && r.result) {
               clearInterval(poll)
               setIsLearning(false)
               fetchStatus()
               fetchKnowledge()
-              if (jobRes.status === 'failed') setError('Learn cycle failed. Check logs.')
+              if (!r.result.ok) setError(r.result.error || 'Learn cycle failed. Check logs.')
             }
           } catch {
             clearInterval(poll)
