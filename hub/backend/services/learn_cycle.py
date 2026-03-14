@@ -298,7 +298,7 @@ def _synthesize_sessions(sessions: list[dict], url: str, model: str,
                          temp: float, n: int) -> list[dict]:
     examples = []
     for i, sess in enumerate(sessions, 1):
-        sid = sess.get("session_id", f"session-{i}")
+        sid = sess.get("id", sess.get("session_id", f"session-{i}"))
         summary = sess.get("summary", "")
         if not summary or len(summary) < 20:
             continue
@@ -432,7 +432,7 @@ def run_learn_cycle() -> dict:
 
         new_notes = [n for n in all_notes if n.get("id") not in processed_note_ids]
         new_sessions = [s for s in all_sessions
-                        if s.get("session_id") not in processed_session_ids
+                        if s.get("id", s.get("session_id")) not in processed_session_ids
                         and s.get("summary")]
 
         logger.info("  Notes: %d total, %d new", len(all_notes), len(new_notes))
@@ -469,7 +469,7 @@ def run_learn_cycle() -> dict:
             sess_ex = _synthesize_sessions(new_sessions, lm_url, model, temp, n_examples)
             all_examples.extend(sess_ex)
             for s in new_sessions:
-                processed_session_ids.add(s.get("session_id"))
+                processed_session_ids.add(s.get("id", s.get("session_id")))
             data_summary_parts.append(
                 f"Sessions ({len(new_sessions)}): "
                 + "; ".join(s.get("summary", "")[:100] for s in new_sessions[:5])
