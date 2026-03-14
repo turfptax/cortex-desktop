@@ -68,13 +68,22 @@ class LearnRequest(BaseModel):
 @router.post("/start")
 async def start_learn_cycle(req: LearnRequest):
     """Start a learn cycle via the process manager."""
+    import time
     from services.process_manager import start_job, _jobs
 
-    # Check if already running
-    for existing in _jobs.values():
-        d = existing.to_dict()
-        if d.get("step") == "07" and d.get("status") == "running":
-            return {"ok": False, "error": "Learn cycle already running", "job_id": d["job_id"]}
+    # Check if already running — clean up stale zombies (>5 min with no live process)
+    for job_id, existing in list(_jobs.items()):
+        if existing.step != "07":
+            continue
+        d = existing.to_dict()  # polls process if alive
+        if d.get("status") == "running":
+            proc_alive = existing.process and existing.process.poll() is None
+            age = time.time() - existing.start_time if existing.start_time else 999
+            if proc_alive and age < 600:
+                return {"ok": False, "error": "Learn cycle already running", "job_id": d["job_id"]}
+            # Stale zombie — clean it up
+            existing.status = "failed"
+            existing.end_time = time.time()
 
     job = await start_job("07")
 
