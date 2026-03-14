@@ -135,6 +135,8 @@ class CortexTray:
         self._running = False
         self._status_thread: Optional[threading.Thread] = None
         self._icon: Optional[pystray.Icon] = None
+        self._update_info: Optional[dict] = None
+        self._poll_count = 0
 
     @property
     def hub_url(self) -> str:
@@ -161,8 +163,26 @@ class CortexTray:
             return f"Pi: Connected ({self.pi_host})"
         return f"Pi: Offline ({self.pi_host})"
 
+    def _apply_update(self, icon=None, item=None):
+        """Trigger auto-update via the local API."""
+        try:
+            r = httpx.post(f"{self.hub_url}/api/settings/apply-update", timeout=10.0)
+            data = r.json()
+            if not data.get("ok"):
+                # Fallback: open the release page
+                release_url = (
+                    data.get("release_url")
+                    or (self._update_info or {}).get("release_url", "")
+                )
+                if release_url:
+                    webbrowser.open(release_url)
+        except Exception:
+            # If API fails, open release page
+            if self._update_info and self._update_info.get("release_url"):
+                webbrowser.open(self._update_info["release_url"])
+
     def _build_menu(self) -> Menu:
-        return Menu(
+        items = [
             MenuItem("Open Cortex Hub", self._open_hub, default=True),
             Menu.SEPARATOR,
             MenuItem(
@@ -172,12 +192,33 @@ class CortexTray:
             ),
             MenuItem(f"Hub: localhost:{self.hub_port}", lambda: None, enabled=False),
             Menu.SEPARATOR,
+        ]
+
+        # Show update item if available
+        if self._update_info and self._update_info.get("update_available"):
+            ver = self._update_info.get("latest_version", "?")
+            items.append(MenuItem(f"Update Available (v{ver})", self._apply_update))
+            items.append(Menu.SEPARATOR)
+
+        items.extend([
             MenuItem("Settings", self._open_settings),
             MenuItem("Quit", self._quit),
-        )
+        ])
+        return Menu(*items)
+
+    def _check_for_updates(self):
+        """Check GitHub for a newer version (called from poll thread)."""
+        try:
+            r = httpx.get(f"{self.hub_url}/api/settings/check-update", timeout=10.0)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("ok"):
+                    self._update_info = data
+        except Exception:
+            pass
 
     def _poll_status(self):
-        """Background thread: poll Pi status every 30s and update icon."""
+        """Background thread: poll Pi status every 30s, check updates every ~5 min."""
         import time
 
         while self._running:
@@ -186,7 +227,17 @@ class CortexTray:
                 self.pi_host, self.pi_port, self.pi_username, self.pi_password
             )
 
-            if self._icon and self._pi_connected != was_connected:
+            # Check for updates every 10th poll (~5 minutes)
+            self._poll_count += 1
+            old_update = self._update_info
+            if self._poll_count % 10 == 1:  # First poll + every 10th
+                self._check_for_updates()
+
+            needs_refresh = (
+                self._pi_connected != was_connected
+                or self._update_info != old_update
+            )
+            if self._icon and needs_refresh:
                 self._icon.icon = create_icon_image(connected=self._pi_connected)
                 self._icon.menu = self._build_menu()
 
