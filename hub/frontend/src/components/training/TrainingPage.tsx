@@ -5,6 +5,7 @@ import { LogViewer } from './LogViewer'
 import { HyperparamEditor } from './HyperparamEditor'
 import { DatasetTab } from './DatasetTab'
 import { AutoResearchPanel } from './AutoResearchPanel'
+import { LearningTab } from './LearningTab'
 
 export function TrainingPage() {
   const {
@@ -33,8 +34,8 @@ export function TrainingPage() {
     clearResearchLog,
   } = useTraining()
 
-  const [activeTab, setActiveTab] = useState<'pipeline' | 'config' | 'dataset' | 'results' | 'research'>(
-    'pipeline'
+  const [activeTab, setActiveTab] = useState<'learning' | 'pipeline' | 'config' | 'dataset' | 'results' | 'research'>(
+    'learning'
   )
 
   useEffect(() => {
@@ -57,7 +58,7 @@ export function TrainingPage() {
             </p>
           </div>
           <div className="flex gap-1 bg-surface-tertiary rounded-lg p-0.5">
-            {(['pipeline', 'config', 'dataset', 'results', 'research'] as const).map((tab) => (
+            {(['learning', 'pipeline', 'config', 'dataset', 'results', 'research'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -76,6 +77,8 @@ export function TrainingPage() {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
+        {activeTab === 'learning' && <LearningTab />}
+
         {activeTab === 'pipeline' && (
           <div className="flex flex-col h-full">
             {/* Pipeline steps — 3-column grid */}

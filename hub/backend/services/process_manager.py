@@ -93,6 +93,11 @@ STEPS = {
         "script": "05_autoresearch.py",
         "description": "Automated hyperparameter search with ratchet",
     },
+    "07": {
+        "name": "Learn Cycle",
+        "script": "07_learn_cycle.py",
+        "description": "Pull new data from Pi, synthesize training examples with teacher model",
+    },
     "06": {
         "name": "Export & Deploy",
         "script": "06_export_deploy.py",
