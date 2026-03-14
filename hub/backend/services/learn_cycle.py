@@ -1,15 +1,21 @@
 """Self-contained learn cycle — teacher-student knowledge transfer.
 
 Runs entirely in-process (no external script needed).
-Pulls data from Pi, sends to LM Studio teacher for Q&A synthesis,
+Pulls data from Pi, sends to LM Studio teacher(s) for Q&A synthesis,
 saves results to a ledger in %APPDATA%/Cortex/learning/.
+
+Supports multiple LM Studio instances with configurable parallelism.
 """
 
 import json
 import logging
+import os
 import random
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,13 +27,16 @@ from config import settings
 logger = logging.getLogger("cortex.learn")
 
 # ── Paths (use APPDATA so it works in installed exe) ─────────────
-_APP_DIR = Path(__import__("os").environ.get("APPDATA", ".")) / "Cortex" / "learning"
+_APP_DIR = Path(os.environ.get("APPDATA", ".")) / "Cortex" / "learning"
 LEDGER_PATH = _APP_DIR / "learning_ledger.json"
 OUTPUT_PATH = _APP_DIR / "synthetic_examples.jsonl"
+SERVERS_PATH = _APP_DIR / "lmstudio_servers.json"
 
-# ── State ────────────────────────────────────────────────────────
+# ── Progress state ───────────────────────────────────────────────
 _running = False
 _last_error: str | None = None
+_progress: dict = {}
+_progress_lock = threading.Lock()
 
 
 def is_running() -> bool:
@@ -36,6 +45,82 @@ def is_running() -> bool:
 
 def last_error() -> str | None:
     return _last_error
+
+
+def get_progress() -> dict:
+    with _progress_lock:
+        return dict(_progress)
+
+
+def _set_progress(**kwargs):
+    with _progress_lock:
+        _progress.update(kwargs)
+
+
+# ── LM Studio server config ─────────────────────────────────────
+
+@dataclass
+class LMStudioServer:
+    url: str  # e.g. "http://10.0.0.102:1234/v1"
+    name: str = ""
+    parallel: int = 4
+    enabled: bool = True
+    models: list[str] = field(default_factory=list)
+    online: bool = False
+
+
+def load_servers() -> list[dict]:
+    """Load saved server configs."""
+    if SERVERS_PATH.exists():
+        try:
+            return json.loads(SERVERS_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    # Default: the configured LM Studio URL
+    return [{"url": settings.lmstudio_url, "name": "Default", "parallel": 4, "enabled": True}]
+
+
+def save_servers(servers: list[dict]):
+    _APP_DIR.mkdir(parents=True, exist_ok=True)
+    SERVERS_PATH.write_text(json.dumps(servers, indent=2), encoding="utf-8")
+
+
+def scan_lmstudio(url: str) -> dict | None:
+    """Check a single LM Studio endpoint. Returns {url, models, online} or None."""
+    url = url.rstrip("/")
+    if not url.endswith("/v1"):
+        url += "/v1"
+    try:
+        resp = httpx.get(f"{url}/models", timeout=3)
+        resp.raise_for_status()
+        models = [m.get("id", "unknown") for m in resp.json().get("data", [])]
+        return {"url": url, "models": models, "online": True}
+    except Exception:
+        return None
+
+
+def discover_lmstudio_servers(ips: list[str] | None = None) -> list[dict]:
+    """Scan network IPs for LM Studio instances (port 1234).
+
+    If no IPs given, scans the local subnet 10.0.0.x (1-254).
+    """
+    if ips is None:
+        # Scan local subnet
+        ips = [f"10.0.0.{i}" for i in range(1, 255)]
+
+    results = []
+
+    def _probe(ip: str):
+        url = f"http://{ip}:1234/v1"
+        info = scan_lmstudio(url)
+        if info:
+            info["ip"] = ip
+            results.append(info)
+
+    with ThreadPoolExecutor(max_workers=50) as pool:
+        pool.map(_probe, ips)
+
+    return results
 
 
 # ── Pet system prompts ───────────────────────────────────────────
@@ -214,7 +299,6 @@ def _query_pi(table: str, limit: int = 500) -> list[dict]:
         resp = httpx.post(url, json=body, auth=auth, timeout=15)
         resp.raise_for_status()
         data = resp.json()
-        # Parse RSP:query:{json} protocol
         resp_str = data.get("response", "")
         if isinstance(resp_str, str) and resp_str.startswith("RSP:query:"):
             parsed = json.loads(resp_str[len("RSP:query:"):])
@@ -225,22 +309,14 @@ def _query_pi(table: str, limit: int = 500) -> list[dict]:
         return []
 
 
-# ── LM Studio calls (sync httpx, runs in thread) ────────────────
+# ── LM Studio calls (multi-server aware) ────────────────────────
 
-def _check_lmstudio() -> list[str] | None:
-    try:
-        resp = httpx.get(f"{settings.lmstudio_url}/models", timeout=5)
-        resp.raise_for_status()
-        return [m.get("id", "unknown") for m in resp.json().get("data", [])]
-    except Exception:
-        return None
-
-
-def _call_teacher(model: str, messages: list[dict], temperature: float = 0.8,
-                  max_tokens: int = 2048) -> str | None:
+def _call_teacher(url: str, model: str, messages: list[dict],
+                  temperature: float = 0.8, max_tokens: int = 2048) -> str | None:
+    """Call a specific LM Studio endpoint."""
     try:
         resp = httpx.post(
-            f"{settings.lmstudio_url}/chat/completions",
+            f"{url}/chat/completions",
             json={
                 "model": model,
                 "messages": messages,
@@ -253,152 +329,234 @@ def _call_teacher(model: str, messages: list[dict], temperature: float = 0.8,
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
     except httpx.TimeoutException:
-        logger.warning("LM Studio request timed out (600s)")
+        logger.warning("LM Studio request timed out (600s) at %s", url)
         return None
     except Exception as e:
-        logger.warning("LM Studio error: %s", e)
+        logger.warning("LM Studio error at %s: %s", url, e)
         return None
 
 
-# ── Synthesis ────────────────────────────────────────────────────
+# ── Work item for parallel processing ───────────────────────────
 
-def _synthesize_notes(notes: list[dict], url: str, model: str,
-                      temp: float, n: int) -> list[dict]:
-    examples = []
-    for i, note in enumerate(notes, 1):
-        nid = note.get("id", f"note-{i}")
+@dataclass
+class WorkItem:
+    item_type: str  # "note", "session", "activity"
+    item_id: Any
+    messages: list[dict]
+    source_data: dict  # original note/session for metadata
+    temperature: float = 0.8
+
+
+def _build_work_items(notes: list[dict], sessions: list[dict],
+                      activities: list[dict], n_examples: int) -> list[WorkItem]:
+    """Build all synthesis work items up front for parallel dispatch."""
+    items: list[WorkItem] = []
+
+    for note in notes:
         content = note.get("content", "").strip()
         if not content:
             continue
-        logger.info("  Note %d/%d (id=%s)", i, len(notes), nid)
         prompt = TEACHER_NOTE_TPL.format(
             note_type=note.get("note_type", "note"),
             project=note.get("project") or "(none)",
-            content=content[:3000], n=n,
+            content=content[:3000], n=n_examples,
         )
-        msgs = [
-            {"role": "system", "content": TEACHER_SYSTEM},
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": "["},
-        ]
-        t0 = time.time()
-        resp = _call_teacher(model, msgs, temp)
-        dt = time.time() - t0
-        pairs = _parse_llm_response(resp) if resp else []
-        if pairs:
-            for p in pairs:
-                examples.append(_wrap_chatml(p, "note", nid))
-            logger.info("    Generated %d examples (%.1fs)", len(pairs), dt)
-        else:
-            logger.info("    No valid pairs (%.1fs)", dt)
-    return examples
+        items.append(WorkItem(
+            item_type="note",
+            item_id=note.get("id", "?"),
+            messages=[
+                {"role": "system", "content": TEACHER_SYSTEM},
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "["},
+            ],
+            source_data=note,
+        ))
 
-
-def _synthesize_sessions(sessions: list[dict], url: str, model: str,
-                         temp: float, n: int) -> list[dict]:
-    examples = []
-    for i, sess in enumerate(sessions, 1):
-        sid = sess.get("id", sess.get("session_id", f"session-{i}"))
+    for sess in sessions:
         summary = sess.get("summary", "")
         if not summary or len(summary) < 20:
             continue
-        logger.info("  Session %d/%d (%s)", i, len(sessions),
-                     sess.get("ai_platform", "?"))
         prompt = TEACHER_SESSION_TPL.format(
             platform=sess.get("ai_platform", "unknown"),
             started_at=sess.get("started_at", ""),
-            summary=summary[:3000], n=n,
+            summary=summary[:3000], n=n_examples,
         )
-        msgs = [
-            {"role": "system", "content": TEACHER_SYSTEM},
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": "["},
-        ]
-        t0 = time.time()
-        resp = _call_teacher(model, msgs, temp)
-        dt = time.time() - t0
-        pairs = _parse_llm_response(resp) if resp else []
-        if pairs:
-            for p in pairs:
-                examples.append(_wrap_chatml(p, "session", sid))
-            logger.info("    Generated %d examples (%.1fs)", len(pairs), dt)
-        else:
-            logger.info("    No valid pairs (%.1fs)", dt)
-    return examples
+        items.append(WorkItem(
+            item_type="session",
+            item_id=sess.get("id", sess.get("session_id", "?")),
+            messages=[
+                {"role": "system", "content": TEACHER_SYSTEM},
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "["},
+            ],
+            source_data=sess,
+        ))
+
+    if activities and len(activities) >= 5:
+        prog_counts: dict[str, int] = {}
+        proj_counts: dict[str, int] = {}
+        for a in activities:
+            prog = a.get("program", "unknown")
+            proj = a.get("project", "")
+            prog_counts[prog] = prog_counts.get(prog, 0) + 1
+            if proj:
+                proj_counts[proj] = proj_counts.get(proj, 0) + 1
+        parts = []
+        top_progs = sorted(prog_counts.items(), key=lambda x: -x[1])[:10]
+        top_projs = sorted(proj_counts.items(), key=lambda x: -x[1])[:10]
+        if top_progs:
+            parts.append("Most used programs: " + ", ".join(f"{p} ({c}x)" for p, c in top_progs))
+        if top_projs:
+            parts.append("Most active projects: " + ", ".join(f"{p} ({c}x)" for p, c in top_projs))
+        parts.append(f"Total activities logged: {len(activities)}")
+        prompt = TEACHER_ACTIVITY_TPL.format(summary="\n".join(parts), n=5)
+        items.append(WorkItem(
+            item_type="activity",
+            item_id="batch",
+            messages=[
+                {"role": "system", "content": TEACHER_SYSTEM},
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "["},
+            ],
+            source_data={},
+        ))
+
+    return items
 
 
-def _synthesize_activities(activities: list[dict], url: str, model: str,
-                           temp: float, n: int = 5) -> list[dict]:
-    if not activities or len(activities) < 5:
-        return []
-    prog_counts: dict[str, int] = {}
-    proj_counts: dict[str, int] = {}
-    for a in activities:
-        prog = a.get("program", "unknown")
-        proj = a.get("project", "")
-        prog_counts[prog] = prog_counts.get(prog, 0) + 1
-        if proj:
-            proj_counts[proj] = proj_counts.get(proj, 0) + 1
-
-    parts = []
-    top_progs = sorted(prog_counts.items(), key=lambda x: -x[1])[:10]
-    top_projs = sorted(proj_counts.items(), key=lambda x: -x[1])[:10]
-    if top_progs:
-        parts.append("Most used programs: " + ", ".join(f"{p} ({c}x)" for p, c in top_progs))
-    if top_projs:
-        parts.append("Most active projects: " + ", ".join(f"{p} ({c}x)" for p, c in top_projs))
-    parts.append(f"Total activities logged: {len(activities)}")
-
-    logger.info("  Activities: %d total, %d programs, %d projects",
-                 len(activities), len(top_progs), len(top_projs))
-    prompt = TEACHER_ACTIVITY_TPL.format(summary="\n".join(parts), n=n)
-    msgs = [
-        {"role": "system", "content": TEACHER_SYSTEM},
-        {"role": "user", "content": prompt},
-        {"role": "assistant", "content": "["},
-    ]
-    t0 = time.time()
-    resp = _call_teacher(model, msgs, temp)
-    dt = time.time() - t0
+def _process_work_item(item: WorkItem, url: str, model: str) -> list[dict]:
+    """Process a single work item, return ChatML examples."""
+    resp = _call_teacher(url, model, item.messages, item.temperature)
     pairs = _parse_llm_response(resp) if resp else []
-    examples = [_wrap_chatml(p, "activity", "batch") for p in pairs]
-    if examples:
-        logger.info("    Generated %d examples (%.1fs)", len(examples), dt)
-    return examples
+    return [_wrap_chatml(p, item.item_type, item.item_id) for p in pairs]
+
+
+# ── Server pool for round-robin dispatch ─────────────────────────
+
+class ServerPool:
+    """Round-robin dispatcher across multiple LM Studio servers."""
+
+    def __init__(self, servers: list[dict]):
+        self.servers: list[dict] = []
+        self.total_workers = 0
+
+        for s in servers:
+            if not s.get("enabled", True):
+                continue
+            url = s["url"].rstrip("/")
+            info = scan_lmstudio(url)
+            if info and info["models"]:
+                entry = {
+                    "url": url,
+                    "model": info["models"][0],
+                    "parallel": s.get("parallel", 4),
+                    "name": s.get("name", url),
+                }
+                self.servers.append(entry)
+                self.total_workers += entry["parallel"]
+                logger.info("  Server: %s — model=%s, parallel=%d",
+                            entry["name"], entry["model"], entry["parallel"])
+
+    def is_empty(self) -> bool:
+        return len(self.servers) == 0
+
+    def process_all(self, items: list[WorkItem]) -> list[dict]:
+        """Process all work items in parallel across all servers.
+
+        Returns list of ChatML examples.
+        """
+        if not items or not self.servers:
+            return []
+
+        all_examples: list[dict] = []
+        completed = 0
+        total = len(items)
+        examples_lock = threading.Lock()
+
+        _set_progress(phase="synthesizing", completed=0, total=total,
+                      examples_so_far=0, servers_active=len(self.servers),
+                      total_workers=self.total_workers)
+
+        def _do_item(item: WorkItem, url: str, model: str) -> list[dict]:
+            nonlocal completed
+            t0 = time.time()
+            results = _process_work_item(item, url, model)
+            dt = time.time() - t0
+
+            with examples_lock:
+                all_examples.extend(results)
+                completed += 1
+                _set_progress(completed=completed, examples_so_far=len(all_examples))
+
+            if results:
+                logger.info("  [%d/%d] %s id=%s — %d examples (%.1fs) via %s",
+                            completed, total, item.item_type, item.item_id,
+                            len(results), dt, url.split("//")[1].split("/")[0])
+            else:
+                logger.info("  [%d/%d] %s id=%s — no pairs (%.1fs)",
+                            completed, total, item.item_type, item.item_id, dt)
+            return results
+
+        # Build a thread pool sized to total parallel slots across all servers
+        # Assign items round-robin across servers weighted by their parallel count
+        with ThreadPoolExecutor(max_workers=max(self.total_workers, 1)) as pool:
+            futures = []
+            # Create a slot list: each server contributes N slots
+            slots = []
+            for s in self.servers:
+                for _ in range(s["parallel"]):
+                    slots.append((s["url"], s["model"]))
+
+            for i, item in enumerate(items):
+                url, model = slots[i % len(slots)]
+                futures.append(pool.submit(_do_item, item, url, model))
+
+            # Wait for all to complete
+            for f in as_completed(futures):
+                try:
+                    f.result()  # raises if the task raised
+                except Exception as e:
+                    logger.warning("Work item failed: %s", e)
+
+        return all_examples
 
 
 # ── Main entry point ─────────────────────────────────────────────
 
-def run_learn_cycle() -> dict:
+def run_learn_cycle(server_overrides: list[dict] | None = None) -> dict:
     """Run the full learn cycle synchronously (call from a thread).
+
+    Args:
+        server_overrides: Optional list of server configs to use instead of saved ones.
 
     Returns a result dict with cycle stats or error info.
     """
     global _running, _last_error
     _running = True
     _last_error = None
+    _set_progress(phase="starting", completed=0, total=0,
+                  examples_so_far=0, servers_active=0, total_workers=0)
 
     try:
         logger.info("=== Learn Cycle starting ===")
 
-        # Check LM Studio
-        logger.info("Checking LM Studio at %s ...", settings.lmstudio_url)
-        models = _check_lmstudio()
-        if models is None:
-            msg = f"Cannot reach LM Studio at {settings.lmstudio_url}"
+        # Load server configs
+        servers = server_overrides or load_servers()
+        logger.info("Checking %d LM Studio server(s)...", len(servers))
+
+        pool = ServerPool(servers)
+        if pool.is_empty():
+            msg = "No LM Studio servers reachable or no models loaded"
             logger.error(msg)
             _last_error = msg
-            return {"ok": False, "error": msg}
-        if not models:
-            msg = "No models loaded in LM Studio"
-            logger.error(msg)
-            _last_error = msg
+            _set_progress(phase="error")
             return {"ok": False, "error": msg}
 
-        model = models[0]
-        logger.info("Using model: %s", model)
+        logger.info("Using %d server(s), %d total worker threads",
+                     len(pool.servers), pool.total_workers)
 
         # Check Pi
+        _set_progress(phase="connecting_pi")
         logger.info("Checking Pi at %s ...", settings.pi_base_url)
         try:
             r = httpx.get(
@@ -412,11 +570,13 @@ def run_learn_cycle() -> dict:
                 msg = f"Pi returned HTTP {r.status_code}"
                 logger.error(msg)
                 _last_error = msg
+                _set_progress(phase="error")
                 return {"ok": False, "error": msg}
         except Exception as e:
             msg = f"Cannot reach Pi: {e}"
             logger.error(msg)
             _last_error = msg
+            _set_progress(phase="error")
             return {"ok": False, "error": msg}
 
         # Load ledger
@@ -425,6 +585,7 @@ def run_learn_cycle() -> dict:
         processed_session_ids = set(ledger.get("processed_session_ids", []))
 
         # Pull data
+        _set_progress(phase="pulling_data")
         logger.info("Pulling data from Pi...")
         all_notes = _query_pi("notes", limit=1000)
         all_sessions = _query_pi("sessions", limit=500)
@@ -442,43 +603,37 @@ def run_learn_cycle() -> dict:
         total_new = len(new_notes) + len(new_sessions)
         if total_new == 0 and len(all_activities) < 5:
             logger.info("Nothing new to process.")
+            _set_progress(phase="done")
             return {"ok": True, "message": "Nothing new to process",
                     "notes": 0, "sessions": 0, "examples": 0}
 
-        # Synthesize
-        lm_url = settings.lmstudio_url
-        temp = 0.8
-        n_examples = 3
-        start_time = time.time()
-        all_examples: list[dict] = []
-        data_summary_parts: list[str] = []
+        # Build work items
+        work_items = _build_work_items(new_notes, new_sessions, all_activities, n_examples=3)
+        logger.info("Built %d work items for parallel processing", len(work_items))
 
+        # Process all items in parallel across servers
+        start_time = time.time()
+        all_examples = pool.process_all(work_items)
+
+        # Track processed IDs
+        for n in new_notes:
+            processed_note_ids.add(n.get("id"))
+        for s in new_sessions:
+            processed_session_ids.add(s.get("id", s.get("session_id")))
+
+        # Build data summary for knowledge generation
+        data_summary_parts = []
         if new_notes:
-            logger.info("--- Synthesizing %d notes ---", len(new_notes))
-            note_ex = _synthesize_notes(new_notes, lm_url, model, temp, n_examples)
-            all_examples.extend(note_ex)
-            for n in new_notes:
-                processed_note_ids.add(n.get("id"))
             data_summary_parts.append(
                 f"Notes ({len(new_notes)}): "
                 + "; ".join(n.get("content", "")[:100] for n in new_notes[:5])
             )
-
         if new_sessions:
-            logger.info("--- Synthesizing %d sessions ---", len(new_sessions))
-            sess_ex = _synthesize_sessions(new_sessions, lm_url, model, temp, n_examples)
-            all_examples.extend(sess_ex)
-            for s in new_sessions:
-                processed_session_ids.add(s.get("id", s.get("session_id")))
             data_summary_parts.append(
                 f"Sessions ({len(new_sessions)}): "
                 + "; ".join(s.get("summary", "")[:100] for s in new_sessions[:5])
             )
-
         if all_activities and len(all_activities) >= 5:
-            logger.info("--- Synthesizing activity patterns ---")
-            act_ex = _synthesize_activities(all_activities, lm_url, model, temp)
-            all_examples.extend(act_ex)
             data_summary_parts.append(f"Activities: {len(all_activities)} logged")
 
         # Write examples
@@ -489,12 +644,14 @@ def run_learn_cycle() -> dict:
                     f.write(json.dumps(ex, ensure_ascii=False) + "\n")
             logger.info("Wrote %d examples to %s", len(all_examples), OUTPUT_PATH.name)
 
-        # Knowledge summary
+        # Knowledge summary (use first server)
+        _set_progress(phase="summarizing")
         logger.info("Generating knowledge summary...")
         data_summary = "\n".join(data_summary_parts) if data_summary_parts else "No new data"
         prompt = TEACHER_KNOWLEDGE_TPL.format(data=data_summary[:4000])
+        s0 = pool.servers[0]
         knowledge = _call_teacher(
-            model,
+            s0["url"], s0["model"],
             [{"role": "system", "content": "You are a helpful assistant. Be concise."},
              {"role": "user", "content": prompt}],
             temperature=0.3, max_tokens=300,
@@ -514,7 +671,9 @@ def run_learn_cycle() -> dict:
             "activities_processed": len(all_activities),
             "examples_generated": len(all_examples),
             "knowledge_summary": knowledge,
-            "model": model,
+            "model": ", ".join(s["model"] for s in pool.servers),
+            "servers_used": len(pool.servers),
+            "total_workers": pool.total_workers,
         }
         ledger["processed_note_ids"] = sorted(processed_note_ids)
         ledger["processed_session_ids"] = sorted(processed_session_ids)
@@ -524,8 +683,11 @@ def run_learn_cycle() -> dict:
         _save_ledger(ledger)
 
         elapsed = time.time() - start_time
-        logger.info("=== Learn Cycle Complete — %d examples in %.0fs ===",
-                     len(all_examples), elapsed)
+        logger.info("=== Learn Cycle Complete — %d examples in %.0fs (%d servers, %d workers) ===",
+                     len(all_examples), elapsed, len(pool.servers), pool.total_workers)
+
+        _set_progress(phase="done", completed=len(work_items), total=len(work_items),
+                      examples_so_far=len(all_examples))
 
         return {
             "ok": True,
@@ -534,11 +696,14 @@ def run_learn_cycle() -> dict:
             "examples_generated": len(all_examples),
             "knowledge_summary": knowledge,
             "elapsed_s": round(elapsed, 1),
+            "servers_used": len(pool.servers),
+            "total_workers": pool.total_workers,
         }
 
     except Exception as e:
         logger.exception("Learn cycle failed")
         _last_error = str(e)
+        _set_progress(phase="error")
         return {"ok": False, "error": str(e)}
     finally:
         _running = False

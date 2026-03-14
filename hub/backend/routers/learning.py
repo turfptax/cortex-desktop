@@ -1,6 +1,6 @@
 """Learning API router — teacher-student knowledge transfer.
 
-Runs the learn cycle in-process (no external script needed).
+Runs the learn cycle in-process with multi-server parallel support.
 """
 
 import logging
@@ -13,7 +13,12 @@ from services.learn_cycle import (
     LEDGER_PATH,
     is_running,
     last_error,
+    get_progress,
     run_learn_cycle,
+    load_servers,
+    save_servers,
+    scan_lmstudio,
+    discover_lmstudio_servers,
     _load_ledger,
 )
 
@@ -26,7 +31,7 @@ _last_result: dict | None = None
 
 @router.get("/status")
 async def learning_status():
-    """Return learning status: processed counts, cycle history."""
+    """Return learning status: processed counts, cycle history, progress."""
     ledger = _load_ledger()
 
     processed_notes = len(ledger.get("processed_note_ids", []))
@@ -45,11 +50,13 @@ async def learning_status():
         "cycles": cycles[-10:],
         "is_running": is_running(),
         "last_error": last_error(),
+        "progress": get_progress() if is_running() else None,
     }
 
 
 class LearnRequest(BaseModel):
     full_pipeline: bool = False
+    servers: list[dict] | None = None  # Optional server override
 
 
 @router.post("/start")
@@ -64,12 +71,23 @@ async def start_learn_cycle(req: LearnRequest):
 
     def _run():
         global _last_result
-        _last_result = run_learn_cycle()
+        _last_result = run_learn_cycle(server_overrides=req.servers)
 
     thread = threading.Thread(target=_run, daemon=True, name="learn-cycle")
     thread.start()
 
     return {"ok": True, "message": "Learn cycle started"}
+
+
+@router.get("/progress")
+async def learn_progress():
+    """Get real-time progress of the running learn cycle."""
+    return {
+        "ok": True,
+        "running": is_running(),
+        "progress": get_progress(),
+        "last_error": last_error(),
+    }
 
 
 @router.get("/result")
@@ -80,6 +98,55 @@ async def learn_result():
         "running": is_running(),
         "result": _last_result,
     }
+
+
+# ── LM Studio server management ─────────────────────────────────
+
+@router.get("/servers")
+async def get_servers():
+    """Get configured LM Studio servers with online status."""
+    servers = load_servers()
+    results = []
+    for s in servers:
+        info = scan_lmstudio(s["url"])
+        results.append({
+            **s,
+            "online": info is not None if info else False,
+            "models": info["models"] if info else [],
+        })
+    return {"ok": True, "servers": results}
+
+
+class ServerConfig(BaseModel):
+    servers: list[dict]
+
+
+@router.post("/servers")
+async def set_servers(config: ServerConfig):
+    """Save LM Studio server configuration."""
+    save_servers(config.servers)
+    return {"ok": True, "message": f"Saved {len(config.servers)} server(s)"}
+
+
+@router.post("/servers/scan")
+async def scan_servers():
+    """Scan the local network for LM Studio instances."""
+    logger.info("Scanning network for LM Studio instances...")
+    found = discover_lmstudio_servers()
+    logger.info("Found %d LM Studio instance(s)", len(found))
+    return {"ok": True, "found": found}
+
+
+@router.post("/servers/check")
+async def check_server(data: dict):
+    """Check a single LM Studio URL."""
+    url = data.get("url", "")
+    if not url:
+        return {"ok": False, "error": "URL required"}
+    info = scan_lmstudio(url)
+    if info:
+        return {"ok": True, **info}
+    return {"ok": False, "error": f"Cannot reach {url}"}
 
 
 @router.get("/knowledge")
