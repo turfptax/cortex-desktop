@@ -68,7 +68,7 @@ export function PipelineStep({ step, onRun, onStop, onViewLogs, isRunning, isVie
           isViewingLogs
             ? 'border-accent'
             : 'border-border hover:border-border/80'
-        } ${hasJob ? 'cursor-pointer' : ''}`}
+        } ${hasJob ? 'cursor-pointer' : ''} ${disabled ? 'opacity-50' : ''}`}
       >
         <div className="flex items-center justify-between mb-1.5">
           <div className="flex items-center gap-1.5">
@@ -107,7 +107,7 @@ export function PipelineStep({ step, onRun, onStop, onViewLogs, isRunning, isVie
               disabled={disabled}
               className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
                 disabled
-                  ? 'bg-surface-tertiary text-text-muted cursor-not-allowed'
+                  ? 'bg-surface-tertiary/50 text-text-muted/50 cursor-not-allowed opacity-40'
                   : 'bg-accent text-white hover:bg-accent-hover cursor-pointer'
               }`}
               title={disabled ? 'Script not available — see guidance above' : undefined}
@@ -196,10 +196,10 @@ export function PipelineStep({ step, onRun, onStop, onViewLogs, isRunning, isVie
               disabled={disabled}
               className={`px-4 py-2 rounded-lg text-xs font-medium transition-colors ${
                 disabled
-                  ? 'bg-surface-tertiary text-text-muted cursor-not-allowed'
+                  ? 'bg-surface-tertiary/50 text-text-muted/50 cursor-not-allowed opacity-40'
                   : 'bg-accent text-white hover:bg-accent-hover cursor-pointer'
               }`}
-              title={disabled ? 'Script not available' : undefined}
+              title={disabled ? 'Script not available — see guidance above' : undefined}
             >
               Run
             </button>
