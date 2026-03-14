@@ -194,126 +194,168 @@ function drawCircuitBackground(ctx: CanvasRenderingContext2D) {
 // ── Sprite drawing (simplified pixel art cat-robot) ──
 
 function drawSprite(ctx: CanvasRenderingContext2D, cx: number, cy: number,
-                    accent: RGB, frame: number) {
-  const bodyColor: RGB = [25, 25, 35]
-  const outlineColor: RGB = [35, 35, 50]
+                    _accent: RGB, frame: number) {
+  // Orange cat sprite — warm gradient body with big cute eyes
+  const bob = frame % 2 === 0 ? 0 : -2
 
-  // Head (circle approximation with rect)
-  const headR = 16
-  const headCy = cy
-  ctx.fillStyle = rgb(bodyColor)
+  // Color palette
+  const orangeLight: RGB = [255, 190, 50]
+  const orangeMid: RGB = [240, 150, 30]
+  const orangeDark: RGB = [200, 100, 20]
+  const outlineYellow: RGB = [255, 230, 50]
+  const eyeColor: RGB = [50, 30, 40]
+  const noseColor: RGB = [80, 50, 60]
+  const white: RGB = [255, 255, 255]
+
+  const headR = 18
+  const headCy = cy + bob
+
+  // Glow behind pet (warm aura)
+  const glowGrad = ctx.createRadialGradient(cx, headCy + 8, 5, cx, headCy + 8, 40)
+  glowGrad.addColorStop(0, 'rgba(255, 180, 30, 0.12)')
+  glowGrad.addColorStop(1, 'rgba(255, 180, 30, 0)')
+  ctx.fillStyle = glowGrad
+  ctx.beginPath()
+  ctx.arc(cx, headCy + 8, 40, 0, Math.PI * 2)
+  ctx.fill()
+
+  // Body (egg shape below head)
+  const bodyTop = headCy + headR - 6
+  const bodyW = 30
+  const bodyH = 24
+  ctx.fillStyle = rgb(orangeDark)
+  ctx.beginPath()
+  ctx.ellipse(cx, bodyTop + bodyH / 2, bodyW / 2, bodyH / 2, 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.strokeStyle = rgb(outlineYellow)
+  ctx.lineWidth = 1.5
+  ctx.stroke()
+
+  // Front paws
+  ctx.fillStyle = rgb(orangeDark)
+  ctx.beginPath()
+  ctx.ellipse(cx - 8, bodyTop + bodyH - 2, 5, 4, 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.beginPath()
+  ctx.ellipse(cx + 8, bodyTop + bodyH - 2, 5, 4, 0, 0, Math.PI * 2)
+  ctx.fill()
+
+  // Head (large circle)
+  const headGrad = ctx.createRadialGradient(cx - 4, headCy - 4, 2, cx, headCy, headR)
+  headGrad.addColorStop(0, rgb(orangeLight))
+  headGrad.addColorStop(0.7, rgb(orangeMid))
+  headGrad.addColorStop(1, rgb(orangeDark))
+  ctx.fillStyle = headGrad
   ctx.beginPath()
   ctx.arc(cx, headCy, headR, 0, Math.PI * 2)
   ctx.fill()
-  ctx.strokeStyle = rgb(outlineColor)
-  ctx.lineWidth = 1
+  ctx.strokeStyle = rgb(outlineYellow)
+  ctx.lineWidth = 1.5
   ctx.stroke()
 
-  // Ears (triangles)
-  const earBaseY = headCy - headR + 2
-  const earTipY = earBaseY - 12
+  // Ears
+  const earBaseY = headCy - headR + 4
+  const earTipY = earBaseY - 14
 
   // Left ear
-  ctx.fillStyle = rgb(bodyColor)
+  ctx.fillStyle = rgb(orangeMid)
   ctx.beginPath()
-  ctx.moveTo(cx - headR + 2, earBaseY)
-  ctx.lineTo(cx - headR + 6, earBaseY)
-  ctx.lineTo(cx - headR - 1, earTipY)
+  ctx.moveTo(cx - headR + 3, earBaseY + 2)
+  ctx.lineTo(cx - headR + 10, earBaseY + 2)
+  ctx.lineTo(cx - headR + 1, earTipY)
   ctx.closePath()
   ctx.fill()
-  ctx.strokeStyle = rgb(accent)
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(cx - headR - 1, earTipY)
-  ctx.lineTo(cx - headR + 2, earBaseY)
+  ctx.strokeStyle = rgb(outlineYellow)
+  ctx.lineWidth = 1.5
   ctx.stroke()
 
   // Right ear
-  ctx.fillStyle = rgb(bodyColor)
+  ctx.fillStyle = rgb(orangeMid)
   ctx.beginPath()
-  ctx.moveTo(cx + headR - 6, earBaseY)
-  ctx.lineTo(cx + headR - 2, earBaseY)
-  ctx.lineTo(cx + headR + 1, earTipY)
+  ctx.moveTo(cx + headR - 10, earBaseY + 2)
+  ctx.lineTo(cx + headR - 3, earBaseY + 2)
+  ctx.lineTo(cx + headR - 1, earTipY)
   ctx.closePath()
   ctx.fill()
-  ctx.strokeStyle = rgb(accent)
-  ctx.beginPath()
-  ctx.moveTo(cx + headR + 1, earTipY)
-  ctx.lineTo(cx + headR - 2, earBaseY)
+  ctx.strokeStyle = rgb(outlineYellow)
+  ctx.lineWidth = 1.5
   ctx.stroke()
 
-  // Body (rounded rect below head)
-  const bodyTop = headCy + headR - 4
-  const bodyW = 28
-  const bodyH = 22
-  ctx.fillStyle = rgb(bodyColor)
+  // Inner ears (lighter)
+  ctx.fillStyle = rgb(orangeLight)
   ctx.beginPath()
-  ctx.roundRect(cx - bodyW / 2, bodyTop, bodyW, bodyH, 4)
+  ctx.moveTo(cx - headR + 5, earBaseY + 2)
+  ctx.lineTo(cx - headR + 9, earBaseY + 2)
+  ctx.lineTo(cx - headR + 3, earTipY + 4)
+  ctx.closePath()
   ctx.fill()
-  ctx.strokeStyle = rgb(outlineColor)
-  ctx.stroke()
-
-  // Spine line
-  ctx.strokeStyle = rgb(dimColor(accent, 0.6))
-  ctx.lineWidth = 1
   ctx.beginPath()
-  ctx.moveTo(cx, headCy + headR - 6)
-  ctx.lineTo(cx, bodyTop + bodyH - 3)
-  ctx.stroke()
+  ctx.moveTo(cx + headR - 9, earBaseY + 2)
+  ctx.lineTo(cx + headR - 5, earBaseY + 2)
+  ctx.lineTo(cx + headR - 3, earTipY + 4)
+  ctx.closePath()
+  ctx.fill()
 
-  // Rib lines
-  for (const ribOff of [6, 12]) {
-    ctx.strokeStyle = rgb(dimColor(accent, 0.35))
-    ctx.beginPath()
-    ctx.moveTo(cx - 6, bodyTop + ribOff)
-    ctx.lineTo(cx + 6, bodyTop + ribOff)
-    ctx.stroke()
-  }
-
-  // Feet
-  ctx.fillStyle = rgb(bodyColor)
-  ctx.strokeStyle = rgb(outlineColor)
-  ctx.fillRect(cx - bodyW / 2 + 2, bodyTop + bodyH, 8, 5)
-  ctx.strokeRect(cx - bodyW / 2 + 2, bodyTop + bodyH, 8, 5)
-  ctx.fillRect(cx + bodyW / 2 - 10, bodyTop + bodyH, 8, 5)
-  ctx.strokeRect(cx + bodyW / 2 - 10, bodyTop + bodyH, 8, 5)
-
-  // Antenna/tail
-  ctx.strokeStyle = rgb(accent)
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(cx + bodyW / 2 - 1, bodyTop + bodyH / 2 - 2)
-  ctx.lineTo(cx + bodyW / 2 + 5, bodyTop + bodyH / 2 - 6)
-  ctx.lineTo(cx + bodyW / 2 + 9, bodyTop + bodyH / 2 - 4)
-  ctx.stroke()
-
-  // Eyes (glowing rectangles)
-  const eyeY = headCy - 2
+  // Eyes (large, dark, cute)
+  const eyeY = headCy - 1
   const eyeSpread = 8
-  const bob = frame % 2 === 0 ? 0 : -1
 
   for (const ex of [cx - eyeSpread, cx + eyeSpread]) {
-    // Glow backdrop
-    fillRect(ctx, ex - 5, eyeY + bob - 4, 10, 8, dimColor(accent, 0.15))
-    // Eye rectangle
-    fillRect(ctx, ex - 4, eyeY + bob - 3, 8, 6, accent)
-    // Pupil slit
-    fillRect(ctx, ex - 1, eyeY + bob - 2, 2, 4, [10, 10, 15])
-    // Glint
-    fillRect(ctx, ex - 2, eyeY + bob - 2, 1, 1, [255, 255, 255])
+    // Eye white
+    ctx.fillStyle = rgb(eyeColor)
+    ctx.beginPath()
+    ctx.ellipse(ex, eyeY, 5, 6, 0, 0, Math.PI * 2)
+    ctx.fill()
+
+    // White glint (top-left)
+    ctx.fillStyle = rgb(white)
+    ctx.beginPath()
+    ctx.arc(ex - 1.5, eyeY - 2, 2, 0, Math.PI * 2)
+    ctx.fill()
+
+    // Smaller glint (bottom-right)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
+    ctx.beginPath()
+    ctx.arc(ex + 1.5, eyeY + 1.5, 1, 0, Math.PI * 2)
+    ctx.fill()
   }
 
-  // Mouth (small smile)
-  ctx.strokeStyle = rgb([180, 180, 200])
+  // Nose (small triangle)
+  ctx.fillStyle = rgb(noseColor)
+  ctx.beginPath()
+  ctx.moveTo(cx - 2.5, headCy + 5)
+  ctx.lineTo(cx + 2.5, headCy + 5)
+  ctx.lineTo(cx, headCy + 8)
+  ctx.closePath()
+  ctx.fill()
+
+  // Mouth (small W shape)
+  ctx.strokeStyle = rgb(noseColor)
   ctx.lineWidth = 1
   ctx.beginPath()
-  const my = headCy + 7 + bob
-  ctx.moveTo(cx - 4, my)
-  ctx.lineTo(cx - 2, my + 2)
-  ctx.lineTo(cx, my + 3)
-  ctx.lineTo(cx + 2, my + 2)
-  ctx.lineTo(cx + 4, my)
+  ctx.moveTo(cx - 4, headCy + 10)
+  ctx.lineTo(cx - 1, headCy + 8)
+  ctx.lineTo(cx, headCy + 9)
+  ctx.lineTo(cx + 1, headCy + 8)
+  ctx.lineTo(cx + 4, headCy + 10)
   ctx.stroke()
+
+  // Tail (curved, right side)
+  ctx.strokeStyle = rgb(orangeMid)
+  ctx.lineWidth = 3
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  ctx.moveTo(cx + bodyW / 2 - 2, bodyTop + bodyH / 2)
+  ctx.quadraticCurveTo(cx + bodyW / 2 + 12, bodyTop - 2, cx + bodyW / 2 + 8, bodyTop - 10)
+  ctx.stroke()
+  // Tail tip
+  ctx.strokeStyle = rgb(orangeLight)
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  ctx.moveTo(cx + bodyW / 2 + 8, bodyTop - 10)
+  ctx.quadraticCurveTo(cx + bodyW / 2 + 5, bodyTop - 14, cx + bodyW / 2 + 3, bodyTop - 12)
+  ctx.stroke()
+  ctx.lineCap = 'butt'
 }
 
 // ── Mood color helper ──
