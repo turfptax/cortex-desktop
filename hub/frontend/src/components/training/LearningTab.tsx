@@ -10,6 +10,8 @@ interface LearningStatus {
   last_sync_at: string | null
   last_cycle: CycleInfo | null
   cycles: CycleInfo[]
+  is_running?: boolean
+  progress?: Progress | null
 }
 
 interface CycleInfo {
@@ -21,6 +23,8 @@ interface CycleInfo {
   examples_generated: number
   knowledge_summary: string
   model?: string
+  servers_used?: number
+  total_workers?: number
 }
 
 interface KnowledgeResponse {
@@ -30,16 +34,42 @@ interface KnowledgeResponse {
   total_examples: number
 }
 
+interface Progress {
+  phase: string
+  completed: number
+  total: number
+  examples_so_far: number
+  servers_active: number
+  total_workers: number
+}
+
+interface ServerInfo {
+  url: string
+  name: string
+  parallel: number
+  enabled: boolean
+  online?: boolean
+  models?: string[]
+}
+
 export function LearningTab() {
   const [status, setStatus] = useState<LearningStatus | null>(null)
   const [knowledge, setKnowledge] = useState<KnowledgeResponse | null>(null)
   const [isLearning, setIsLearning] = useState(false)
   const [error, setError] = useState('')
+  const [progress, setProgress] = useState<Progress | null>(null)
+  const [servers, setServers] = useState<ServerInfo[]>([])
+  const [showServers, setShowServers] = useState(false)
+  const [scanning, setScanning] = useState(false)
+  const [newServerUrl, setNewServerUrl] = useState('')
 
   const fetchStatus = useCallback(async () => {
     try {
       const res = await apiFetch<LearningStatus>('/learning/status')
-      if (res?.ok) setStatus(res)
+      if (res?.ok) {
+        setStatus(res)
+        if (res.progress) setProgress(res.progress)
+      }
     } catch { /* offline */ }
   }, [])
 
@@ -50,44 +80,66 @@ export function LearningTab() {
     } catch { /* offline */ }
   }, [])
 
+  const fetchServers = useCallback(async () => {
+    try {
+      const res = await apiFetch<{ ok: boolean; servers: ServerInfo[] }>('/learning/servers')
+      if (res?.ok) setServers(res.servers)
+    } catch { /* offline */ }
+  }, [])
+
   useEffect(() => {
     fetchStatus()
     fetchKnowledge()
-  }, [fetchStatus, fetchKnowledge])
+    fetchServers()
+  }, [fetchStatus, fetchKnowledge, fetchServers])
 
   // Poll while learning
   useEffect(() => {
     if (!isLearning) return
-    const interval = setInterval(fetchStatus, 5000)
-    return () => clearInterval(interval)
-  }, [isLearning, fetchStatus])
-
-  const startLearnCycle = async () => {
-    setIsLearning(true)
-    setError('')
-    try {
-      const res = await apiFetch<{ ok: boolean; error?: string }>(
-        '/learning/start',
-        { method: 'POST', body: JSON.stringify({ full_pipeline: false }) }
-      )
-      if (res?.ok) {
-        // Poll /learning/result until done
-        const poll = setInterval(async () => {
-          try {
+    const interval = setInterval(async () => {
+      try {
+        const p = await apiFetch<{ running: boolean; progress: Progress }>('/learning/progress')
+        if (p) {
+          setProgress(p.progress)
+          if (!p.running) {
+            // Done — fetch final result
             const r = await apiFetch<{ running: boolean; result: { ok: boolean; error?: string } | null }>('/learning/result')
-            if (r && !r.running && r.result) {
-              clearInterval(poll)
+            if (r?.result) {
               setIsLearning(false)
+              setProgress(null)
               fetchStatus()
               fetchKnowledge()
               if (!r.result.ok) setError(r.result.error || 'Learn cycle failed. Check logs.')
             }
-          } catch {
-            clearInterval(poll)
-            setIsLearning(false)
           }
-        }, 3000)
-      } else {
+        }
+      } catch {
+        setIsLearning(false)
+        setProgress(null)
+      }
+    }, 2000)
+    return () => clearInterval(interval)
+  }, [isLearning, fetchStatus, fetchKnowledge])
+
+  const startLearnCycle = async () => {
+    setIsLearning(true)
+    setError('')
+    setProgress(null)
+    try {
+      const enabledServers = servers.filter(s => s.enabled && s.online)
+      const res = await apiFetch<{ ok: boolean; error?: string }>(
+        '/learning/start',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            full_pipeline: false,
+            servers: enabledServers.length > 0 ? enabledServers.map(s => ({
+              url: s.url, name: s.name, parallel: s.parallel, enabled: true,
+            })) : null,
+          }),
+        }
+      )
+      if (!res?.ok) {
         setError(res?.error || 'Failed to start learn cycle')
         setIsLearning(false)
       }
@@ -106,6 +158,76 @@ export function LearningTab() {
     } catch { /* offline */ }
   }
 
+  const scanNetwork = async () => {
+    setScanning(true)
+    try {
+      const res = await apiFetch<{ ok: boolean; found: { ip: string; url: string; models: string[] }[] }>(
+        '/learning/servers/scan', { method: 'POST' }
+      )
+      if (res?.ok && res.found.length > 0) {
+        // Merge found servers with existing (don't duplicate)
+        const existing = new Set(servers.map(s => s.url))
+        const newServers = [...servers]
+        for (const f of res.found) {
+          if (!existing.has(f.url)) {
+            newServers.push({
+              url: f.url, name: f.ip, parallel: 4, enabled: true,
+              online: true, models: f.models,
+            })
+          }
+        }
+        setServers(newServers)
+        await saveServers(newServers)
+      }
+    } catch { /* offline */ }
+    setScanning(false)
+  }
+
+  const addServer = async () => {
+    if (!newServerUrl.trim()) return
+    let url = newServerUrl.trim()
+    if (!url.startsWith('http')) url = `http://${url}`
+    if (!url.includes(':')) url += ':1234'
+    if (!url.endsWith('/v1')) url += '/v1'
+
+    const res = await apiFetch<{ ok: boolean; url: string; models: string[] }>(
+      '/learning/servers/check', { method: 'POST', body: JSON.stringify({ url }) }
+    )
+    const newServer: ServerInfo = {
+      url: res?.url || url,
+      name: new URL(url).hostname,
+      parallel: 4,
+      enabled: true,
+      online: res?.ok || false,
+      models: res?.models || [],
+    }
+    const updated = [...servers, newServer]
+    setServers(updated)
+    await saveServers(updated)
+    setNewServerUrl('')
+  }
+
+  const updateServer = async (index: number, changes: Partial<ServerInfo>) => {
+    const updated = servers.map((s, i) => i === index ? { ...s, ...changes } : s)
+    setServers(updated)
+    await saveServers(updated)
+  }
+
+  const removeServer = async (index: number) => {
+    const updated = servers.filter((_, i) => i !== index)
+    setServers(updated)
+    await saveServers(updated)
+  }
+
+  const saveServers = async (s: ServerInfo[]) => {
+    await apiFetch('/learning/servers', {
+      method: 'POST',
+      body: JSON.stringify({ servers: s.map(({ url, name, parallel, enabled }) => ({ url, name, parallel, enabled })) }),
+    })
+  }
+
+  const totalWorkers = servers.filter(s => s.enabled && s.online).reduce((sum, s) => sum + s.parallel, 0)
+
   return (
     <div className="p-6 space-y-6">
       {/* Status + Learn Now */}
@@ -115,6 +237,12 @@ export function LearningTab() {
             <span>🧠</span> Teacher-Student Learning
           </h3>
           <div className="flex gap-2">
+            <button
+              onClick={() => setShowServers(!showServers)}
+              className="px-3 py-2 bg-surface-tertiary text-text-muted text-xs rounded-lg hover:text-text-primary transition-colors cursor-pointer"
+            >
+              Servers ({servers.filter(s => s.online).length}/{servers.length})
+            </button>
             <button
               onClick={startLearnCycle}
               disabled={isLearning}
@@ -133,17 +261,49 @@ export function LearningTab() {
           </div>
         </div>
 
-        {isLearning && (
-          <div className="mb-4 p-3 bg-accent/10 border border-accent/30 rounded-lg">
-            <p className="text-sm text-accent animate-pulse">
-              Processing... The teacher model is analyzing user data and generating training examples.
-            </p>
+        {/* Progress bar */}
+        {isLearning && progress && (
+          <div className="mb-4 space-y-2">
+            <div className="flex items-center justify-between text-xs text-text-muted">
+              <span>
+                {progress.phase === 'starting' && 'Starting...'}
+                {progress.phase === 'connecting_pi' && 'Connecting to Pi...'}
+                {progress.phase === 'pulling_data' && 'Pulling data from Pi...'}
+                {progress.phase === 'synthesizing' && `Synthesizing ${progress.completed}/${progress.total} items`}
+                {progress.phase === 'summarizing' && 'Generating knowledge summary...'}
+                {progress.phase === 'done' && 'Complete!'}
+                {progress.phase === 'error' && 'Error'}
+              </span>
+              <span>
+                {progress.examples_so_far > 0 && `${progress.examples_so_far} examples`}
+                {progress.servers_active > 0 && ` · ${progress.servers_active} server${progress.servers_active > 1 ? 's' : ''} · ${progress.total_workers} workers`}
+              </span>
+            </div>
+            <div className="w-full bg-surface rounded-full h-2.5">
+              <div
+                className="bg-accent h-2.5 rounded-full transition-all duration-500"
+                style={{
+                  width: progress.total > 0
+                    ? `${Math.round((progress.completed / progress.total) * 100)}%`
+                    : progress.phase === 'done' ? '100%' : '5%',
+                }}
+              />
+            </div>
+            {progress.total > 0 && (
+              <p className="text-xs text-text-muted text-right">
+                {Math.round((progress.completed / progress.total) * 100)}%
+              </p>
+            )}
           </div>
         )}
 
-        {error && (
-          <p className="text-sm text-red-400 mb-4">{error}</p>
+        {isLearning && !progress && (
+          <div className="mb-4 p-3 bg-accent/10 border border-accent/30 rounded-lg">
+            <p className="text-sm text-accent animate-pulse">Starting learn cycle...</p>
+          </div>
         )}
+
+        {error && <p className="text-sm text-red-400 mb-4">{error}</p>}
 
         {/* Stats grid */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -159,6 +319,95 @@ export function LearningTab() {
           </p>
         )}
       </div>
+
+      {/* LM Studio Servers Panel */}
+      {showServers && (
+        <div className="bg-surface-secondary rounded-xl p-5 border border-border">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+              <span>🖥️</span> LM Studio Servers
+              <span className="text-xs text-text-muted font-normal">
+                ({totalWorkers} total worker{totalWorkers !== 1 ? 's' : ''})
+              </span>
+            </h3>
+            <button
+              onClick={scanNetwork}
+              disabled={scanning}
+              className="px-3 py-2 bg-surface-tertiary text-text-muted text-xs rounded-lg hover:text-text-primary transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              {scanning ? 'Scanning...' : 'Scan Network'}
+            </button>
+          </div>
+
+          {/* Server list */}
+          <div className="space-y-2 mb-4">
+            {servers.map((server, i) => (
+              <div key={i} className="flex items-center gap-3 bg-surface rounded-lg p-3 border border-border">
+                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${server.online ? 'bg-green-400' : 'bg-red-400'}`} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-text-primary font-medium truncate">
+                      {server.name || server.url}
+                    </span>
+                    {server.models && server.models.length > 0 && (
+                      <span className="text-xs text-text-muted truncate">
+                        {server.models[0]}
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-xs text-text-muted">{server.url}</span>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <label className="text-xs text-text-muted">Parallel:</label>
+                  <input
+                    type="range"
+                    min={1}
+                    max={8}
+                    value={server.parallel}
+                    onChange={(e) => updateServer(i, { parallel: parseInt(e.target.value) })}
+                    className="w-16 h-1 accent-accent"
+                  />
+                  <span className="text-xs text-text-primary w-4 text-center">{server.parallel}</span>
+                  <button
+                    onClick={() => updateServer(i, { enabled: !server.enabled })}
+                    className={`px-2 py-1 text-xs rounded cursor-pointer ${
+                      server.enabled
+                        ? 'bg-accent/20 text-accent'
+                        : 'bg-surface-tertiary text-text-muted'
+                    }`}
+                  >
+                    {server.enabled ? 'On' : 'Off'}
+                  </button>
+                  <button
+                    onClick={() => removeServer(i)}
+                    className="px-2 py-1 text-xs text-red-400 hover:text-red-300 cursor-pointer"
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Add server */}
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={newServerUrl}
+              onChange={(e) => setNewServerUrl(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && addServer()}
+              placeholder="IP or URL (e.g. 10.0.0.105)"
+              className="flex-1 bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder-text-muted focus:outline-none focus:border-accent"
+            />
+            <button
+              onClick={addServer}
+              className="px-4 py-2 bg-accent text-white text-sm rounded-lg hover:bg-accent-hover transition-colors cursor-pointer"
+            >
+              Add
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Knowledge Summary */}
       {knowledge && knowledge.summaries.length > 0 && (
@@ -214,7 +463,10 @@ export function LearningTab() {
                     <td className="py-2 pr-4 text-right text-text-primary">{c.notes_processed}</td>
                     <td className="py-2 pr-4 text-right text-text-primary">{c.sessions_processed}</td>
                     <td className="py-2 pr-4 text-right text-accent font-medium">{c.examples_generated}</td>
-                    <td className="py-2 text-text-muted truncate max-w-[120px]">{c.model || '-'}</td>
+                    <td className="py-2 text-text-muted truncate max-w-[120px]">
+                      {c.model || '-'}
+                      {c.servers_used && c.servers_used > 1 ? ` (${c.servers_used} servers)` : ''}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -232,7 +484,7 @@ export function LearningTab() {
             Click "Learn Now" to pull data from the Pi and teach the pet about you.
           </p>
           <p className="text-xs mt-1 text-text-muted">
-            Requires LM Studio running with a teacher model (e.g. Qwen 9B).
+            Requires LM Studio running with a teacher model. Click "Servers" to configure.
           </p>
         </div>
       )}
