@@ -34,6 +34,16 @@ interface KnowledgeResponse {
   total_examples: number
 }
 
+interface ServerStat {
+  name: string
+  model: string
+  completed: number
+  examples: number
+  active: number
+  avg_time: number
+  parallel: number
+}
+
 interface Progress {
   phase: string
   completed: number
@@ -41,6 +51,7 @@ interface Progress {
   examples_so_far: number
   servers_active: number
   total_workers: number
+  server_stats?: ServerStat[]
 }
 
 interface ServerInfo {
@@ -294,6 +305,37 @@ export function LearningTab() {
                 {Math.round((progress.completed / progress.total) * 100)}%
               </p>
             )}
+          </div>
+        )}
+
+        {/* Live server stats during processing */}
+        {isLearning && progress?.server_stats && progress.server_stats.length > 0 && (
+          <div className="mb-4 grid grid-cols-1 md:grid-cols-3 gap-2">
+            {progress.server_stats.map((ss) => (
+              <div key={ss.name} className="bg-surface rounded-lg p-3 border border-border">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-medium text-text-primary truncate">{ss.name}</span>
+                  <span className="text-xs text-text-muted">{ss.active}/{ss.parallel} active</span>
+                </div>
+                <div className="text-xs text-text-muted truncate mb-2">{ss.model}</div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold text-accent">{ss.completed} done</span>
+                  <span className="text-xs text-text-muted">{ss.examples} ex</span>
+                  <span className="text-xs text-text-muted">
+                    {ss.avg_time > 0 ? `~${ss.avg_time}s/item` : '—'}
+                  </span>
+                </div>
+                {/* Mini progress bar showing this server's share */}
+                {progress.total > 0 && (
+                  <div className="mt-2 w-full bg-surface-tertiary rounded-full h-1">
+                    <div
+                      className="bg-accent/60 h-1 rounded-full transition-all duration-500"
+                      style={{ width: `${Math.min(100, Math.round((ss.completed / progress.total) * 100 * progress.server_stats!.length))}%` }}
+                    />
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         )}
 
