@@ -46,16 +46,37 @@ jobs:
         run: Compress-Archive -Path dist/CortexHub/* -DestinationPath CortexHub-windows-x64.zip
         shell: pwsh
 
-      - name: Upload build artifact
+      # Build installer with Inno Setup
+      - name: Extract version from tag
+        id: version
+        run: |
+          $ref = "${{ github.ref_name }}"
+          $ver = $ref -replace '^v', ''
+          if (-not ($ver -match '^\d+\.\d+')) { $ver = "0.0.0" }
+          echo "version=$ver" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Build installer (Inno Setup)
+        run: iscc /DMyAppVersion="${{ steps.version.outputs.version }}" installer.iss
+
+      - name: Upload zip artifact
         uses: actions/upload-artifact@v4
         with:
           name: CortexHub-windows-x64
           path: CortexHub-windows-x64.zip
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CortexHub-Setup
+          path: Output/CortexHub-Setup-*.exe
 
       # Only create a release when a version tag is pushed
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: CortexHub-windows-x64.zip
+          files: |
+            CortexHub-windows-x64.zip
+            Output/CortexHub-Setup-*.exe
           generate_release_notes: true

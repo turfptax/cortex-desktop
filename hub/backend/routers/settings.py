@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -389,19 +389,20 @@ async def check_update():
         published = data.get("published_at", "")
         body = data.get("body", "")
 
-        # Find the Windows .zip asset download URL
+        # Find the Windows asset download URLs
         download_url = ""
+        installer_url = ""
         for asset in data.get("assets", []):
             name = asset.get("name", "")
-            if name.endswith(".zip") and "windows" in name.lower():
-                download_url = asset.get("browser_download_url", "")
-                break
-        # Fallback: any .zip asset
-        if not download_url:
-            for asset in data.get("assets", []):
-                if asset.get("name", "").endswith(".zip"):
-                    download_url = asset.get("browser_download_url", "")
-                    break
+            dl = asset.get("browser_download_url", "")
+            # Installer .exe (e.g. CortexHub-Setup-0.3.0.exe)
+            if name.lower().startswith("cortexhub-setup") and name.endswith(".exe"):
+                installer_url = dl
+            # .zip fallback
+            elif name.endswith(".zip") and "windows" in name.lower():
+                download_url = dl
+            elif name.endswith(".zip") and not download_url:
+                download_url = dl
 
         update_available = _parse_version(latest_version) > _parse_version(current)
 
@@ -412,9 +413,55 @@ async def check_update():
             "update_available": update_available,
             "release_url": html_url,
             "download_url": download_url,
+            "installer_url": installer_url,
             "published_at": published,
             "release_notes": body[:500] if body else "",
         }
 
     except Exception as e:
         return {"ok": False, "error": str(e), "current_version": current}
+
+
+# ── POST /settings/apply-update ──
+
+@router.post("/apply-update")
+async def apply_update():
+    """Download the latest installer and launch it to update the app."""
+    # First, check what's available
+    update_info = await check_update()
+    if not update_info.get("ok"):
+        return {"ok": False, "error": update_info.get("error", "Failed to check for updates")}
+
+    if not update_info.get("update_available"):
+        return {"ok": False, "error": "No update available"}
+
+    installer_url = update_info.get("installer_url", "")
+    if not installer_url:
+        # No installer, fall back to directing user to release page
+        return {
+            "ok": False,
+            "error": "No installer found in release assets",
+            "release_url": update_info.get("release_url", ""),
+        }
+
+    try:
+        from cortex_desktop.updater import download_installer, launch_installer_and_exit
+
+        # Download the installer
+        installer_path = await download_installer(installer_url)
+
+        # Launch installer and exit (runs in background, kills this process)
+        import threading
+        threading.Thread(
+            target=launch_installer_and_exit,
+            args=(installer_path,),
+            daemon=False,
+        ).start()
+
+        return {
+            "ok": True,
+            "message": "Update downloading and installing. The app will restart.",
+            "version": update_info.get("latest_version"),
+        }
+    except Exception as e:
+        return {"ok": False, "error": f"Update failed: {e}"}

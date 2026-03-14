@@ -87,6 +87,8 @@ a = Analysis(
         "serial.tools",
         "serial.tools.list_ports",
         "click",
+        # Updater
+        "cortex_desktop.updater",
         # Other
         "h11",
         "email.mime.text",
