@@ -9,6 +9,7 @@ interface Props {
   isRunning: boolean
   isViewingLogs: boolean
   compact?: boolean
+  disabled?: boolean
 }
 
 const statusColors: Record<string, string> = {
@@ -29,7 +30,7 @@ function formatElapsed(seconds: number): string {
   return `${hrs}h ${remainMins}m`
 }
 
-export function PipelineStep({ step, onRun, onStop, onViewLogs, isRunning, isViewingLogs, compact }: Props) {
+export function PipelineStep({ step, onRun, onStop, onViewLogs, isRunning, isViewingLogs, compact, disabled }: Props) {
   const status = step.latest_job?.status || 'idle'
   const elapsed = step.latest_job?.elapsed_s
 
@@ -102,8 +103,14 @@ export function PipelineStep({ step, onRun, onStop, onViewLogs, isRunning, isVie
             </button>
           ) : (
             <button
-              onClick={(e) => { e.stopPropagation(); onRun() }}
-              className="px-2 py-0.5 rounded bg-accent text-white text-[10px] font-medium hover:bg-accent-hover transition-colors cursor-pointer"
+              onClick={(e) => { e.stopPropagation(); if (!disabled) onRun() }}
+              disabled={disabled}
+              className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                disabled
+                  ? 'bg-surface-tertiary text-text-muted cursor-not-allowed'
+                  : 'bg-accent text-white hover:bg-accent-hover cursor-pointer'
+              }`}
+              title={disabled ? 'Script not available — see guidance above' : undefined}
             >
               Run
             </button>
@@ -184,9 +191,15 @@ export function PipelineStep({ step, onRun, onStop, onViewLogs, isRunning, isVie
             <button
               onClick={(e) => {
                 e.stopPropagation()
-                onRun()
+                if (!disabled) onRun()
               }}
-              className="px-4 py-2 rounded-lg bg-accent text-white text-xs font-medium hover:bg-accent-hover transition-colors cursor-pointer"
+              disabled={disabled}
+              className={`px-4 py-2 rounded-lg text-xs font-medium transition-colors ${
+                disabled
+                  ? 'bg-surface-tertiary text-text-muted cursor-not-allowed'
+                  : 'bg-accent text-white hover:bg-accent-hover cursor-pointer'
+              }`}
+              title={disabled ? 'Script not available' : undefined}
             >
               Run
             </button>

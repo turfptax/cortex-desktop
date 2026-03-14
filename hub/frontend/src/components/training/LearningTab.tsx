@@ -451,6 +451,52 @@ export function LearningTab() {
         </div>
       )}
 
+      {/* What's Next — after first successful cycle */}
+      {status && status.total_cycles > 0 && !isLearning && (
+        <div className="bg-accent/5 rounded-xl p-5 border border-accent/20">
+          <h3 className="text-sm font-semibold text-text-primary mb-2 flex items-center gap-2">
+            <span>{'>'}</span> What's Next
+          </h3>
+          <p className="text-xs text-text-secondary mb-3">
+            Learning generated <strong>{status.total_examples} training examples</strong> from your Pi data.
+            These are saved and ready for the next steps in the training pipeline:
+          </p>
+          <div className="space-y-2 text-xs">
+            <div className="flex gap-3 items-start">
+              <span className="bg-surface-tertiary text-text-secondary px-2 py-0.5 rounded text-[10px] font-bold w-6 text-center flex-shrink-0 mt-0.5">02</span>
+              <div>
+                <strong className="text-text-primary">Prepare Dataset</strong>
+                <span className="text-text-muted"> — Converts learned examples + curated examples into a ChatML training dataset that PyTorch can use.</span>
+              </div>
+            </div>
+            <div className="flex gap-3 items-start">
+              <span className="bg-surface-tertiary text-text-secondary px-2 py-0.5 rounded text-[10px] font-bold w-6 text-center flex-shrink-0 mt-0.5">03</span>
+              <div>
+                <strong className="text-text-primary">Train LoRA</strong>
+                <span className="text-text-muted"> — Fine-tunes the base model with a lightweight LoRA adapter. Requires a GPU with PyTorch/CUDA.</span>
+              </div>
+            </div>
+            <div className="flex gap-3 items-start">
+              <span className="bg-surface-tertiary text-text-secondary px-2 py-0.5 rounded text-[10px] font-bold w-6 text-center flex-shrink-0 mt-0.5">04</span>
+              <div>
+                <strong className="text-text-primary">Evaluate</strong>
+                <span className="text-text-muted"> — Compares base vs fine-tuned model to measure improvement (perplexity, response quality).</span>
+              </div>
+            </div>
+            <div className="flex gap-3 items-start">
+              <span className="bg-surface-tertiary text-text-secondary px-2 py-0.5 rounded text-[10px] font-bold w-6 text-center flex-shrink-0 mt-0.5">06</span>
+              <div>
+                <strong className="text-text-primary">Export & Deploy</strong>
+                <span className="text-text-muted"> — Merges the LoRA adapter, converts to GGUF format, and deploys to the Pi.</span>
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-text-muted mt-3">
+            Go to the <strong>Pipeline</strong> tab to run these steps. Steps 02-06 require the cortex-pet-training repo with PyTorch installed.
+          </p>
+        </div>
+      )}
+
       {/* Knowledge Summary */}
       {knowledge && knowledge.summaries.length > 0 && (
         <div className="bg-surface-secondary rounded-xl p-5 border border-border">

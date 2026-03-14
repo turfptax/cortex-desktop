@@ -14,6 +14,45 @@ from services import dataset_manager
 router = APIRouter()
 
 
+@router.get("/availability")
+async def check_availability():
+    """Check if training scripts and tools are available on this machine."""
+    scripts_dir = Path(settings.scripts_dir)
+    training_dir = Path(settings.training_dir)
+    scripts_exist = scripts_dir.exists() and any(scripts_dir.glob("*.py"))
+    has_python = True  # We're running Python, so it exists
+    # Check if this is a PyInstaller bundle (scripts won't work)
+    import sys
+    is_bundled = getattr(sys, '_MEIPASS', None) is not None
+
+    available_steps = {}
+    for step_id, step_info in process_manager.STEPS.items():
+        script_path = scripts_dir / step_info["script"]
+        available_steps[step_id] = {
+            "exists": script_path.exists(),
+            "path": str(script_path),
+        }
+
+    # Check for synthetic examples from learning
+    learned_examples = 0
+    appdata = Path.home() / "AppData" / "Roaming" / "Cortex" / "learning"
+    examples_path = appdata / "synthetic_examples.jsonl"
+    if examples_path.exists():
+        learned_examples = sum(1 for _ in examples_path.open())
+
+    return {
+        "ok": True,
+        "scripts_dir": str(scripts_dir),
+        "scripts_dir_exists": scripts_dir.exists(),
+        "scripts_available": scripts_exist and not is_bundled,
+        "is_bundled": is_bundled,
+        "training_dir": str(training_dir),
+        "training_dir_exists": training_dir.exists(),
+        "available_steps": available_steps,
+        "learned_examples": learned_examples,
+    }
+
+
 class RunStepRequest(BaseModel):
     extra_args: list[str] | None = None
 

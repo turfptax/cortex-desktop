@@ -1,11 +1,21 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useTraining } from '../../hooks/useTraining'
+import { apiFetch } from '../../lib/api'
 import { PipelineStep } from './PipelineStep'
 import { LogViewer } from './LogViewer'
 import { HyperparamEditor } from './HyperparamEditor'
 import { DatasetTab } from './DatasetTab'
 import { AutoResearchPanel } from './AutoResearchPanel'
 import { LearningTab } from './LearningTab'
+
+interface Availability {
+  scripts_available: boolean
+  is_bundled: boolean
+  scripts_dir: string
+  training_dir_exists: boolean
+  available_steps: Record<string, { exists: boolean; path: string }>
+  learned_examples: number
+}
 
 export function TrainingPage() {
   const {
@@ -37,12 +47,21 @@ export function TrainingPage() {
   const [activeTab, setActiveTab] = useState<'learning' | 'pipeline' | 'config' | 'dataset' | 'results' | 'research'>(
     'learning'
   )
+  const [availability, setAvailability] = useState<Availability | null>(null)
+
+  const fetchAvailability = useCallback(async () => {
+    try {
+      const res = await apiFetch<Availability & { ok: boolean }>('/training/availability')
+      if (res?.ok) setAvailability(res)
+    } catch { /* offline */ }
+  }, [])
 
   useEffect(() => {
     fetchSteps()
     fetchConfig()
     fetchResults()
-  }, [fetchSteps, fetchConfig, fetchResults])
+    fetchAvailability()
+  }, [fetchSteps, fetchConfig, fetchResults, fetchAvailability])
 
   return (
     <div className="flex flex-col h-full">
@@ -81,8 +100,58 @@ export function TrainingPage() {
 
         {activeTab === 'pipeline' && (
           <div className="flex flex-col h-full">
+            {/* Workflow explanation */}
+            <div className="p-4 pb-0">
+              <div className="bg-surface-secondary rounded-xl p-4 border border-border mb-4">
+                <h3 className="text-sm font-semibold text-text-primary mb-2">Training Workflow</h3>
+                <p className="text-xs text-text-secondary mb-3">
+                  The full training pipeline turns raw data into a personalized on-device model.
+                  Most users should start with the <strong>Learning</strong> tab to generate training examples,
+                  then come here to prepare the dataset, train, and deploy.
+                </p>
+                <div className="flex flex-wrap gap-1 text-[10px] text-text-muted">
+                  <span className="bg-accent/10 text-accent px-2 py-0.5 rounded">1. Learn</span>
+                  <span className="text-text-muted">{'>'}</span>
+                  <span className="bg-surface-tertiary px-2 py-0.5 rounded">2. Prepare Dataset</span>
+                  <span className="text-text-muted">{'>'}</span>
+                  <span className="bg-surface-tertiary px-2 py-0.5 rounded">3. Train LoRA</span>
+                  <span className="text-text-muted">{'>'}</span>
+                  <span className="bg-surface-tertiary px-2 py-0.5 rounded">4. Evaluate</span>
+                  <span className="text-text-muted">{'>'}</span>
+                  <span className="bg-surface-tertiary px-2 py-0.5 rounded">5. Export & Deploy</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Availability warning for installed exe */}
+            {availability && !availability.scripts_available && (
+              <div className="px-4 pb-2">
+                <div className="bg-warning/10 border border-warning/30 rounded-lg p-4">
+                  <h4 className="text-sm font-semibold text-warning mb-1">Pipeline Scripts Not Available</h4>
+                  <p className="text-xs text-text-secondary mb-2">
+                    {availability.is_bundled
+                      ? 'The training pipeline steps (02-06) require Python with PyTorch/CUDA and must be run from the cortex-pet-training repository, not the installed app.'
+                      : `Scripts directory not found at: ${availability.scripts_dir}`}
+                  </p>
+                  <div className="text-xs text-text-muted space-y-1">
+                    <p><strong>To run the full pipeline:</strong></p>
+                    <ol className="list-decimal list-inside space-y-0.5 ml-2">
+                      <li>Clone the <code className="bg-surface-tertiary px-1 rounded">cortex-pet-training</code> repo</li>
+                      <li>Install dependencies: <code className="bg-surface-tertiary px-1 rounded">pip install -r requirements.txt</code></li>
+                      <li>Run scripts from that directory, or set <code className="bg-surface-tertiary px-1 rounded">CORTEX_HUB_TRAINING_DIR</code></li>
+                    </ol>
+                  </div>
+                  {availability.learned_examples > 0 && (
+                    <p className="text-xs text-accent mt-2">
+                      You have {availability.learned_examples} learned examples ready for training.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Pipeline steps — 3-column grid */}
-            <div className="p-4">
+            <div className="p-4 pt-2">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs text-text-muted">Pipeline Steps</span>
                 {steps.some((s) => s.latest_job?.status === 'running' || s.latest_job?.status === 'failed') && (
@@ -110,6 +179,8 @@ export function TrainingPage() {
                     }
                     isViewingLogs={viewingStepId === step.id}
                     compact
+                    disabled={availability !== null && !availability.scripts_available &&
+                      !(availability.available_steps[step.id]?.exists)}
                   />
                 ))}
               </div>

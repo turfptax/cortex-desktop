@@ -64,44 +64,44 @@ STEPS = {
     "00": {
         "name": "Sync Data",
         "script": "00_sync_data.py",
-        "description": "Pull cortex.db from Pi and export to JSONL",
+        "description": "Pull cortex.db from Pi via SCP and export notes/sessions to JSONL files for training",
         "args": ["--export-only"],
     },
     "01": {
         "name": "Synthesize Notes",
         "script": "01_synthesize_notes.py",
-        "description": "Use LM Studio to generate diverse training data from Pi notes",
+        "description": "Send Pi notes to LM Studio teacher model to generate Q&A training examples (legacy — use Learning tab instead)",
     },
     "02": {
         "name": "Prepare Dataset",
         "script": "02_prepare_dataset.py",
-        "description": "Build ChatML training dataset from interactions, notes, and personality examples",
+        "description": "Combine learned examples, curated examples, and personality data into a ChatML dataset for PyTorch training",
     },
     "03": {
         "name": "Train LoRA",
         "script": "03_train_pet.py",
-        "description": "Fine-tune SmolLM2 with LoRA adapter",
+        "description": "Fine-tune the base model (SmolLM2/Qwen) with a lightweight LoRA adapter using PyTorch — requires GPU with CUDA",
     },
     "04": {
         "name": "Evaluate",
         "script": "04_eval.py",
-        "description": "Compare base vs fine-tuned model responses",
+        "description": "Compare base model vs fine-tuned model on test prompts — measures perplexity and response quality improvement",
         "args": ["--save"],
     },
     "05": {
         "name": "Auto-Research",
         "script": "05_autoresearch.py",
-        "description": "Automated hyperparameter search with ratchet",
+        "description": "Automated hyperparameter search — tries different LoRA ranks, learning rates, etc. to find the best config",
     },
     "07": {
         "name": "Learn Cycle",
         "script": "07_learn_cycle.py",
-        "description": "Pull new data from Pi, synthesize training examples with teacher model",
+        "description": "Pull new data from Pi and synthesize training examples via LM Studio (legacy script — use Learning tab instead)",
     },
     "06": {
         "name": "Export & Deploy",
         "script": "06_export_deploy.py",
-        "description": "Merge adapter into base model, export full GGUF, and deploy to Pi",
+        "description": "Merge LoRA adapter into base model, convert to GGUF format, and deploy the updated model to the Pi via SCP",
         "args": ["--export-only", "--merge"],
     },
     "pong_train": {
