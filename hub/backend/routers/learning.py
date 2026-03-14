@@ -68,19 +68,19 @@ class LearnRequest(BaseModel):
 @router.post("/start")
 async def start_learn_cycle(req: LearnRequest):
     """Start a learn cycle via the process manager."""
-    from services.process_manager import start_job, get_active_jobs
+    from services.process_manager import start_job, _jobs
 
     # Check if already running
-    active = get_active_jobs()
-    for job in active:
-        if job.get("step") == "07" and job.get("status") == "running":
-            return {"ok": False, "error": "Learn cycle already running", "job_id": job["job_id"]}
+    for existing in _jobs.values():
+        d = existing.to_dict()
+        if d.get("step") == "07" and d.get("status") == "running":
+            return {"ok": False, "error": "Learn cycle already running", "job_id": d["job_id"]}
 
-    job_id = await start_job("07")
+    job = await start_job("07")
 
     return {
         "ok": True,
-        "job_id": job_id,
+        "job_id": job.job_id,
         "message": "Learn cycle started",
         "full_pipeline": req.full_pipeline,
     }
