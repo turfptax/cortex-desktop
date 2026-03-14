@@ -431,14 +431,16 @@ def _process_work_item(item: WorkItem, url: str, model: str) -> list[dict]:
     return [_wrap_chatml(p, item.item_type, item.item_id) for p in pairs]
 
 
-# ── Server pool for round-robin dispatch ─────────────────────────
+# ── Server pool with work-stealing ───────────────────────────────
 
 class ServerPool:
-    """Round-robin dispatcher across multiple LM Studio servers."""
+    """Work-stealing pool: workers pull from a shared queue so fast servers
+    naturally process more items than slow ones."""
 
     def __init__(self, servers: list[dict]):
         self.servers: list[dict] = []
         self.total_workers = 0
+        self.server_stats: dict[str, dict] = {}  # url -> {completed, examples, total_time}
 
         for s in servers:
             if not s.get("enabled", True):
@@ -454,69 +456,114 @@ class ServerPool:
                 }
                 self.servers.append(entry)
                 self.total_workers += entry["parallel"]
+                self.server_stats[url] = {
+                    "name": entry["name"],
+                    "model": entry["model"],
+                    "completed": 0,
+                    "examples": 0,
+                    "total_time": 0.0,
+                    "active": 0,
+                    "parallel": entry["parallel"],
+                }
                 logger.info("  Server: %s — model=%s, parallel=%d",
                             entry["name"], entry["model"], entry["parallel"])
 
     def is_empty(self) -> bool:
         return len(self.servers) == 0
 
-    def process_all(self, items: list[WorkItem]) -> list[dict]:
-        """Process all work items in parallel across all servers.
+    def _get_stats_snapshot(self) -> list[dict]:
+        """Return per-server stats for progress reporting."""
+        stats = []
+        for url, s in self.server_stats.items():
+            avg_time = s["total_time"] / s["completed"] if s["completed"] > 0 else 0
+            stats.append({
+                "name": s["name"],
+                "model": s["model"],
+                "completed": s["completed"],
+                "examples": s["examples"],
+                "active": s["active"],
+                "avg_time": round(avg_time, 1),
+                "parallel": s["parallel"],
+            })
+        return stats
 
-        Returns list of ChatML examples.
+    def process_all(self, items: list[WorkItem]) -> list[dict]:
+        """Process all work items via work-stealing across all servers.
+
+        Each server gets N worker threads (its parallel count). Workers
+        pull from a shared queue — fast servers naturally do more work.
         """
         if not items or not self.servers:
             return []
 
+        from queue import Queue
+
+        work_queue: Queue[WorkItem | None] = Queue()
+        for item in items:
+            work_queue.put(item)
+
         all_examples: list[dict] = []
         completed = 0
         total = len(items)
-        examples_lock = threading.Lock()
+        lock = threading.Lock()
 
         _set_progress(phase="synthesizing", completed=0, total=total,
                       examples_so_far=0, servers_active=len(self.servers),
-                      total_workers=self.total_workers)
+                      total_workers=self.total_workers,
+                      server_stats=self._get_stats_snapshot())
 
-        def _do_item(item: WorkItem, url: str, model: str) -> list[dict]:
+        def _worker(url: str, model: str):
             nonlocal completed
-            t0 = time.time()
-            results = _process_work_item(item, url, model)
-            dt = time.time() - t0
-
-            with examples_lock:
-                all_examples.extend(results)
-                completed += 1
-                _set_progress(completed=completed, examples_so_far=len(all_examples))
-
-            if results:
-                logger.info("  [%d/%d] %s id=%s — %d examples (%.1fs) via %s",
-                            completed, total, item.item_type, item.item_id,
-                            len(results), dt, url.split("//")[1].split("/")[0])
-            else:
-                logger.info("  [%d/%d] %s id=%s — no pairs (%.1fs)",
-                            completed, total, item.item_type, item.item_id, dt)
-            return results
-
-        # Build a thread pool sized to total parallel slots across all servers
-        # Assign items round-robin across servers weighted by their parallel count
-        with ThreadPoolExecutor(max_workers=max(self.total_workers, 1)) as pool:
-            futures = []
-            # Create a slot list: each server contributes N slots
-            slots = []
-            for s in self.servers:
-                for _ in range(s["parallel"]):
-                    slots.append((s["url"], s["model"]))
-
-            for i, item in enumerate(items):
-                url, model = slots[i % len(slots)]
-                futures.append(pool.submit(_do_item, item, url, model))
-
-            # Wait for all to complete
-            for f in as_completed(futures):
+            while True:
                 try:
-                    f.result()  # raises if the task raised
-                except Exception as e:
-                    logger.warning("Work item failed: %s", e)
+                    item = work_queue.get_nowait()
+                except Exception:
+                    break  # Queue empty
+
+                # Track active count
+                with lock:
+                    self.server_stats[url]["active"] += 1
+
+                t0 = time.time()
+                results = _process_work_item(item, url, model)
+                dt = time.time() - t0
+
+                with lock:
+                    all_examples.extend(results)
+                    completed += 1
+                    stats = self.server_stats[url]
+                    stats["completed"] += 1
+                    stats["examples"] += len(results)
+                    stats["total_time"] += dt
+                    stats["active"] -= 1
+                    _set_progress(
+                        completed=completed,
+                        examples_so_far=len(all_examples),
+                        server_stats=self._get_stats_snapshot(),
+                    )
+
+                if results:
+                    logger.info("  [%d/%d] %s id=%s — %d ex (%.1fs) via %s",
+                                completed, total, item.item_type, item.item_id,
+                                len(results), dt, stats["name"])
+                else:
+                    logger.info("  [%d/%d] %s id=%s — no pairs (%.1fs) via %s",
+                                completed, total, item.item_type, item.item_id,
+                                dt, stats["name"])
+
+        # Launch N threads per server, all pulling from the same queue
+        threads: list[threading.Thread] = []
+        for s in self.servers:
+            for w in range(s["parallel"]):
+                t = threading.Thread(
+                    target=_worker, args=(s["url"], s["model"]),
+                    daemon=True, name=f"learn-{s['name']}-{w}",
+                )
+                threads.append(t)
+                t.start()
+
+        for t in threads:
+            t.join()
 
         return all_examples
 
