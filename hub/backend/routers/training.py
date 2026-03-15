@@ -62,18 +62,18 @@ async def check_availability():
     appdata = Path.home() / "AppData" / "Roaming" / "Cortex" / "learning"
     examples_path = appdata / "synthetic_examples.jsonl"
     if examples_path.exists():
-        learned_examples = sum(1 for _ in examples_path.open())
+        learned_examples = sum(1 for _ in examples_path.open(encoding="utf-8", errors="ignore"))
 
     # Count other data sources
     synthetic_count = 0
     synth_path = training_dir / "raw_data" / "synthetic_examples.jsonl"
     if synth_path.exists():
-        synthetic_count = sum(1 for _ in synth_path.open())
+        synthetic_count = sum(1 for _ in synth_path.open(encoding="utf-8", errors="ignore"))
 
     curated_count = 0
     curated_path = training_dir / "raw_data" / "curated_examples.jsonl"
     if curated_path.exists():
-        curated_count = sum(1 for _ in curated_path.open())
+        curated_count = sum(1 for _ in curated_path.open(encoding="utf-8", errors="ignore"))
 
     # Scripts are available if they exist AND we can run them
     scripts_available = scripts_exist and has_system_python
