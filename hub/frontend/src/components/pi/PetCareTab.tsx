@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiFetch } from '../../lib/api'
+import { useDreamCycle, type DataSourceOptions } from '../../hooks/useDreamCycle'
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -227,8 +228,22 @@ export function PetCareTab({ isOnline }: Props) {
   const [lastFeedResult, setLastFeedResult] = useState<string | null>(null)
   const [tuckInLoading, setTuckInLoading] = useState(false)
   const [tuckInResult, setTuckInResult] = useState<TuckInResult | null>(null)
-  const [forceTrainLoading, setForceTrainLoading] = useState(false)
-  const [forceTrainResult, setForceTrainResult] = useState<string | null>(null)
+  const [showTrainingOptions, setShowTrainingOptions] = useState(false)
+  const [dataSourceOptions, setDataSourceOptions] = useState<DataSourceOptions>({
+    include_learned: true,
+    include_synthetic: true,
+    include_curated: true,
+    run_learn_cycle: true,
+  })
+
+  // Dream cycle hook
+  const {
+    dreamState,
+    isStarting: forceTrainLoading,
+    error: dreamError,
+    availability,
+    startDream,
+  } = useDreamCycle()
 
   // ── Data fetching ─────────────────────────────────────────
 
@@ -345,20 +360,8 @@ export function PetCareTab({ isOnline }: Props) {
     }
   }
 
-  const handleForceTrain = async () => {
-    setForceTrainLoading(true)
-    setForceTrainResult(null)
-    try {
-      const res = await apiFetch('/pi/pet/force-train', { method: 'POST' })
-      setForceTrainResult(
-        res?.data?.started ? 'Dream training started!' : 'Failed to start'
-      )
-    } catch (err: any) {
-      setForceTrainResult(`Error: ${err.message}`)
-    } finally {
-      setForceTrainLoading(false)
-      setTimeout(() => setForceTrainResult(null), 5000)
-    }
+  const handleForceTrain = () => {
+    startDream(dataSourceOptions)
   }
 
   // ── Render ────────────────────────────────────────────────
@@ -561,7 +564,7 @@ export function PetCareTab({ isOnline }: Props) {
         <div className="grid grid-cols-2 gap-2 mb-2">
           <button
             onClick={handleTuckIn}
-            disabled={tuckInLoading}
+            disabled={tuckInLoading || dreamState.active}
             className="bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 rounded-lg px-3 py-2.5 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
           >
             {tuckInLoading ? 'Tucking in...' : 'Tuck In'}
@@ -571,22 +574,91 @@ export function PetCareTab({ isOnline }: Props) {
           </button>
           <button
             onClick={handleForceTrain}
-            disabled={
-              forceTrainLoading ||
-              (tuckInResult != null &&
-                !tuckInResult.error &&
-                !tuckInResult.hub_available)
-            }
+            disabled={forceTrainLoading || dreamState.active}
             className="bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 rounded-lg px-3 py-2.5 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
           >
-            {forceTrainLoading ? 'Starting...' : 'Force Train'}
+            {forceTrainLoading ? 'Starting...' : dreamState.active ? 'Training...' : 'Force Train'}
             <div className="text-[9px] text-purple-400/60 mt-0.5">
               Bypass cooldown
             </div>
           </button>
         </div>
 
-        {tuckInResult && !tuckInResult.error && (
+        {/* Training Options (collapsible) */}
+        {!dreamState.active && (
+          <div className="mb-2">
+            <button
+              onClick={() => setShowTrainingOptions(!showTrainingOptions)}
+              className="text-[10px] text-text-muted hover:text-text-primary cursor-pointer flex items-center gap-1"
+            >
+              <span className={`transition-transform ${showTrainingOptions ? 'rotate-90' : ''}`}>
+                &#9654;
+              </span>
+              Training Options
+            </button>
+
+            {showTrainingOptions && (
+              <div className="bg-surface-tertiary rounded-lg p-3 mt-1.5 space-y-2">
+                <div className="text-[10px] text-text-muted mb-1">Data Sources</div>
+                {[
+                  {
+                    key: 'run_learn_cycle' as const,
+                    label: 'Run new Learn Cycle',
+                    sub: 'Pull fresh data from Pi + synthesize',
+                    count: null,
+                  },
+                  {
+                    key: 'include_learned' as const,
+                    label: 'Learned examples',
+                    sub: 'From teacher-student synthesis',
+                    count: availability?.learned_examples ?? 0,
+                  },
+                  {
+                    key: 'include_synthetic' as const,
+                    label: 'Synthetic personality',
+                    sub: 'Base personality training data',
+                    count: availability?.synthetic_examples ?? 0,
+                  },
+                  {
+                    key: 'include_curated' as const,
+                    label: 'Curated examples',
+                    sub: 'Hand-picked high-quality pairs',
+                    count: availability?.curated_examples ?? 0,
+                  },
+                ].map(({ key, label, sub, count }) => (
+                  <label
+                    key={key}
+                    className="flex items-start gap-2 cursor-pointer group"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={dataSourceOptions[key]}
+                      onChange={(e) =>
+                        setDataSourceOptions((prev) => ({
+                          ...prev,
+                          [key]: e.target.checked,
+                        }))
+                      }
+                      className="mt-0.5 accent-purple-400"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs text-text-secondary group-hover:text-text-primary">
+                        {label}
+                        {count !== null && (
+                          <span className="text-text-muted ml-1">({count})</span>
+                        )}
+                      </div>
+                      <div className="text-[9px] text-text-muted">{sub}</div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tuck-in readiness checklist */}
+        {tuckInResult && !tuckInResult.error && !dreamState.active && (
           <div className="bg-surface-tertiary rounded-lg p-3 space-y-1.5 text-xs">
             <div className="flex items-center gap-2">
               <span className={tuckInResult.sleeping ? 'text-green-400' : 'text-red-400'}>
@@ -636,12 +708,125 @@ export function PetCareTab({ isOnline }: Props) {
           </div>
         )}
 
-        {tuckInResult?.error && (
+        {tuckInResult?.error && !dreamState.active && (
           <div className="text-xs text-red-400">{tuckInResult.error}</div>
         )}
 
-        {forceTrainResult && (
-          <div className="text-xs text-purple-400 mt-2">{forceTrainResult}</div>
+        {dreamError && !dreamState.active && (
+          <div className="text-xs text-red-400 mt-1">{dreamError}</div>
+        )}
+
+        {/* ── Dream Progress ── */}
+        {(dreamState.active || dreamState.completed_at) && (
+          <div className="bg-surface-tertiary rounded-lg p-4 mt-2 space-y-3">
+            {/* Step progress dots */}
+            <div className="flex items-center gap-1.5">
+              {['00', '07', '02', '03', '04', '06'].map((stepId, i) => {
+                const stepNames: Record<string, string> = {
+                  '00': 'Sync', '07': 'Learn', '02': 'Prepare',
+                  '03': 'Train', '04': 'Evaluate', '06': 'Deploy',
+                }
+                const isCompleted = dreamState.steps_completed.includes(stepId)
+                const isCurrent = dreamState.current_step === stepId
+                const isPending = !isCompleted && !isCurrent
+
+                return (
+                  <div key={stepId} className="flex items-center gap-1.5">
+                    {i > 0 && (
+                      <div className={`w-3 h-[1px] ${isCompleted ? 'bg-green-400/50' : 'bg-border'}`} />
+                    )}
+                    <div className="flex flex-col items-center gap-0.5">
+                      <div
+                        className={`w-5 h-5 rounded-full flex items-center justify-center text-[8px] font-bold transition-all ${
+                          isCompleted
+                            ? 'bg-green-400/20 text-green-400 border border-green-400/40'
+                            : isCurrent
+                            ? 'bg-purple-400/20 text-purple-300 border border-purple-400/40 animate-pulse'
+                            : 'bg-surface-secondary text-text-muted border border-border'
+                        }`}
+                      >
+                        {isCompleted ? '\u2713' : isCurrent ? '\u2022' : ''}
+                      </div>
+                      <span className={`text-[8px] ${
+                        isCurrent ? 'text-purple-300' : isCompleted ? 'text-green-400/70' : 'text-text-muted'
+                      }`}>
+                        {stepNames[stepId]}
+                      </span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Current step label */}
+            {dreamState.active && dreamState.current_step_name && (
+              <div className="flex items-center gap-2">
+                <div className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
+                <span className="text-xs text-purple-300">
+                  {dreamState.current_step_name}...
+                </span>
+              </div>
+            )}
+
+            {/* Errors */}
+            {dreamState.errors.length > 0 && (
+              <div className="space-y-1">
+                {dreamState.errors.map((err, i) => (
+                  <div key={i} className="text-[10px] text-red-400 bg-red-400/5 rounded px-2 py-1">
+                    {err}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Completion metrics */}
+            {!dreamState.active && dreamState.metrics && (
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-green-400">
+                  Dream complete!
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {dreamState.metrics.final_loss != null && (
+                    <div className="bg-surface-secondary rounded px-2 py-1.5 text-center">
+                      <div className="text-sm font-bold text-text-primary">
+                        {Number(dreamState.metrics.final_loss).toFixed(3)}
+                      </div>
+                      <div className="text-[9px] text-text-muted">Loss</div>
+                    </div>
+                  )}
+                  {dreamState.metrics.perplexity_finetuned != null && (
+                    <div className="bg-surface-secondary rounded px-2 py-1.5 text-center">
+                      <div className="text-sm font-bold text-text-primary">
+                        {Number(dreamState.metrics.perplexity_finetuned).toFixed(1)}
+                      </div>
+                      <div className="text-[9px] text-text-muted">Perplexity</div>
+                    </div>
+                  )}
+                  {dreamState.metrics.dataset_size != null && (
+                    <div className="bg-surface-secondary rounded px-2 py-1.5 text-center">
+                      <div className="text-sm font-bold text-text-primary">
+                        {dreamState.metrics.dataset_size}
+                      </div>
+                      <div className="text-[9px] text-text-muted">Examples</div>
+                    </div>
+                  )}
+                </div>
+                {dreamState.metrics.lora_deployed && (
+                  <div className="text-[10px] text-green-400/70">
+                    LoRA adapter deployed to Pi
+                    {dreamState.metrics.llama_restarted && ' &bull; llama-server restarted'}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Completed with no metrics (errors stopped it early) */}
+            {!dreamState.active && !dreamState.metrics && dreamState.errors.length > 0 && (
+              <div className="text-xs text-red-400 font-medium">
+                Dream failed
+              </div>
+            )}
+          </div>
         )}
       </section>
 
