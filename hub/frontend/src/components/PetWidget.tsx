@@ -14,6 +14,7 @@ export interface PetStatus {
   happiness: number
   intelligence: number
   is_coma: boolean
+  is_sleeping: boolean
   total_feeds: number
   total_cleans: number
 }

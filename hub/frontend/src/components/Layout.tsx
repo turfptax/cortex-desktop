@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 import { type Page, type StatusInfo } from '../App'
 import { PetWidget, type PetStatus } from './PetWidget'
 import { DisplayEmulator } from './DisplayEmulator'
@@ -21,6 +21,8 @@ const navItems: { id: Page; label: string; icon: string }[] = [
 ]
 
 export function Layout({ page, setPage, status, petStatus, children }: LayoutProps) {
+  const [useVoxels, setUseVoxels] = useState(false)
+
   return (
     <div className="flex h-screen">
       {/* Sidebar */}
@@ -53,7 +55,14 @@ export function Layout({ page, setPage, status, petStatus, children }: LayoutPro
         <DisplayEmulator
           petStatus={petStatus}
           piOnline={status.piOnline}
+          useVoxels={useVoxels}
         />
+        <button
+          onClick={() => setUseVoxels(v => !v)}
+          className="mx-2 mb-1 px-2 py-0.5 text-[10px] text-text-muted hover:text-accent rounded border border-border hover:border-accent/50 transition-colors cursor-pointer"
+        >
+          {useVoxels ? '🧊 Voxel View' : '🐱 Sprite View'}
+        </button>
 
         {/* Scrollable middle section */}
         <div className="flex-1 overflow-y-auto min-h-0">
