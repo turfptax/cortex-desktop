@@ -30,7 +30,7 @@ interface DatasetStats {
 
 const MOODS = ['', 'happy', 'curious', 'playful', 'sleepy', 'excited', 'calm', 'confused', 'stubborn']
 const STAGES = [1, 2, 3, 4, 5]
-const SOURCES = ['manual', 'approved', 'correction', 'chat', 'synthetic']
+const SOURCES = ['manual', 'approved', 'correction', 'chat', 'synthetic', 'learned']
 
 export function DatasetTab() {
   const [examples, setExamples] = useState<DatasetExample[]>([])
@@ -40,11 +40,11 @@ export function DatasetTab() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [filter, setFilter] = useState<{ source?: string; stage?: number }>({})
 
-  const isSynthetic = filter.source === 'synthetic'
+  const isReadOnly = filter.source === 'synthetic' || filter.source === 'learned'
 
   const fetchData = useCallback(async () => {
     try {
-      const url = filter.source === 'synthetic'
+      const url = (filter.source === 'synthetic' || filter.source === 'learned')
         ? '/training/dataset?source=synthetic'
         : '/training/dataset'
       const data = await apiFetch<{ examples: DatasetExample[]; stats: DatasetStats }>(url)
@@ -71,9 +71,9 @@ export function DatasetTab() {
     }
   }
 
-  // Filter examples — synthetic loads from server, others filter client-side
+  // Filter examples — synthetic/learned loads from server, others filter client-side
   const filtered = examples.filter((ex) => {
-    if (filter.source && filter.source !== 'synthetic' && ex.metadata.source !== filter.source) return false
+    if (filter.source && filter.source !== 'synthetic' && filter.source !== 'learned' && ex.metadata.source !== filter.source) return false
     if (filter.stage && ex.metadata.stage !== filter.stage) return false
     return true
   })
@@ -142,7 +142,7 @@ export function DatasetTab() {
           </span>
         </div>
 
-        {!isSynthetic && (
+        {!isReadOnly && (
           <button
             onClick={() => { setShowForm(!showForm); setEditingId(null) }}
             className="px-3 py-1.5 rounded-md text-xs font-medium bg-accent text-white hover:bg-accent-hover transition-colors cursor-pointer"
@@ -187,7 +187,7 @@ export function DatasetTab() {
               setEditingId(null)
               fetchData()
             }}
-            readOnly={isSynthetic}
+            readOnly={isReadOnly}
           />
         ))}
       </div>
@@ -306,6 +306,7 @@ function SourceBadge({ source }: { source: string }) {
     correction: 'bg-warning/15 text-warning',
     chat: 'bg-surface-tertiary text-text-secondary',
     synthetic: 'bg-purple-500/15 text-purple-400',
+    learned: 'bg-emerald-500/15 text-emerald-400',
   }
   return (
     <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${colors[source] || colors.chat}`}>
