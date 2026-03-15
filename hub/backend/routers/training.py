@@ -482,6 +482,68 @@ async def start_dream_cycle(req: DreamCycleRequest):
         except Exception:
             pass
 
+        # ── Deploy LoRA adapter to Pi ─────────────────────────────────
+        PI_SSH = f"turfptax@{req.pi_ip}"
+        PI_LORA_DIR = "/home/turfptax/models/pet-lora"
+        lora_dir = training_dir / "models" / "pet-lora"
+
+        if lora_dir.exists() and not results["errors"]:
+            try:
+                subprocess.run(
+                    ["ssh", "-o", "StrictHostKeyChecking=no",
+                     "-o", "ConnectTimeout=10",
+                     PI_SSH, f"mkdir -p {PI_LORA_DIR}"],
+                    timeout=15, capture_output=True,
+                )
+
+                lora_files = list(lora_dir.glob("adapter_*")) + \
+                    list(lora_dir.glob("*.json"))
+                for fpath in lora_files:
+                    scp_result = subprocess.run(
+                        ["scp", "-o", "StrictHostKeyChecking=no",
+                         str(fpath), f"{PI_SSH}:{PI_LORA_DIR}/"],
+                        timeout=120, capture_output=True, text=True,
+                    )
+                    if scp_result.returncode != 0:
+                        results["errors"].append(
+                            f"SCP {fpath.name} failed: {scp_result.stderr[:200]}"
+                        )
+                        break
+
+                if not results["errors"]:
+                    results["steps_completed"].append("lora_deploy")
+                    training_metrics["lora_deployed"] = True
+
+                    restart_cmd = (
+                        "sudo systemctl stop llama-server && "
+                        "sudo bash -c '"
+                        "/usr/local/bin/llama-server "
+                        "-m /home/turfptax/models/qwen3.5-0.8b-q4_k_m.gguf "
+                        f"--lora {PI_LORA_DIR}/adapter_model.safetensors "
+                        "--host 127.0.0.1 --port 8081 "
+                        "-ngl 0 -c 2048 --temp 0.7 "
+                        "> /tmp/llama-server.log 2>&1 &'"
+                    )
+                    restart_result = subprocess.run(
+                        ["ssh", "-o", "StrictHostKeyChecking=no",
+                         "-o", "ConnectTimeout=10",
+                         PI_SSH, restart_cmd],
+                        timeout=30, capture_output=True, text=True,
+                    )
+                    if restart_result.returncode != 0:
+                        results["errors"].append(
+                            f"llama-server restart failed: "
+                            f"{restart_result.stderr[:200]}"
+                        )
+                    else:
+                        results["steps_completed"].append("llama_restart")
+                        training_metrics["llama_restarted"] = True
+
+            except subprocess.TimeoutExpired:
+                results["errors"].append("LoRA deploy timed out")
+            except Exception as e:
+                results["errors"].append(f"LoRA deploy error: {e}")
+
         # Notify Pi that dream is complete
         try:
             import urllib.request
