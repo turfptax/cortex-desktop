@@ -152,6 +152,18 @@ async def pet_training_history():
     return await pi_client.send_command_parsed("pet_training_history")
 
 
+@router.post("/pet/tuck-in")
+async def pet_tuck_in():
+    """Tuck the pet in — put to sleep and check training readiness."""
+    return await pi_client.send_command_parsed("tuck_in")
+
+
+@router.post("/pet/force-train")
+async def pet_force_train():
+    """Force-trigger a dream training cycle, bypassing cooldown and interaction checks."""
+    return await pi_client.send_command_parsed("force_train")
+
+
 @router.post("/notes")
 async def send_note(req: NoteRequest):
     """Send a note to the Pi."""

@@ -10,8 +10,21 @@ interface Vitals {
   happiness: number
   intelligence: number
   is_coma: boolean
+  is_sleeping?: boolean
   total_feeds: number
   total_cleans: number
+}
+
+interface TuckInResult {
+  sleeping: boolean
+  hub_ip: string | null
+  hub_available: boolean
+  new_interactions: number
+  min_interactions: number
+  interactions_ready: boolean
+  cooldown_ok: boolean
+  dream_ready: boolean
+  error?: string
 }
 
 interface IntelligenceBreakdown {
@@ -212,6 +225,10 @@ export function PetCareTab({ isOnline }: Props) {
   const [cleanLoading, setCleanLoading] = useState(false)
   const [historyHours, setHistoryHours] = useState(24)
   const [lastFeedResult, setLastFeedResult] = useState<string | null>(null)
+  const [tuckInLoading, setTuckInLoading] = useState(false)
+  const [tuckInResult, setTuckInResult] = useState<TuckInResult | null>(null)
+  const [forceTrainLoading, setForceTrainLoading] = useState(false)
+  const [forceTrainResult, setForceTrainResult] = useState<string | null>(null)
 
   // ── Data fetching ─────────────────────────────────────────
 
@@ -314,6 +331,36 @@ export function PetCareTab({ isOnline }: Props) {
     }
   }
 
+  const handleTuckIn = async () => {
+    setTuckInLoading(true)
+    setTuckInResult(null)
+    try {
+      const res = await apiFetch('/pi/pet/tuck-in', { method: 'POST' })
+      setTuckInResult(res?.data ?? { error: 'No response' })
+      await fetchVitals()
+    } catch (err: any) {
+      setTuckInResult({ error: err.message } as TuckInResult)
+    } finally {
+      setTuckInLoading(false)
+    }
+  }
+
+  const handleForceTrain = async () => {
+    setForceTrainLoading(true)
+    setForceTrainResult(null)
+    try {
+      const res = await apiFetch('/pi/pet/force-train', { method: 'POST' })
+      setForceTrainResult(
+        res?.data?.started ? 'Dream training started!' : 'Failed to start'
+      )
+    } catch (err: any) {
+      setForceTrainResult(`Error: ${err.message}`)
+    } finally {
+      setForceTrainLoading(false)
+      setTimeout(() => setForceTrainResult(null), 5000)
+    }
+  }
+
   // ── Render ────────────────────────────────────────────────
 
   if (!isOnline) {
@@ -377,7 +424,7 @@ export function PetCareTab({ isOnline }: Props) {
               <StatBox label="Cleans" value={vitals.total_cleans ?? 0} />
               <StatBox
                 label="Status"
-                value={vitals.is_coma ? 'COMA' : 'Awake'}
+                value={vitals.is_coma ? 'COMA' : vitals.is_sleeping ? 'Asleep' : 'Awake'}
               />
             </div>
           </div>
@@ -502,6 +549,99 @@ export function PetCareTab({ isOnline }: Props) {
           >
             {cleanLoading ? 'Cleaning...' : 'Quick Clean'}
           </button>
+        )}
+      </section>
+
+      {/* ── Sleep & Training ── */}
+      <section>
+        <h3 className="text-sm font-semibold text-text-primary mb-3">
+          Sleep & Training
+        </h3>
+
+        <div className="grid grid-cols-2 gap-2 mb-2">
+          <button
+            onClick={handleTuckIn}
+            disabled={tuckInLoading}
+            className="bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 rounded-lg px-3 py-2.5 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
+          >
+            {tuckInLoading ? 'Tucking in...' : 'Tuck In'}
+            <div className="text-[9px] text-indigo-400/60 mt-0.5">
+              Sleep + check readiness
+            </div>
+          </button>
+          <button
+            onClick={handleForceTrain}
+            disabled={
+              forceTrainLoading ||
+              (tuckInResult != null &&
+                !tuckInResult.error &&
+                !tuckInResult.hub_available)
+            }
+            className="bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 rounded-lg px-3 py-2.5 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
+          >
+            {forceTrainLoading ? 'Starting...' : 'Force Train'}
+            <div className="text-[9px] text-purple-400/60 mt-0.5">
+              Bypass cooldown
+            </div>
+          </button>
+        </div>
+
+        {tuckInResult && !tuckInResult.error && (
+          <div className="bg-surface-tertiary rounded-lg p-3 space-y-1.5 text-xs">
+            <div className="flex items-center gap-2">
+              <span className={tuckInResult.sleeping ? 'text-green-400' : 'text-red-400'}>
+                {tuckInResult.sleeping ? '\u2713' : '\u2717'}
+              </span>
+              <span className="text-text-secondary">Pet is sleeping</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={tuckInResult.hub_available ? 'text-green-400' : 'text-red-400'}>
+                {tuckInResult.hub_available ? '\u2713' : '\u2717'}
+              </span>
+              <span className="text-text-secondary">
+                Hub reachable{' '}
+                {tuckInResult.hub_ip ? `(${tuckInResult.hub_ip})` : '(no IP)'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span
+                className={
+                  tuckInResult.interactions_ready
+                    ? 'text-green-400'
+                    : 'text-yellow-400'
+                }
+              >
+                {tuckInResult.interactions_ready ? '\u2713' : '\u25cb'}
+              </span>
+              <span className="text-text-secondary">
+                Interactions: {tuckInResult.new_interactions}/
+                {tuckInResult.min_interactions}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span
+                className={
+                  tuckInResult.cooldown_ok ? 'text-green-400' : 'text-yellow-400'
+                }
+              >
+                {tuckInResult.cooldown_ok ? '\u2713' : '\u25cb'}
+              </span>
+              <span className="text-text-secondary">Cooldown clear</span>
+            </div>
+            {tuckInResult.dream_ready && (
+              <div className="text-green-400 font-medium mt-1">
+                Ready to dream!
+              </div>
+            )}
+          </div>
+        )}
+
+        {tuckInResult?.error && (
+          <div className="text-xs text-red-400">{tuckInResult.error}</div>
+        )}
+
+        {forceTrainResult && (
+          <div className="text-xs text-purple-400 mt-2">{forceTrainResult}</div>
         )}
       </section>
 
