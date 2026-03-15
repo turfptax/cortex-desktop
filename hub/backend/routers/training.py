@@ -20,6 +20,20 @@ from services import dataset_manager
 
 router = APIRouter()
 
+# ── Dream cycle state (polled by frontend) ─────────────────────────
+_dream_state = {
+    "active": False,
+    "current_step": None,
+    "current_step_name": None,
+    "steps_completed": [],
+    "steps_total": 6,
+    "errors": [],
+    "started_at": None,
+    "completed_at": None,
+    "metrics": None,
+    "trigger": None,
+}
+
 
 @router.get("/availability")
 async def check_availability():
@@ -50,6 +64,17 @@ async def check_availability():
     if examples_path.exists():
         learned_examples = sum(1 for _ in examples_path.open())
 
+    # Count other data sources
+    synthetic_count = 0
+    synth_path = training_dir / "raw_data" / "synthetic_examples.jsonl"
+    if synth_path.exists():
+        synthetic_count = sum(1 for _ in synth_path.open())
+
+    curated_count = 0
+    curated_path = training_dir / "raw_data" / "curated_examples.jsonl"
+    if curated_path.exists():
+        curated_count = sum(1 for _ in curated_path.open())
+
     # Scripts are available if they exist AND we can run them
     scripts_available = scripts_exist and has_system_python
 
@@ -64,6 +89,8 @@ async def check_availability():
         "training_dir_exists": training_dir.exists(),
         "available_steps": available_steps,
         "learned_examples": learned_examples,
+        "synthetic_examples": synthetic_count,
+        "curated_examples": curated_count,
     }
 
 
@@ -361,6 +388,17 @@ class DreamCycleRequest(BaseModel):
     pi_ip: str = "10.0.0.25"
     pi_port: int = 8420
     trigger: str = "sleep_dream"
+    # Data source options
+    include_learned: bool = True
+    include_synthetic: bool = True
+    include_curated: bool = True
+    run_learn_cycle: bool = True
+
+
+@router.get("/dream-status")
+async def dream_status():
+    """Return current dream cycle status for frontend polling."""
+    return _dream_state
 
 
 @router.post("/dream-cycle")
@@ -380,10 +418,22 @@ async def start_dream_cycle(req: DreamCycleRequest):
         import subprocess
         import sys
         from pathlib import Path
+        from datetime import datetime, timezone
 
         scripts_dir = Path(settings.scripts_dir)
         training_dir = Path(settings.training_dir)
         results = {"steps_completed": [], "errors": []}
+
+        # Initialize dream state
+        _dream_state["active"] = True
+        _dream_state["started_at"] = datetime.now(timezone.utc).isoformat()
+        _dream_state["completed_at"] = None
+        _dream_state["steps_completed"] = []
+        _dream_state["errors"] = []
+        _dream_state["metrics"] = None
+        _dream_state["trigger"] = req.trigger
+        _dream_state["current_step"] = None
+        _dream_state["current_step_name"] = None
 
         # Record old intelligence for delta reporting
         old_intelligence = 0
@@ -419,15 +469,29 @@ async def start_dream_cycle(req: DreamCycleRequest):
             ("06", "Export & Deploy", ["--merge"]),
         ]
 
+        # Skip learn cycle if not requested
+        if not req.run_learn_cycle:
+            dream_steps = [
+                s for s in dream_steps if s[0] != "07"
+            ]
+
+        _dream_state["steps_total"] = len(dream_steps)
+
         for step_id, step_name, extra_args in dream_steps:
+            _dream_state["current_step"] = step_id
+            _dream_state["current_step_name"] = step_name
+
             step_info = process_manager.STEPS.get(step_id)
             if not step_info:
                 results["errors"].append(f"Unknown step: {step_id}")
+                _dream_state["errors"].append(f"Unknown step: {step_id}")
                 continue
 
             script_path = scripts_dir / step_info["script"]
             if not script_path.exists():
                 results["errors"].append(
+                    f"Script not found: {step_info['script']}")
+                _dream_state["errors"].append(
                     f"Script not found: {step_info['script']}")
                 continue
 
@@ -445,19 +509,24 @@ async def start_dream_cycle(req: DreamCycleRequest):
                 )
                 if result.returncode == 0:
                     results["steps_completed"].append(step_id)
+                    _dream_state["steps_completed"].append(step_id)
                 else:
-                    results["errors"].append(
+                    err_msg = (
                         f"Step {step_id} ({step_name}) failed: "
                         f"{result.stderr[:500]}"
                     )
+                    results["errors"].append(err_msg)
+                    _dream_state["errors"].append(err_msg)
                     break  # Stop pipeline on failure
             except subprocess.TimeoutExpired:
-                results["errors"].append(
-                    f"Step {step_id} ({step_name}) timed out")
+                err_msg = f"Step {step_id} ({step_name}) timed out"
+                results["errors"].append(err_msg)
+                _dream_state["errors"].append(err_msg)
                 break
             except Exception as e:
-                results["errors"].append(
-                    f"Step {step_id} ({step_name}) error: {e}")
+                err_msg = f"Step {step_id} ({step_name}) error: {e}"
+                results["errors"].append(err_msg)
+                _dream_state["errors"].append(err_msg)
                 break
 
         # Read training results
@@ -570,6 +639,13 @@ async def start_dream_cycle(req: DreamCycleRequest):
                 resp.read()
         except Exception as e:
             results["errors"].append(f"Failed to notify Pi: {e}")
+
+        # Finalize dream state
+        _dream_state["active"] = False
+        _dream_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+        _dream_state["metrics"] = training_metrics
+        _dream_state["current_step"] = None
+        _dream_state["current_step_name"] = None
 
     # Launch dream in background thread
     thread = threading.Thread(target=_run_dream, daemon=True,
