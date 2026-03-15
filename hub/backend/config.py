@@ -17,9 +17,8 @@ class Settings(BaseSettings):
     pi_password: str = "cortex"
 
     # Training pipeline paths
-    training_dir: str = str(
-        Path(__file__).resolve().parent.parent.parent / "cortex-pet-training"
-    )
+    # Priority: env var CORTEX_HUB_TRAINING_DIR > embedded training/ > sibling cortex-pet-training/
+    training_dir: str = ""
     scripts_dir: str = ""
     training_config_path: str = ""
 
@@ -31,11 +30,30 @@ class Settings(BaseSettings):
         env_prefix = "CORTEX_HUB_"
 
     def model_post_init(self, __context):
+        if not self.training_dir:
+            self.training_dir = str(self._find_training_dir())
         training = Path(self.training_dir)
         if not self.scripts_dir:
             self.scripts_dir = str(training / "scripts")
         if not self.training_config_path:
             self.training_config_path = str(training / "config" / "settings.json")
+
+    @staticmethod
+    def _find_training_dir() -> Path:
+        """Find training dir: embedded training/ > sibling cortex-pet-training/."""
+        import sys
+        # In PyInstaller bundle, check next to the exe
+        if getattr(sys, '_MEIPASS', None):
+            bundle_dir = Path(sys._MEIPASS) / "training"
+            if bundle_dir.exists() and any(bundle_dir.glob("scripts/*.py")):
+                return bundle_dir
+        # Embedded in repo: cortex-desktop/training/
+        embedded = Path(__file__).resolve().parent.parent.parent / "training"
+        if embedded.exists() and any(embedded.glob("scripts/*.py")):
+            return embedded
+        # Legacy: sibling cortex-pet-training/ repo
+        sibling = Path(__file__).resolve().parent.parent.parent / "cortex-pet-training"
+        return sibling
 
     @property
     def pi_base_url(self) -> str:

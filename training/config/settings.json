@@ -1,0 +1,52 @@
+{
+  "pi": {
+    "user": "turfptax",
+    "host": "10.0.0.25",
+    "db_remote_path": "/home/turfptax/cortex.db",
+    "model_deploy_dir": "/home/turfptax/models",
+    "config_path": "/home/turfptax/cortex-core/src/config.py",
+    "service_name": "cortex-core"
+  },
+  "model": {
+    "base_model": "Qwen/Qwen3.5-0.8B",
+    "max_seq_length": 2048,
+    "dtype": "float16"
+  },
+  "lora": {
+    "r": 16,
+    "alpha": 32,
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj"
+    ],
+    "dropout": 0.05,
+    "bias": "none"
+  },
+  "training": {
+    "epochs": 3,
+    "batch_size": 4,
+    "gradient_accumulation_steps": 4,
+    "learning_rate": 0.0002,
+    "warmup_steps": 10,
+    "weight_decay": 0.01,
+    "logging_steps": 5,
+    "save_strategy": "epoch",
+    "fp16": true
+  },
+  "data": {
+    "min_response_tokens": 1,
+    "test_split": 0.1,
+    "max_interactions": null,
+    "include_notes": true,
+    "include_personality": true,
+    "include_synthetic": true
+  },
+  "lmstudio": {
+    "url": "http://10.0.0.102:1234/v1",
+    "examples_per_note": 3,
+    "temperature": 0.8,
+    "max_tokens": 2048
+  }
+}

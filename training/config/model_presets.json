@@ -1,0 +1,54 @@
+{
+  "presets": {
+    "HuggingFaceTB/SmolLM2-135M-Instruct": {
+      "name": "SmolLM2 135M",
+      "params": "135M",
+      "lora_target_modules": ["q_proj", "v_proj"],
+      "max_seq_length": 2048,
+      "recommended_lora_r": 16,
+      "recommended_lora_alpha": 32,
+      "dtype": "float16",
+      "notes": "Tiny model, fast training. Good for experimentation."
+    },
+    "Qwen/Qwen2.5-0.5B-Instruct": {
+      "name": "Qwen 2.5 0.5B",
+      "params": "0.5B",
+      "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
+      "max_seq_length": 2048,
+      "recommended_lora_r": 16,
+      "recommended_lora_alpha": 32,
+      "dtype": "float16",
+      "notes": "Small but capable. Good balance of quality and speed."
+    },
+    "Qwen/Qwen2.5-1.5B-Instruct": {
+      "name": "Qwen 2.5 1.5B",
+      "params": "1.5B",
+      "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
+      "max_seq_length": 2048,
+      "recommended_lora_r": 32,
+      "recommended_lora_alpha": 64,
+      "dtype": "float16",
+      "notes": "Larger model, better quality. Needs more VRAM (~4GB)."
+    },
+    "Qwen/Qwen3.5-0.8B": {
+      "name": "Qwen 3.5 0.8B",
+      "params": "0.8B",
+      "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
+      "max_seq_length": 2048,
+      "recommended_lora_r": 16,
+      "recommended_lora_alpha": 32,
+      "dtype": "float16",
+      "notes": "Qwen3.5 series. Currently running on Orange Pi via llama-server (GGUF Q4_K_M)."
+    },
+    "HuggingFaceTB/SmolLM2-360M-Instruct": {
+      "name": "SmolLM2 360M",
+      "params": "360M",
+      "lora_target_modules": ["q_proj", "v_proj"],
+      "max_seq_length": 2048,
+      "recommended_lora_r": 16,
+      "recommended_lora_alpha": 32,
+      "dtype": "float16",
+      "notes": "Medium SmolLM2 variant. Still fast to train."
+    }
+  }
+}

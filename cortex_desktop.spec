@@ -29,6 +29,21 @@ if FRONTEND_DIST.is_dir():
 if ASSETS_DIR.is_dir():
     datas.append((str(ASSETS_DIR), "assets"))
 
+# Training scripts (embedded pipeline)
+TRAINING_DIR = ROOT / "training"
+if TRAINING_DIR.is_dir():
+    for py_file in (TRAINING_DIR / "scripts").rglob("*.py"):
+        rel = py_file.relative_to(TRAINING_DIR)
+        dest = Path("training") / rel.parent
+        datas.append((str(py_file), str(dest)))
+    for cfg_file in (TRAINING_DIR / "config").rglob("*.json"):
+        rel = cfg_file.relative_to(TRAINING_DIR)
+        dest = Path("training") / rel.parent
+        datas.append((str(cfg_file), str(dest)))
+    req = TRAINING_DIR / "requirements.txt"
+    if req.exists():
+        datas.append((str(req), "training"))
+
 
 a = Analysis(
     [str(ROOT / "cortex_desktop" / "app.py")],
