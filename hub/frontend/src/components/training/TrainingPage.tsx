@@ -11,6 +11,7 @@ import { LearningTab } from './LearningTab'
 interface Availability {
   scripts_available: boolean
   is_bundled: boolean
+  has_system_python: boolean
   scripts_dir: string
   training_dir_exists: boolean
   available_steps: Record<string, { exists: boolean; path: string }>
@@ -123,22 +124,25 @@ export function TrainingPage() {
               </div>
             </div>
 
-            {/* Availability warning for installed exe */}
+            {/* Availability warning */}
             {availability && !availability.scripts_available && (
               <div className="px-4 pb-2">
                 <div className="bg-warning/10 border border-warning/30 rounded-lg p-4">
                   <h4 className="text-sm font-semibold text-warning mb-1">Pipeline Scripts Not Available</h4>
                   <p className="text-xs text-text-secondary mb-2">
-                    {availability.is_bundled
-                      ? 'The training pipeline steps (02-06) require Python with PyTorch/CUDA and must be run from the cortex-pet-training repository, not the installed app.'
-                      : `Scripts directory not found at: ${availability.scripts_dir}`}
+                    {!availability.training_dir_exists
+                      ? `Scripts directory not found. Set CORTEX_HUB_TRAINING_DIR to your cortex-pet-training folder.`
+                      : availability.is_bundled && !availability.has_system_python
+                      ? 'Python not found on PATH. Install Python and ensure it\'s accessible from the command line.'
+                      : 'The training pipeline steps require Python with PyTorch/CUDA.'}
                   </p>
                   <div className="text-xs text-text-muted space-y-1">
-                    <p><strong>To run the full pipeline:</strong></p>
+                    <p><strong>Setup:</strong></p>
                     <ol className="list-decimal list-inside space-y-0.5 ml-2">
                       <li>Clone the <code className="bg-surface-tertiary px-1 rounded">cortex-pet-training</code> repo</li>
                       <li>Install dependencies: <code className="bg-surface-tertiary px-1 rounded">pip install -r requirements.txt</code></li>
-                      <li>Run scripts from that directory, or set <code className="bg-surface-tertiary px-1 rounded">CORTEX_HUB_TRAINING_DIR</code></li>
+                      <li>Set env var: <code className="bg-surface-tertiary px-1 rounded">CORTEX_HUB_TRAINING_DIR=C:\path\to\cortex-pet-training</code></li>
+                      <li>Restart CortexHub</li>
                     </ol>
                   </div>
                   {availability.learned_examples > 0 && (

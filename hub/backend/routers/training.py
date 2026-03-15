@@ -20,10 +20,13 @@ async def check_availability():
     scripts_dir = Path(settings.scripts_dir)
     training_dir = Path(settings.training_dir)
     scripts_exist = scripts_dir.exists() and any(scripts_dir.glob("*.py"))
-    has_python = True  # We're running Python, so it exists
-    # Check if this is a PyInstaller bundle (scripts won't work)
-    import sys
+    # Check if this is a PyInstaller bundle
+    import sys, shutil
     is_bundled = getattr(sys, '_MEIPASS', None) is not None
+    # In bundled mode, we need a system Python on PATH to run scripts
+    has_system_python = (
+        shutil.which("python") is not None or shutil.which("python3") is not None
+    ) if is_bundled else True
 
     available_steps = {}
     for step_id, step_info in process_manager.STEPS.items():
@@ -40,12 +43,16 @@ async def check_availability():
     if examples_path.exists():
         learned_examples = sum(1 for _ in examples_path.open())
 
+    # Scripts are available if they exist AND we can run them
+    scripts_available = scripts_exist and has_system_python
+
     return {
         "ok": True,
         "scripts_dir": str(scripts_dir),
         "scripts_dir_exists": scripts_dir.exists(),
-        "scripts_available": scripts_exist and not is_bundled,
+        "scripts_available": scripts_available,
         "is_bundled": is_bundled,
+        "has_system_python": has_system_python,
         "training_dir": str(training_dir),
         "training_dir_exists": training_dir.exists(),
         "available_steps": available_steps,
