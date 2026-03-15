@@ -252,10 +252,16 @@ async def check_update():
             f"cd {_PI_CORE_DIR} && git describe --tags --exact-match 2>/dev/null || echo ''"
         )
 
+        # Get current commit message
+        _, current_message, _ = _ssh_run(
+            f"cd {_PI_CORE_DIR} && git log -1 --format=%s"
+        )
+
         return {
-            "available": current_hash != remote_hash,
+            "update_available": current_hash != remote_hash,
             "current_commit": current_hash[:8],
-            "remote_commit": remote_hash[:8],
+            "latest_commit": remote_hash[:8],
+            "current_message": current_message or "",
             "current_tag": current_tag or None,
             "branch": current_branch,
             "changelog": changelog,
