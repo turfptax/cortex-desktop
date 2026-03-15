@@ -547,6 +547,8 @@ async def start_dream_cycle(req: DreamCycleRequest):
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         env=env,
                     )
                     stderr_lines = []
