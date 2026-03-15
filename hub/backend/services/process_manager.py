@@ -230,8 +230,19 @@ async def start_job(step: str, extra_args: list[str] | None = None) -> Job:
     _jobs[job_id] = job
     _subscribers[job_id] = []
 
-    # Build command
-    cmd = [sys.executable, "-u", str(script_path)]
+    # Build command — find a real Python interpreter
+    # In PyInstaller bundle, sys.executable is the exe, not Python
+    if getattr(sys, '_MEIPASS', None):
+        # Try to find system Python
+        import shutil
+        python_exe = shutil.which("python") or shutil.which("python3")
+        if not python_exe:
+            raise RuntimeError(
+                "Cannot find Python interpreter. Install Python and ensure it's on PATH."
+            )
+    else:
+        python_exe = sys.executable
+    cmd = [python_exe, "-u", str(script_path)]
     default_args = step_info.get("args", [])
     cmd.extend(default_args)
     if extra_args:
