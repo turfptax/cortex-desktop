@@ -32,6 +32,7 @@ _dream_state = {
     "completed_at": None,
     "metrics": None,
     "trigger": None,
+    "progress": None,  # {epoch, total_epochs, loss, step, total_steps, pct, elapsed_s}
 }
 
 
@@ -501,6 +502,14 @@ async def start_dream_cycle(req: DreamCycleRequest):
 
             _dream_state["steps_total"] = len(dream_steps)
 
+            # Read training epochs for progress calculation
+            train_cfg_epochs = None
+            try:
+                tcfg = settings.load_training_config()
+                train_cfg_epochs = tcfg.get("training", {}).get("epochs", 3)
+            except Exception:
+                train_cfg_epochs = 3
+
             for step_id, step_name, extra_args in dream_steps:
                 _dream_state["current_step"] = step_id
                 _dream_state["current_step_name"] = step_name
@@ -528,27 +537,88 @@ async def start_dream_cycle(req: DreamCycleRequest):
                 env["PYTHONIOENCODING"] = "utf-8"
                 env["PYTHONUTF8"] = "1"
 
+                # Reset progress for this step
+                _dream_state["progress"] = None
+
                 try:
-                    result = subprocess.run(
+                    proc = subprocess.Popen(
                         cmd_args,
                         cwd=str(training_dir),
-                        capture_output=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
                         text=True,
-                        timeout=3600,  # 1 hour max per step
                         env=env,
                     )
-                    if result.returncode == 0:
+                    stderr_lines = []
+                    step_start = time.time()
+
+                    # Stream output line-by-line, parse training progress
+                    for line in proc.stdout:
+                        line = line.rstrip()
+                        stderr_lines.append(line)
+                        # Keep last 100 lines for error reporting
+                        if len(stderr_lines) > 100:
+                            stderr_lines.pop(0)
+
+                        # Parse HuggingFace Trainer log lines:
+                        #   {'loss': 0.42, 'grad_norm': 1.2, 'learning_rate': 0.0001, 'epoch': 1.5}
+                        if step_id == "03" and "'loss'" in line:
+                            try:
+                                import ast
+                                # Find the dict in the line
+                                start = line.index("{")
+                                end = line.index("}") + 1
+                                log_dict = ast.literal_eval(line[start:end])
+                                progress = {
+                                    "loss": round(log_dict.get("loss", 0), 4),
+                                    "epoch": round(log_dict.get("epoch", 0), 2),
+                                    "learning_rate": log_dict.get("learning_rate"),
+                                    "elapsed_s": round(time.time() - step_start, 1),
+                                }
+                                # Parse total epochs from config
+                                total_epochs = train_cfg_epochs
+                                if total_epochs:
+                                    progress["total_epochs"] = total_epochs
+                                    progress["pct"] = round(
+                                        log_dict.get("epoch", 0) / total_epochs * 100, 1
+                                    )
+                                _dream_state["progress"] = progress
+                            except Exception:
+                                pass
+
+                        # Parse tqdm progress bars (fallback):
+                        #   30%|███       | 30/100 [05:00<10:00]
+                        elif step_id == "03" and "%" in line and "|" in line:
+                            try:
+                                import re as _re
+                                m = _re.search(r"(\d+)%\|", line)
+                                if m:
+                                    pct = int(m.group(1))
+                                    cur_progress = _dream_state.get("progress") or {}
+                                    cur_progress["pct"] = pct
+                                    cur_progress["elapsed_s"] = round(
+                                        time.time() - step_start, 1
+                                    )
+                                    _dream_state["progress"] = cur_progress
+                            except Exception:
+                                pass
+
+                    proc.wait(timeout=3600)
+
+                    if proc.returncode == 0:
                         results["steps_completed"].append(step_id)
                         _dream_state["steps_completed"].append(step_id)
                     else:
+                        last_output = "\n".join(stderr_lines[-10:])
                         err_msg = (
                             f"Step {step_id} ({step_name}) failed: "
-                            f"{result.stderr[:500]}"
+                            f"{last_output[:500]}"
                         )
                         results["errors"].append(err_msg)
                         _dream_state["errors"].append(err_msg)
                         break  # Stop pipeline on failure
                 except subprocess.TimeoutExpired:
+                    proc.kill()
                     err_msg = f"Step {step_id} ({step_name}) timed out"
                     results["errors"].append(err_msg)
                     _dream_state["errors"].append(err_msg)
@@ -558,6 +628,8 @@ async def start_dream_cycle(req: DreamCycleRequest):
                     results["errors"].append(err_msg)
                     _dream_state["errors"].append(err_msg)
                     break
+                finally:
+                    _dream_state["progress"] = None
 
             # Read training results
             training_metrics = {"old_intelligence": old_intelligence}
