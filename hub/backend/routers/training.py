@@ -401,6 +401,17 @@ async def dream_status():
     return _dream_state
 
 
+@router.post("/dream-reset")
+async def dream_reset():
+    """Reset stuck dream state (e.g. after a crash)."""
+    _dream_state["active"] = False
+    _dream_state["current_step"] = None
+    _dream_state["current_step_name"] = None
+    _dream_state["completed_at"] = None
+    _dream_state["errors"] = []
+    return {"ok": True}
+
+
 @router.post("/dream-cycle")
 async def start_dream_cycle(req: DreamCycleRequest):
     """Orchestrated dream training cycle triggered by Pi during sleep.
@@ -417,12 +428,25 @@ async def start_dream_cycle(req: DreamCycleRequest):
         import time
         import subprocess
         import sys
+        import shutil
+        import os
         from pathlib import Path
         from datetime import datetime, timezone
 
         scripts_dir = Path(settings.scripts_dir)
         training_dir = Path(settings.training_dir)
         results = {"steps_completed": [], "errors": []}
+
+        # Find a real Python interpreter (PyInstaller bundle uses the exe)
+        if getattr(sys, '_MEIPASS', None):
+            python_exe = shutil.which("python") or shutil.which("python3")
+            if not python_exe:
+                _dream_state["active"] = False
+                _dream_state["errors"] = ["Cannot find Python interpreter on PATH"]
+                _dream_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+                return
+        else:
+            python_exe = sys.executable
 
         # Initialize dream state
         _dream_state["active"] = True
@@ -435,217 +459,226 @@ async def start_dream_cycle(req: DreamCycleRequest):
         _dream_state["current_step"] = None
         _dream_state["current_step_name"] = None
 
-        # Record old intelligence for delta reporting
-        old_intelligence = 0
         try:
-            import urllib.request
-            url = f"http://{req.pi_ip}:{req.pi_port}/api/cmd"
-            payload = json.dumps({
-                "command": "pet_intelligence",
-                "payload": "",
-            }).encode()
-            http_req = urllib.request.Request(
-                url, data=payload, method="POST",
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": _pi_auth_header(),
-                },
-            )
-            with urllib.request.urlopen(http_req, timeout=10) as resp:
-                data = json.loads(resp.read())
-                # Parse RSP:pet_intelligence:{json}
-                if isinstance(data, dict):
-                    old_intelligence = data.get("score", 0)
-        except Exception:
-            pass
+            # Record old intelligence for delta reporting
+            old_intelligence = 0
+            try:
+                import urllib.request
+                url = f"http://{req.pi_ip}:{req.pi_port}/api/cmd"
+                payload = json.dumps({
+                    "command": "pet_intelligence",
+                    "payload": "",
+                }).encode()
+                http_req = urllib.request.Request(
+                    url, data=payload, method="POST",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": _pi_auth_header(),
+                    },
+                )
+                with urllib.request.urlopen(http_req, timeout=10) as resp:
+                    data = json.loads(resp.read())
+                    if isinstance(data, dict):
+                        old_intelligence = data.get("score", 0)
+            except Exception:
+                pass
 
-        # Step sequence for dream training
-        dream_steps = [
-            ("00", "Sync Data", ["--export-only"]),
-            ("07", "Learn Cycle", []),
-            ("02", "Prepare Dataset", []),
-            ("03", "Train LoRA", []),
-            ("04", "Evaluate", ["--save"]),
-            ("06", "Export & Deploy", ["--merge"]),
-        ]
-
-        # Skip learn cycle if not requested
-        if not req.run_learn_cycle:
+            # Step sequence for dream training
             dream_steps = [
-                s for s in dream_steps if s[0] != "07"
+                ("00", "Sync Data", ["--export-only"]),
+                ("07", "Learn Cycle", []),
+                ("02", "Prepare Dataset", []),
+                ("03", "Train LoRA", []),
+                ("04", "Evaluate", ["--save"]),
+                ("06", "Export & Deploy", ["--merge"]),
             ]
 
-        _dream_state["steps_total"] = len(dream_steps)
+            # Skip learn cycle if not requested
+            if not req.run_learn_cycle:
+                dream_steps = [
+                    s for s in dream_steps if s[0] != "07"
+                ]
 
-        for step_id, step_name, extra_args in dream_steps:
-            _dream_state["current_step"] = step_id
-            _dream_state["current_step_name"] = step_name
+            _dream_state["steps_total"] = len(dream_steps)
 
-            step_info = process_manager.STEPS.get(step_id)
-            if not step_info:
-                results["errors"].append(f"Unknown step: {step_id}")
-                _dream_state["errors"].append(f"Unknown step: {step_id}")
-                continue
+            for step_id, step_name, extra_args in dream_steps:
+                _dream_state["current_step"] = step_id
+                _dream_state["current_step_name"] = step_name
 
-            script_path = scripts_dir / step_info["script"]
-            if not script_path.exists():
-                results["errors"].append(
-                    f"Script not found: {step_info['script']}")
-                _dream_state["errors"].append(
-                    f"Script not found: {step_info['script']}")
-                continue
+                step_info = process_manager.STEPS.get(step_id)
+                if not step_info:
+                    results["errors"].append(f"Unknown step: {step_id}")
+                    _dream_state["errors"].append(f"Unknown step: {step_id}")
+                    continue
 
-            args = [sys.executable, str(script_path)]
-            args.extend(step_info.get("args", []))
-            args.extend(extra_args)
+                script_path = scripts_dir / step_info["script"]
+                if not script_path.exists():
+                    results["errors"].append(
+                        f"Script not found: {step_info['script']}")
+                    _dream_state["errors"].append(
+                        f"Script not found: {step_info['script']}")
+                    continue
 
-            try:
-                result = subprocess.run(
-                    args,
-                    cwd=str(training_dir),
-                    capture_output=True,
-                    text=True,
-                    timeout=3600,  # 1 hour max per step
-                )
-                if result.returncode == 0:
-                    results["steps_completed"].append(step_id)
-                    _dream_state["steps_completed"].append(step_id)
-                else:
-                    err_msg = (
-                        f"Step {step_id} ({step_name}) failed: "
-                        f"{result.stderr[:500]}"
+                cmd_args = [python_exe, "-u", str(script_path)]
+                cmd_args.extend(step_info.get("args", []))
+                cmd_args.extend(extra_args)
+
+                # Force UTF-8 for subprocess output
+                env = os.environ.copy()
+                env["PYTHONIOENCODING"] = "utf-8"
+                env["PYTHONUTF8"] = "1"
+
+                try:
+                    result = subprocess.run(
+                        cmd_args,
+                        cwd=str(training_dir),
+                        capture_output=True,
+                        text=True,
+                        timeout=3600,  # 1 hour max per step
+                        env=env,
                     )
+                    if result.returncode == 0:
+                        results["steps_completed"].append(step_id)
+                        _dream_state["steps_completed"].append(step_id)
+                    else:
+                        err_msg = (
+                            f"Step {step_id} ({step_name}) failed: "
+                            f"{result.stderr[:500]}"
+                        )
+                        results["errors"].append(err_msg)
+                        _dream_state["errors"].append(err_msg)
+                        break  # Stop pipeline on failure
+                except subprocess.TimeoutExpired:
+                    err_msg = f"Step {step_id} ({step_name}) timed out"
                     results["errors"].append(err_msg)
                     _dream_state["errors"].append(err_msg)
-                    break  # Stop pipeline on failure
-            except subprocess.TimeoutExpired:
-                err_msg = f"Step {step_id} ({step_name}) timed out"
-                results["errors"].append(err_msg)
-                _dream_state["errors"].append(err_msg)
-                break
-            except Exception as e:
-                err_msg = f"Step {step_id} ({step_name}) error: {e}"
-                results["errors"].append(err_msg)
-                _dream_state["errors"].append(err_msg)
-                break
+                    break
+                except Exception as e:
+                    err_msg = f"Step {step_id} ({step_name}) error: {e}"
+                    results["errors"].append(err_msg)
+                    _dream_state["errors"].append(err_msg)
+                    break
 
-        # Read training results
-        training_metrics = {"old_intelligence": old_intelligence}
-        try:
-            log_path = training_dir / "models" / "pet-lora" / "training_log.json"
-            if log_path.exists():
-                with open(log_path) as f:
-                    tlog = json.load(f)
-                training_metrics["final_loss"] = tlog.get("final_loss")
-                training_metrics["training_time_s"] = tlog.get(
-                    "training_time_s")
-                training_metrics["dataset_size"] = tlog.get("train_samples")
-                training_metrics["lora_version"] = tlog.get(
-                    "bloom_number", "dream")
-        except Exception:
-            pass
-
-        try:
-            eval_path = (training_dir / "models" / "pet-lora"
-                         / "eval_results.json")
-            if eval_path.exists():
-                with open(eval_path) as f:
-                    elog = json.load(f)
-                training_metrics["perplexity_base"] = (
-                    elog.get("base_perplexity", {}).get("perplexity"))
-                training_metrics["perplexity_finetuned"] = (
-                    elog.get("finetuned_perplexity", {}).get("perplexity"))
-        except Exception:
-            pass
-
-        # ── Deploy LoRA adapter to Pi ─────────────────────────────────
-        PI_SSH = f"turfptax@{req.pi_ip}"
-        PI_LORA_DIR = "/home/turfptax/models/pet-lora"
-        lora_dir = training_dir / "models" / "pet-lora"
-
-        if lora_dir.exists() and not results["errors"]:
+            # Read training results
+            training_metrics = {"old_intelligence": old_intelligence}
             try:
-                subprocess.run(
-                    ["ssh", "-o", "StrictHostKeyChecking=no",
-                     "-o", "ConnectTimeout=10",
-                     PI_SSH, f"mkdir -p {PI_LORA_DIR}"],
-                    timeout=15, capture_output=True,
-                )
+                log_path = training_dir / "models" / "pet-lora" / "training_log.json"
+                if log_path.exists():
+                    with open(log_path) as f:
+                        tlog = json.load(f)
+                    training_metrics["final_loss"] = tlog.get("final_loss")
+                    training_metrics["training_time_s"] = tlog.get(
+                        "training_time_s")
+                    training_metrics["dataset_size"] = tlog.get("train_samples")
+                    training_metrics["lora_version"] = tlog.get(
+                        "bloom_number", "dream")
+            except Exception:
+                pass
 
-                lora_files = list(lora_dir.glob("adapter_*")) + \
-                    list(lora_dir.glob("*.json"))
-                for fpath in lora_files:
-                    scp_result = subprocess.run(
-                        ["scp", "-o", "StrictHostKeyChecking=no",
-                         str(fpath), f"{PI_SSH}:{PI_LORA_DIR}/"],
-                        timeout=120, capture_output=True, text=True,
-                    )
-                    if scp_result.returncode != 0:
-                        results["errors"].append(
-                            f"SCP {fpath.name} failed: {scp_result.stderr[:200]}"
-                        )
-                        break
+            try:
+                eval_path = (training_dir / "models" / "pet-lora"
+                             / "eval_results.json")
+                if eval_path.exists():
+                    with open(eval_path) as f:
+                        elog = json.load(f)
+                    training_metrics["perplexity_base"] = (
+                        elog.get("base_perplexity", {}).get("perplexity"))
+                    training_metrics["perplexity_finetuned"] = (
+                        elog.get("finetuned_perplexity", {}).get("perplexity"))
+            except Exception:
+                pass
 
-                if not results["errors"]:
-                    results["steps_completed"].append("lora_deploy")
-                    training_metrics["lora_deployed"] = True
+            # ── Deploy LoRA adapter to Pi ─────────────────────────────
+            PI_SSH = f"turfptax@{req.pi_ip}"
+            PI_LORA_DIR = "/home/turfptax/models/pet-lora"
+            lora_dir = training_dir / "models" / "pet-lora"
 
-                    restart_cmd = (
-                        "sudo systemctl stop llama-server && "
-                        "sudo bash -c '"
-                        "/usr/local/bin/llama-server "
-                        "-m /home/turfptax/models/qwen3.5-0.8b-q4_k_m.gguf "
-                        f"--lora {PI_LORA_DIR}/adapter_model.safetensors "
-                        "--host 127.0.0.1 --port 8081 "
-                        "-ngl 0 -c 2048 --temp 0.7 "
-                        "> /tmp/llama-server.log 2>&1 &'"
-                    )
-                    restart_result = subprocess.run(
+            if lora_dir.exists() and not results["errors"]:
+                try:
+                    subprocess.run(
                         ["ssh", "-o", "StrictHostKeyChecking=no",
                          "-o", "ConnectTimeout=10",
-                         PI_SSH, restart_cmd],
-                        timeout=30, capture_output=True, text=True,
+                         PI_SSH, f"mkdir -p {PI_LORA_DIR}"],
+                        timeout=15, capture_output=True,
                     )
-                    if restart_result.returncode != 0:
-                        results["errors"].append(
-                            f"llama-server restart failed: "
-                            f"{restart_result.stderr[:200]}"
+
+                    lora_files = list(lora_dir.glob("adapter_*")) + \
+                        list(lora_dir.glob("*.json"))
+                    for fpath in lora_files:
+                        scp_result = subprocess.run(
+                            ["scp", "-o", "StrictHostKeyChecking=no",
+                             str(fpath), f"{PI_SSH}:{PI_LORA_DIR}/"],
+                            timeout=120, capture_output=True, text=True,
                         )
-                    else:
-                        results["steps_completed"].append("llama_restart")
-                        training_metrics["llama_restarted"] = True
+                        if scp_result.returncode != 0:
+                            results["errors"].append(
+                                f"SCP {fpath.name} failed: {scp_result.stderr[:200]}"
+                            )
+                            break
 
-            except subprocess.TimeoutExpired:
-                results["errors"].append("LoRA deploy timed out")
+                    if not results["errors"]:
+                        results["steps_completed"].append("lora_deploy")
+                        training_metrics["lora_deployed"] = True
+
+                        restart_cmd = (
+                            "sudo systemctl stop llama-server && "
+                            "sudo bash -c '"
+                            "/usr/local/bin/llama-server "
+                            "-m /home/turfptax/models/qwen3.5-0.8b-q4_k_m.gguf "
+                            f"--lora {PI_LORA_DIR}/adapter_model.safetensors "
+                            "--host 127.0.0.1 --port 8081 "
+                            "-ngl 0 -c 2048 --temp 0.7 "
+                            "> /tmp/llama-server.log 2>&1 &'"
+                        )
+                        restart_result = subprocess.run(
+                            ["ssh", "-o", "StrictHostKeyChecking=no",
+                             "-o", "ConnectTimeout=10",
+                             PI_SSH, restart_cmd],
+                            timeout=30, capture_output=True, text=True,
+                        )
+                        if restart_result.returncode != 0:
+                            results["errors"].append(
+                                f"llama-server restart failed: "
+                                f"{restart_result.stderr[:200]}"
+                            )
+                        else:
+                            results["steps_completed"].append("llama_restart")
+                            training_metrics["llama_restarted"] = True
+
+                except subprocess.TimeoutExpired:
+                    results["errors"].append("LoRA deploy timed out")
+                except Exception as e:
+                    results["errors"].append(f"LoRA deploy error: {e}")
+
+            # Notify Pi that dream is complete
+            try:
+                import urllib.request
+                url = f"http://{req.pi_ip}:{req.pi_port}/api/cmd"
+                payload = json.dumps({
+                    "command": "dream_complete",
+                    "payload": json.dumps(training_metrics),
+                }).encode()
+                http_req = urllib.request.Request(
+                    url, data=payload, method="POST",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": _pi_auth_header(),
+                    },
+                )
+                with urllib.request.urlopen(http_req, timeout=30) as resp:
+                    resp.read()
             except Exception as e:
-                results["errors"].append(f"LoRA deploy error: {e}")
+                results["errors"].append(f"Failed to notify Pi: {e}")
 
-        # Notify Pi that dream is complete
-        try:
-            import urllib.request
-            url = f"http://{req.pi_ip}:{req.pi_port}/api/cmd"
-            payload = json.dumps({
-                "command": "dream_complete",
-                "payload": json.dumps(training_metrics),
-            }).encode()
-            http_req = urllib.request.Request(
-                url, data=payload, method="POST",
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": _pi_auth_header(),
-                },
-            )
-            with urllib.request.urlopen(http_req, timeout=30) as resp:
-                resp.read()
-        except Exception as e:
-            results["errors"].append(f"Failed to notify Pi: {e}")
-
-        # Finalize dream state
-        _dream_state["active"] = False
-        _dream_state["completed_at"] = datetime.now(timezone.utc).isoformat()
-        _dream_state["metrics"] = training_metrics
-        _dream_state["current_step"] = None
-        _dream_state["current_step_name"] = None
+            # Store metrics in dream state
+            _dream_state["metrics"] = training_metrics
+        except Exception as exc:
+            _dream_state["errors"].append(f"Dream thread crashed: {exc}")
+        finally:
+            _dream_state["active"] = False
+            _dream_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+            _dream_state["current_step"] = None
+            _dream_state["current_step_name"] = None
 
     # Launch dream in background thread
     thread = threading.Thread(target=_run_dream, daemon=True,
