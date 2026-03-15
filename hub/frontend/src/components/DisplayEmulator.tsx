@@ -675,7 +675,7 @@ function moodColor(mood: string): RGB {
 
 // ── Sleeping state renderer ──
 
-function renderSleeping(ctx: CanvasRenderingContext2D, pet: PetStatus, frame: number, useVoxels: boolean) {
+function renderSleeping(ctx: CanvasRenderingContext2D, _pet: PetStatus, frame: number, useVoxels: boolean) {
   drawCircuitBackground(ctx)
 
   // Dimmed pet
