@@ -1,11 +1,19 @@
 """Pi proxy router — interact with Cortex Pi Zero."""
 
+import subprocess
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from config import settings
 from services import pi_client
 
 router = APIRouter()
+
+# SSH address for Pi management commands (git pull, service restart)
+_PI_SSH_USER = "turfptax"
+_PI_SSH_ADDR = f"{_PI_SSH_USER}@{settings.pi_host}"
+_PI_CORE_DIR = "/home/turfptax/cortex-core"
 
 
 class PetAskRequest(BaseModel):
@@ -176,3 +184,198 @@ async def query(req: QueryRequest):
         limit=req.limit,
         order_by=req.order_by,
     )
+
+
+# ── Pi Firmware Update ────────────────────────────────────────────
+
+
+def _ssh_run(cmd: str, timeout: int = 15) -> tuple[int, str, str]:
+    """Run a command on the Pi via SSH. Returns (returncode, stdout, stderr)."""
+    result = subprocess.run(
+        ["ssh", _PI_SSH_ADDR, cmd],
+        capture_output=True, text=True, timeout=timeout,
+    )
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+@router.get("/update/check")
+async def check_update():
+    """Check if a cortex-core update is available on the Pi.
+
+    Compares the Pi's current commit with the remote HEAD.
+    """
+    try:
+        # Get current commit on Pi
+        rc, current_hash, _ = _ssh_run(
+            f"cd {_PI_CORE_DIR} && git rev-parse HEAD"
+        )
+        if rc != 0:
+            return {"error": "Could not get current commit", "available": False}
+
+        # Get current branch
+        _, current_branch, _ = _ssh_run(
+            f"cd {_PI_CORE_DIR} && git rev-parse --abbrev-ref HEAD"
+        )
+
+        # Fetch latest from remote (no merge)
+        _ssh_run(f"cd {_PI_CORE_DIR} && git fetch origin", timeout=30)
+
+        # Get remote HEAD for this branch
+        rc, remote_hash, _ = _ssh_run(
+            f"cd {_PI_CORE_DIR} && git rev-parse origin/{current_branch}"
+        )
+        if rc != 0:
+            return {"error": "Could not get remote commit", "available": False}
+
+        # Get commit log between current and remote
+        changelog = ""
+        if current_hash != remote_hash:
+            _, changelog, _ = _ssh_run(
+                f"cd {_PI_CORE_DIR} && git log --oneline "
+                f"{current_hash}..origin/{current_branch}"
+            )
+
+        # Get current tag if any
+        _, current_tag, _ = _ssh_run(
+            f"cd {_PI_CORE_DIR} && git describe --tags --exact-match 2>/dev/null || echo ''"
+        )
+
+        return {
+            "available": current_hash != remote_hash,
+            "current_commit": current_hash[:8],
+            "remote_commit": remote_hash[:8],
+            "current_tag": current_tag or None,
+            "branch": current_branch,
+            "changelog": changelog,
+        }
+    except subprocess.TimeoutExpired:
+        return {"error": "SSH timed out — is the Pi reachable?", "available": False}
+    except Exception as e:
+        return {"error": str(e), "available": False}
+
+
+@router.post("/update/apply")
+async def apply_update():
+    """Pull latest cortex-core code on the Pi and restart the service.
+
+    Saves the current commit hash for rollback, runs git pull,
+    then restarts cortex-core.service.
+    """
+    import asyncio
+
+    try:
+        # Save current commit for rollback
+        rc, old_hash, _ = _ssh_run(
+            f"cd {_PI_CORE_DIR} && git rev-parse HEAD"
+        )
+        if rc != 0:
+            return {"ok": False, "error": "Could not get current commit"}
+
+        # Get current branch
+        _, branch, _ = _ssh_run(
+            f"cd {_PI_CORE_DIR} && git rev-parse --abbrev-ref HEAD"
+        )
+
+        # Pull latest code
+        rc, pull_out, pull_err = _ssh_run(
+            f"cd {_PI_CORE_DIR} && git pull origin {branch}",
+            timeout=60,
+        )
+        if rc != 0:
+            return {
+                "ok": False,
+                "error": f"git pull failed: {pull_err or pull_out}",
+                "rollback_hash": old_hash[:8],
+            }
+
+        # Get new commit
+        _, new_hash, _ = _ssh_run(
+            f"cd {_PI_CORE_DIR} && git rev-parse HEAD"
+        )
+
+        # Restart cortex-core service
+        rc, _, restart_err = _ssh_run(
+            "sudo systemctl restart cortex-core",
+            timeout=20,
+        )
+
+        # Wait for service to come back up
+        await asyncio.sleep(3)
+
+        # Verify service is running
+        rc2, status, _ = _ssh_run(
+            "sudo systemctl is-active cortex-core"
+        )
+        service_ok = status == "active"
+
+        if not service_ok:
+            # Service failed — offer rollback info
+            return {
+                "ok": False,
+                "error": "Service failed to start after update",
+                "old_commit": old_hash[:8],
+                "new_commit": new_hash[:8],
+                "rollback_hash": old_hash,
+                "rollback_hint": (
+                    f"ssh {_PI_SSH_ADDR} 'cd {_PI_CORE_DIR} && "
+                    f"git checkout {old_hash} && "
+                    f"sudo systemctl restart cortex-core'"
+                ),
+            }
+
+        return {
+            "ok": True,
+            "old_commit": old_hash[:8],
+            "new_commit": new_hash[:8],
+            "branch": branch,
+            "pull_output": pull_out,
+        }
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "SSH timed out — is the Pi reachable?"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/update/rollback")
+async def rollback_update(commit: str = ""):
+    """Rollback Pi firmware to a specific commit.
+
+    If no commit is specified, rolls back one commit.
+    """
+    try:
+        if not commit:
+            # Roll back one commit
+            target = "HEAD~1"
+        else:
+            # Validate it looks like a commit hash
+            if not all(c in "0123456789abcdef" for c in commit.lower()):
+                return {"ok": False, "error": "Invalid commit hash"}
+            target = commit
+
+        rc, checkout_out, checkout_err = _ssh_run(
+            f"cd {_PI_CORE_DIR} && git checkout {target}",
+            timeout=15,
+        )
+        if rc != 0:
+            return {"ok": False, "error": f"Checkout failed: {checkout_err}"}
+
+        # Restart service
+        _ssh_run("sudo systemctl restart cortex-core", timeout=20)
+
+        import asyncio
+        await asyncio.sleep(3)
+
+        _, new_hash, _ = _ssh_run(
+            f"cd {_PI_CORE_DIR} && git rev-parse HEAD"
+        )
+        _, status, _ = _ssh_run("sudo systemctl is-active cortex-core")
+
+        return {
+            "ok": True,
+            "commit": new_hash[:8],
+            "service_active": status == "active",
+        }
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "SSH timed out"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
