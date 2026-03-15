@@ -728,7 +728,7 @@ async def start_dream_cycle(req: DreamCycleRequest):
                 url = f"http://{req.pi_ip}:{req.pi_port}/api/cmd"
                 payload = json.dumps({
                     "command": "dream_complete",
-                    "payload": json.dumps(training_metrics),
+                    "payload": training_metrics,
                 }).encode()
                 http_req = urllib.request.Request(
                     url, data=payload, method="POST",
