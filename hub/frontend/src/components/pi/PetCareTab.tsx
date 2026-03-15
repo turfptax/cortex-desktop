@@ -728,7 +728,6 @@ export function PetCareTab({ isOnline }: Props) {
                 }
                 const isCompleted = dreamState.steps_completed.includes(stepId)
                 const isCurrent = dreamState.current_step === stepId
-                const isPending = !isCompleted && !isCurrent
 
                 return (
                   <div key={stepId} className="flex items-center gap-1.5">
