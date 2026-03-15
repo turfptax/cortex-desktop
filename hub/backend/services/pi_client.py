@@ -76,7 +76,11 @@ async def pet_ask(prompt: str, poll_timeout: float = 120.0) -> dict:
 
     pet_ask is async on the Pi: it returns ACK immediately, and the
     inference result arrives later via pet_response.  We poll until we
-    get a non-empty response list or the timeout expires.
+    get the response matching our interaction ID or the timeout expires.
+
+    The Pi's display loop also drains the response queue, so we use
+    since_id to retrieve responses from the recent-responses list even
+    if the display already consumed them from the queue.
     """
     import asyncio
     import time
@@ -86,14 +90,26 @@ async def pet_ask(prompt: str, poll_timeout: float = 120.0) -> dict:
     if not isinstance(ack_resp, str) or not ack_resp.startswith("ACK:pet_ask:"):
         return ack  # error or unexpected
 
+    # Extract the interaction ID so we can filter for our specific response
+    try:
+        interaction_id = int(ack_resp.split(":")[-1])
+    except (ValueError, IndexError):
+        interaction_id = 0
+    since_id = interaction_id - 1  # get responses with id >= our interaction
+
     deadline = time.monotonic() + poll_timeout
     while time.monotonic() < deadline:
         await asyncio.sleep(2.0)
-        poll = await send_command("pet_response")
+        poll = await send_command("pet_response", {"since_id": since_id})
         resp_str = poll.get("response", "")
         if isinstance(resp_str, str) and resp_str.startswith("RSP:pet_response:"):
             try:
                 items = _json.loads(resp_str[len("RSP:pet_response:"):])
+                # Find our specific response by interaction ID
+                for item in items:
+                    if item.get("id") == interaction_id:
+                        return {"response": item.get("response", ""), "data": item}
+                # If no exact match but items exist, return the latest
                 if items:
                     latest = items[-1]
                     return {"response": latest.get("response", ""), "data": latest}
