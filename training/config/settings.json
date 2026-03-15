@@ -5,7 +5,9 @@
     "db_remote_path": "/home/turfptax/cortex.db",
     "model_deploy_dir": "/home/turfptax/models",
     "config_path": "/home/turfptax/cortex-core/src/config.py",
-    "service_name": "cortex-core"
+    "service_name": "cortex-core",
+    "llama_service_name": "llama-server",
+    "llama_service_path": "/etc/systemd/system/llama-server.service"
   },
   "model": {
     "base_model": "Qwen/Qwen3.5-0.8B",

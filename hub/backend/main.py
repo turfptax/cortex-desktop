@@ -101,6 +101,35 @@ async def health():
     }
 
 
+@app.get("/api/hub/status")
+async def hub_status():
+    """Hub availability endpoint — called by Pi before dream training.
+
+    Returns whether this Hub is available to run training, what GPU is
+    present, and any discovered LM Studio servers on the network.
+    """
+    import platform
+    gpu_info = "unknown"
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            gpu_info = result.stdout.strip()
+    except Exception:
+        pass
+
+    return {
+        "available": True,
+        "hostname": platform.node(),
+        "gpu": gpu_info,
+        "training_dir": settings.training_dir,
+        "lmstudio_url": settings.lmstudio_url,
+    }
+
+
 # Serve pre-built frontend when running in desktop mode
 # Set CORTEX_STATIC_DIR to the frontend dist/ directory
 _static_dir = os.environ.get("CORTEX_STATIC_DIR", "")

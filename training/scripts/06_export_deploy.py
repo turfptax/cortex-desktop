@@ -303,25 +303,80 @@ def deploy_to_pi(config, gguf_path, is_full_model=False, base_model=""):
         except Exception as e:
             print(f"  WARNING: Could not update config: {e}")
 
-    # Restart service
-    service_name = pi.get("service_name", "cortex-core")
-    print(f"  Restarting {service_name}...")
-    try:
-        subprocess.run(
-            ["ssh", pi_addr, f"sudo systemctl restart {service_name}"],
-            check=True, timeout=15,
-        )
-        import time
-        time.sleep(3)
-        result = subprocess.run(
-            ["ssh", pi_addr,
-             f"sudo systemctl status {service_name} --no-pager -l"],
-            capture_output=True, text=True, timeout=10,
-        )
-        print(result.stdout)
-    except Exception as e:
-        print(f"  WARNING: Could not restart service: {e}")
-        print(f"  Manually run: sudo systemctl restart {service_name}")
+    # Restart the appropriate service
+    import time
+
+    if is_full_model:
+        # For merged models: update llama-server.service to load the new model,
+        # then restart ONLY llama-server. We intentionally do NOT restart
+        # cortex-core so that the heartbeat dream state is preserved — the
+        # dream_complete notification (sent after this step) needs a running
+        # cortex-core to properly wake the pet.
+        llama_service_path = pi.get("llama_service_path",
+                                    "/etc/systemd/system/llama-server.service")
+        llama_service_name = pi.get("llama_service_name", "llama-server")
+
+        print(f"  Updating llama-server model path → {remote_path}")
+        try:
+            sed_cmd = (
+                f"sudo sed -i 's|--model [^ \\\\]*|--model {remote_path}|' "
+                f"{llama_service_path}"
+            )
+            subprocess.run(
+                ["ssh", pi_addr, sed_cmd],
+                check=True, timeout=10,
+            )
+            subprocess.run(
+                ["ssh", pi_addr, "sudo systemctl daemon-reload"],
+                check=True, timeout=10,
+            )
+            print("  llama-server.service updated.")
+        except Exception as e:
+            print(f"  WARNING: Could not update llama-server.service: {e}")
+            print(f"  Manually update --model in {llama_service_path}")
+
+        print(f"  Restarting {llama_service_name}...")
+        try:
+            subprocess.run(
+                ["ssh", pi_addr,
+                 f"sudo systemctl restart {llama_service_name}"],
+                check=True, timeout=15,
+            )
+            time.sleep(5)  # Wait for model to load
+            result = subprocess.run(
+                ["ssh", pi_addr,
+                 f"sudo systemctl is-active {llama_service_name}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.stdout.strip() == "active":
+                print(f"  {llama_service_name} is running with new model.")
+            else:
+                print(f"  WARNING: {llama_service_name} may not have started"
+                      f" correctly (status: {result.stdout.strip()})")
+        except Exception as e:
+            print(f"  WARNING: Could not restart {llama_service_name}: {e}")
+            print(f"  Manually run: sudo systemctl restart"
+                  f" {llama_service_name}")
+    else:
+        # For LoRA adapter deploys: restart cortex-core to pick up new config
+        service_name = pi.get("service_name", "cortex-core")
+        print(f"  Restarting {service_name}...")
+        try:
+            subprocess.run(
+                ["ssh", pi_addr,
+                 f"sudo systemctl restart {service_name}"],
+                check=True, timeout=15,
+            )
+            time.sleep(3)
+            result = subprocess.run(
+                ["ssh", pi_addr,
+                 f"sudo systemctl status {service_name} --no-pager -l"],
+                capture_output=True, text=True, timeout=10,
+            )
+            print(result.stdout)
+        except Exception as e:
+            print(f"  WARNING: Could not restart service: {e}")
+            print(f"  Manually run: sudo systemctl restart {service_name}")
 
     return True
 
