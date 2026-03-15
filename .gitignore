@@ -33,6 +33,8 @@ Thumbs.db
 
 # Config (user-specific)
 config.json
+.env
+*.env
 
 # Build artifacts
 *.exe
