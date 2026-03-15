@@ -8,6 +8,15 @@ export interface DataSourceOptions {
   run_learn_cycle: boolean
 }
 
+export interface TrainingProgress {
+  pct?: number
+  epoch?: number
+  total_epochs?: number
+  loss?: number
+  learning_rate?: number
+  elapsed_s?: number
+}
+
 export interface DreamState {
   active: boolean
   current_step: string | null
@@ -19,6 +28,7 @@ export interface DreamState {
   completed_at: string | null
   metrics: Record<string, any> | null
   trigger: string | null
+  progress: TrainingProgress | null
 }
 
 export interface DataAvailability {
@@ -38,6 +48,7 @@ const defaultState: DreamState = {
   completed_at: null,
   metrics: null,
   trigger: null,
+  progress: null,
 }
 
 export function useDreamCycle() {

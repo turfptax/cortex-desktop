@@ -759,11 +759,50 @@ export function PetCareTab({ isOnline }: Props) {
 
             {/* Current step label */}
             {dreamState.active && dreamState.current_step_name && (
-              <div className="flex items-center gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
-                <span className="text-xs text-purple-300">
-                  {dreamState.current_step_name}...
-                </span>
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
+                  <span className="text-xs text-purple-300">
+                    {dreamState.current_step_name}...
+                  </span>
+                </div>
+
+                {/* Training progress bar (only during Train step) */}
+                {dreamState.current_step === '03' && dreamState.progress && (
+                  <div className="space-y-1.5">
+                    {/* Progress bar */}
+                    <div className="h-1.5 bg-surface-secondary rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-purple-400/70 rounded-full transition-all duration-1000"
+                        style={{ width: `${dreamState.progress.pct ?? 0}%` }}
+                      />
+                    </div>
+                    {/* Progress details */}
+                    <div className="flex items-center justify-between text-[10px] text-text-muted">
+                      <div className="flex items-center gap-3">
+                        {dreamState.progress.epoch != null && (
+                          <span>
+                            Epoch {dreamState.progress.epoch}
+                            {dreamState.progress.total_epochs ? `/${dreamState.progress.total_epochs}` : ''}
+                          </span>
+                        )}
+                        {dreamState.progress.loss != null && (
+                          <span>Loss: <span className="text-purple-300 tabular-nums">{dreamState.progress.loss.toFixed(4)}</span></span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {dreamState.progress.pct != null && (
+                          <span className="tabular-nums">{Math.round(dreamState.progress.pct)}%</span>
+                        )}
+                        {dreamState.progress.elapsed_s != null && (
+                          <span className="tabular-nums">
+                            {Math.floor(dreamState.progress.elapsed_s / 60)}m{Math.floor(dreamState.progress.elapsed_s % 60).toString().padStart(2, '0')}s
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
