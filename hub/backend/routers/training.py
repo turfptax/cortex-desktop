@@ -1,5 +1,6 @@
 """Training pipeline router — run scripts, stream logs, manage config."""
 
+import base64
 import json
 from pathlib import Path
 
@@ -8,6 +9,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from config import settings
+
+
+def _pi_auth_header() -> str:
+    """Build HTTP Basic Auth header from configured credentials."""
+    creds = f"{settings.pi_username}:{settings.pi_password}"
+    return "Basic " + base64.b64encode(creds.encode()).decode()
 from services import process_manager
 from services import dataset_manager
 
@@ -391,7 +398,7 @@ async def start_dream_cycle(req: DreamCycleRequest):
                 url, data=payload, method="POST",
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": "Basic REDACTED_AUTH_TOKEN==",
+                    "Authorization": _pi_auth_header(),
                 },
             )
             with urllib.request.urlopen(http_req, timeout=10) as resp:
@@ -556,7 +563,7 @@ async def start_dream_cycle(req: DreamCycleRequest):
                 url, data=payload, method="POST",
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": "Basic REDACTED_AUTH_TOKEN==",
+                    "Authorization": _pi_auth_header(),
                 },
             )
             with urllib.request.urlopen(http_req, timeout=30) as resp:
