@@ -33,11 +33,14 @@ export function UpdateCard() {
     setChecking(false)
   }
 
+  const [updateSuccess, setUpdateSuccess] = useState('')
+
   const handleUpdate = async () => {
     setUpdating(true)
     setUpdateError('')
+    setUpdateSuccess('')
     try {
-      const res = await apiFetch<{ ok: boolean; error?: string; release_url?: string }>('/settings/apply-update', {
+      const res = await apiFetch<{ ok: boolean; error?: string; release_url?: string; message?: string; needs_restart?: boolean }>('/settings/apply-update', {
         method: 'POST',
       })
       if (!res.ok) {
@@ -48,13 +51,16 @@ export function UpdateCard() {
         } else {
           setUpdateError(res.error || 'Update failed')
         }
-        setUpdating(false)
+      } else if (res.needs_restart) {
+        // Git pull succeeded — user needs to restart manually
+        setUpdateSuccess(res.message || 'Update applied! Restart the app to use the new version.')
+        setInfo(prev => prev ? { ...prev, update_available: false } : prev)
       }
-      // If ok, the app will exit and the installer will run — no need to update UI
+      // If ok without needs_restart, the installer will handle restart
     } catch {
       setUpdateError('Failed to start update. Try downloading manually.')
-      setUpdating(false)
     }
+    setUpdating(false)
   }
 
   return (
@@ -121,6 +127,10 @@ export function UpdateCard() {
 
           {updateError && (
             <p className="text-xs text-red-400">{updateError}</p>
+          )}
+
+          {updateSuccess && (
+            <p className="text-xs text-success">{updateSuccess}</p>
           )}
 
           {info.release_notes && (

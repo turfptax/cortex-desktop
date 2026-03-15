@@ -424,9 +424,25 @@ async def check_update():
 
 # ── POST /settings/apply-update ──
 
+def _find_repo_root() -> Optional[Path]:
+    """Find the git repo root for cortex-desktop (dev/source installs)."""
+    try:
+        import cortex_desktop
+        pkg_dir = Path(cortex_desktop.__file__).parent
+        # Walk up to find .git directory
+        for parent in [pkg_dir, pkg_dir.parent, pkg_dir.parent.parent]:
+            if (parent / ".git").exists():
+                return parent
+    except Exception:
+        pass
+    return None
+
+
 @router.post("/apply-update")
 async def apply_update():
-    """Download the latest installer and launch it to update the app."""
+    """Update the app — tries installer first, falls back to git pull for dev installs."""
+    import subprocess
+
     # First, check what's available
     update_info = await check_update()
     if not update_info.get("ok"):
@@ -436,32 +452,73 @@ async def apply_update():
         return {"ok": False, "error": "No update available"}
 
     installer_url = update_info.get("installer_url", "")
-    if not installer_url:
-        # No installer, fall back to directing user to release page
+
+    # Try installer-based update first (production installs)
+    if installer_url:
+        try:
+            from cortex_desktop.updater import download_installer, launch_installer_and_exit
+
+            installer_path = await download_installer(installer_url)
+
+            import threading
+            threading.Thread(
+                target=launch_installer_and_exit,
+                args=(installer_path,),
+                daemon=False,
+            ).start()
+
+            return {
+                "ok": True,
+                "message": "Update downloading and installing. The app will restart.",
+                "version": update_info.get("latest_version"),
+            }
+        except Exception as e:
+            return {"ok": False, "error": f"Installer update failed: {e}"}
+
+    # Fall back to git pull (dev / source installs)
+    repo_root = _find_repo_root()
+    if not repo_root:
         return {
             "ok": False,
-            "error": "No installer found in release assets",
+            "error": "No installer found and not running from a git repo.",
             "release_url": update_info.get("release_url", ""),
         }
 
     try:
-        from cortex_desktop.updater import download_installer, launch_installer_and_exit
+        old_version = _current_version()
 
-        # Download the installer
-        installer_path = await download_installer(installer_url)
+        # Git pull
+        result = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
 
-        # Launch installer and exit (runs in background, kills this process)
-        import threading
-        threading.Thread(
-            target=launch_installer_and_exit,
-            args=(installer_path,),
-            daemon=False,
-        ).start()
+        if result.returncode != 0:
+            return {
+                "ok": False,
+                "error": f"git pull failed: {result.stderr.strip() or result.stdout.strip()}",
+            }
+
+        # Re-read version from the updated file
+        version_file = repo_root / "cortex_desktop" / "__init__.py"
+        new_version = update_info.get("latest_version", "unknown")
+        if version_file.exists():
+            for line in version_file.read_text().splitlines():
+                if line.startswith("__version__"):
+                    new_version = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
 
         return {
             "ok": True,
-            "message": "Update downloading and installing. The app will restart.",
-            "version": update_info.get("latest_version"),
+            "message": f"Updated via git pull ({old_version} → {new_version}). Restart the app to use the new version.",
+            "version": new_version,
+            "pull_output": result.stdout.strip()[:500],
+            "needs_restart": True,
         }
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "git pull timed out"}
     except Exception as e:
-        return {"ok": False, "error": f"Update failed: {e}"}
+        return {"ok": False, "error": f"Git update failed: {e}"}
