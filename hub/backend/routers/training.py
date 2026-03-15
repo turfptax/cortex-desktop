@@ -346,3 +346,170 @@ async def clear_research_log():
     if log_path.exists():
         log_path.unlink()
     return {"cleared": True}
+
+
+# ── Dream Cycle (Sleep-Triggered Auto-Training) ──────────────────────
+
+class DreamCycleRequest(BaseModel):
+    pi_ip: str = "10.0.0.25"
+    pi_port: int = 8420
+    trigger: str = "sleep_dream"
+
+
+@router.post("/dream-cycle")
+async def start_dream_cycle(req: DreamCycleRequest):
+    """Orchestrated dream training cycle triggered by Pi during sleep.
+
+    Runs the full pipeline: sync → learn-cycle → train → eval → export.
+    Each step runs sequentially. When complete, notifies the Pi that
+    the dream is done with the training metrics.
+    """
+    import threading
+    from services import pi_client
+
+    def _run_dream():
+        """Background thread that orchestrates the dream pipeline."""
+        import time
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        scripts_dir = Path(settings.scripts_dir)
+        training_dir = Path(settings.training_dir)
+        results = {"steps_completed": [], "errors": []}
+
+        # Record old intelligence for delta reporting
+        old_intelligence = 0
+        try:
+            import urllib.request
+            url = f"http://{req.pi_ip}:{req.pi_port}/api/cmd"
+            payload = json.dumps({
+                "command": "pet_intelligence",
+                "payload": "",
+            }).encode()
+            http_req = urllib.request.Request(
+                url, data=payload, method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Basic REDACTED_AUTH_TOKEN==",
+                },
+            )
+            with urllib.request.urlopen(http_req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                # Parse RSP:pet_intelligence:{json}
+                if isinstance(data, dict):
+                    old_intelligence = data.get("score", 0)
+        except Exception:
+            pass
+
+        # Step sequence for dream training
+        dream_steps = [
+            ("00", "Sync Data", ["--export-only"]),
+            ("07", "Learn Cycle", []),
+            ("02", "Prepare Dataset", []),
+            ("03", "Train LoRA", []),
+            ("04", "Evaluate", ["--save"]),
+            ("06", "Export & Deploy", ["--merge"]),
+        ]
+
+        for step_id, step_name, extra_args in dream_steps:
+            step_info = process_manager.STEPS.get(step_id)
+            if not step_info:
+                results["errors"].append(f"Unknown step: {step_id}")
+                continue
+
+            script_path = scripts_dir / step_info["script"]
+            if not script_path.exists():
+                results["errors"].append(
+                    f"Script not found: {step_info['script']}")
+                continue
+
+            args = [sys.executable, str(script_path)]
+            args.extend(step_info.get("args", []))
+            args.extend(extra_args)
+
+            try:
+                result = subprocess.run(
+                    args,
+                    cwd=str(training_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=3600,  # 1 hour max per step
+                )
+                if result.returncode == 0:
+                    results["steps_completed"].append(step_id)
+                else:
+                    results["errors"].append(
+                        f"Step {step_id} ({step_name}) failed: "
+                        f"{result.stderr[:500]}"
+                    )
+                    break  # Stop pipeline on failure
+            except subprocess.TimeoutExpired:
+                results["errors"].append(
+                    f"Step {step_id} ({step_name}) timed out")
+                break
+            except Exception as e:
+                results["errors"].append(
+                    f"Step {step_id} ({step_name}) error: {e}")
+                break
+
+        # Read training results
+        training_metrics = {"old_intelligence": old_intelligence}
+        try:
+            log_path = training_dir / "models" / "pet-lora" / "training_log.json"
+            if log_path.exists():
+                with open(log_path) as f:
+                    tlog = json.load(f)
+                training_metrics["final_loss"] = tlog.get("final_loss")
+                training_metrics["training_time_s"] = tlog.get(
+                    "training_time_s")
+                training_metrics["dataset_size"] = tlog.get("train_samples")
+                training_metrics["lora_version"] = tlog.get(
+                    "bloom_number", "dream")
+        except Exception:
+            pass
+
+        try:
+            eval_path = (training_dir / "models" / "pet-lora"
+                         / "eval_results.json")
+            if eval_path.exists():
+                with open(eval_path) as f:
+                    elog = json.load(f)
+                training_metrics["perplexity_base"] = (
+                    elog.get("base_perplexity", {}).get("perplexity"))
+                training_metrics["perplexity_finetuned"] = (
+                    elog.get("finetuned_perplexity", {}).get("perplexity"))
+        except Exception:
+            pass
+
+        # Notify Pi that dream is complete
+        try:
+            import urllib.request
+            url = f"http://{req.pi_ip}:{req.pi_port}/api/cmd"
+            payload = json.dumps({
+                "command": "dream_complete",
+                "payload": json.dumps(training_metrics),
+            }).encode()
+            http_req = urllib.request.Request(
+                url, data=payload, method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": "Basic REDACTED_AUTH_TOKEN==",
+                },
+            )
+            with urllib.request.urlopen(http_req, timeout=30) as resp:
+                resp.read()
+        except Exception as e:
+            results["errors"].append(f"Failed to notify Pi: {e}")
+
+    # Launch dream in background thread
+    thread = threading.Thread(target=_run_dream, daemon=True,
+                              name="dream-cycle")
+    thread.start()
+
+    return {
+        "status": "started",
+        "trigger": req.trigger,
+        "pi_ip": req.pi_ip,
+        "message": "Dream cycle started in background",
+    }
