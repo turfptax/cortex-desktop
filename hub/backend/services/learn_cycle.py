@@ -195,25 +195,52 @@ TEACHER_KNOWLEDGE_TPL = (
 
 # ── Helpers ──────────────────────────────────────────────────────
 
+_DEFAULT_LEDGER = {
+    "processed_note_ids": [],
+    "processed_session_ids": [],
+    "processed_activity_batch": None,
+    "last_sync_at": None,
+    "cycles": [],
+    "total_examples_generated": 0,
+}
+
+
 def _load_ledger() -> dict:
+    """Load ledger from Pi first, fall back to local file."""
+    # Try Pi
+    pi_ledger = _cmd_pi("training_ledger_get")
+    if isinstance(pi_ledger, dict) and pi_ledger:
+        logger.info("Loaded ledger from Pi (%d keys)", len(pi_ledger))
+        # Merge with defaults for any missing keys
+        merged = dict(_DEFAULT_LEDGER)
+        merged.update(pi_ledger)
+        return merged
+
+    # Fall back to local
     if LEDGER_PATH.exists():
         try:
+            logger.info("Pi ledger unavailable, using local fallback")
             return json.loads(LEDGER_PATH.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
-    return {
-        "processed_note_ids": [],
-        "processed_session_ids": [],
-        "processed_activity_batch": None,
-        "last_sync_at": None,
-        "cycles": [],
-        "total_examples_generated": 0,
-    }
+    return dict(_DEFAULT_LEDGER)
 
 
 def _save_ledger(ledger: dict):
+    """Save ledger to both Pi and local file."""
+    # Always save locally as backup
     _APP_DIR.mkdir(parents=True, exist_ok=True)
     LEDGER_PATH.write_text(json.dumps(ledger, indent=2), encoding="utf-8")
+
+    # Also push to Pi
+    try:
+        result = _cmd_pi("training_ledger_set", ledger, timeout=10)
+        if result is not None:
+            logger.info("Saved ledger to Pi")
+        else:
+            logger.warning("Failed to save ledger to Pi (will retry next cycle)")
+    except Exception as e:
+        logger.warning("Failed to save ledger to Pi: %s", e)
 
 
 def _build_system_prompt(stage: int, mood: str) -> str:
@@ -291,22 +318,37 @@ def _wrap_chatml(pair: dict, source_type: str, source_id: Any) -> dict:
 
 # ── Pi queries (sync httpx, runs in thread) ─────────────────────
 
-def _query_pi(table: str, limit: int = 500) -> list[dict]:
+def _cmd_pi(command: str, payload: dict | None = None, timeout: int = 15) -> dict | list | None:
+    """Send a command to the Pi and parse the RSP response."""
     url = f"{settings.pi_base_url}/api/cmd"
     auth = (settings.pi_username, settings.pi_password)
-    body = {"command": "query", "payload": {"table": table, "limit": limit}}
+    body = {"command": command, "payload": payload or {}}
     try:
-        resp = httpx.post(url, json=body, auth=auth, timeout=15)
+        resp = httpx.post(url, json=body, auth=auth, timeout=timeout)
         resp.raise_for_status()
         data = resp.json()
         resp_str = data.get("response", "")
-        if isinstance(resp_str, str) and resp_str.startswith("RSP:query:"):
-            parsed = json.loads(resp_str[len("RSP:query:"):])
-            return parsed if isinstance(parsed, list) else parsed.get("rows", [])
-        return data.get("rows", data.get("data", []))
+        if isinstance(resp_str, str):
+            # Parse RSP:<cmd>:<json> or ACK:<cmd>:<value>
+            for prefix in [f"RSP:{command}:", f"ACK:{command}:"]:
+                if resp_str.startswith(prefix):
+                    try:
+                        return json.loads(resp_str[len(prefix):])
+                    except json.JSONDecodeError:
+                        return resp_str[len(prefix):]
+        return data
     except Exception as e:
-        logger.warning("Pi query failed (%s): %s", table, e)
-        return []
+        logger.warning("Pi command %s failed: %s", command, e)
+        return None
+
+
+def _query_pi(table: str, limit: int = 500) -> list[dict]:
+    result = _cmd_pi("query", {"table": table, "limit": limit})
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict):
+        return result.get("rows", [])
+    return []
 
 
 # ── LM Studio calls (multi-server aware) ────────────────────────
@@ -683,13 +725,38 @@ def run_learn_cycle(server_overrides: list[dict] | None = None) -> dict:
         if all_activities and len(all_activities) >= 5:
             data_summary_parts.append(f"Activities: {len(all_activities)} logged")
 
-        # Write examples
+        # Write examples locally
+        cycle_id = len(ledger.get("cycles", [])) + 1
         if all_examples:
             _APP_DIR.mkdir(parents=True, exist_ok=True)
             with open(OUTPUT_PATH, "a", encoding="utf-8") as f:
                 for ex in all_examples:
                     f.write(json.dumps(ex, ensure_ascii=False) + "\n")
             logger.info("Wrote %d examples to %s", len(all_examples), OUTPUT_PATH.name)
+
+            # Upload to Pi for portability
+            _set_progress(phase="uploading_to_pi")
+            pi_examples = []
+            for ex in all_examples:
+                pi_examples.append({
+                    "messages": ex.get("messages", []),
+                    "source": ex.get("source", "learn-cycle"),
+                    "source_id": str(ex.get("source_id", "")),
+                    "cycle_id": cycle_id,
+                    "model": ", ".join(s["model"] for s in pool.servers),
+                    "server": ", ".join(s.get("name", s["url"]) for s in pool.servers),
+                })
+            # Upload in batches of 50 to avoid huge payloads
+            batch_size = 50
+            uploaded = 0
+            for i in range(0, len(pi_examples), batch_size):
+                batch = pi_examples[i:i + batch_size]
+                result = _cmd_pi("training_upload", {"examples": batch}, timeout=30)
+                if result is not None:
+                    uploaded += int(result) if isinstance(result, (int, str)) else len(batch)
+                else:
+                    logger.warning("Failed to upload batch %d-%d to Pi", i, i + len(batch))
+            logger.info("Uploaded %d/%d examples to Pi", uploaded, len(pi_examples))
 
         # Knowledge summary (use first server)
         _set_progress(phase="summarizing")
@@ -711,7 +778,7 @@ def run_learn_cycle(server_overrides: list[dict] | None = None) -> dict:
 
         # Update ledger
         cycle = {
-            "cycle_id": len(ledger.get("cycles", [])) + 1,
+            "cycle_id": cycle_id,
             "started_at": datetime.now(timezone.utc).isoformat(),
             "notes_processed": len(new_notes),
             "sessions_processed": len(new_sessions),
