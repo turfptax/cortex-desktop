@@ -92,7 +92,7 @@ export function DatasetTab() {
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <StatCard label="Total Examples" value={stats.total} />
-          <StatCard label="Avg Quality" value={stats.avg_quality.toFixed(1)} highlight />
+          <StatCard label="Avg Quality" value={stats.avg_quality ? stats.avg_quality.toFixed(1) : '—'} highlight />
           <StatCard
             label="Sources"
             value={Object.entries(stats.by_source || {})

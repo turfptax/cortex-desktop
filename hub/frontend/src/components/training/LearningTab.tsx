@@ -492,7 +492,7 @@ export function LearningTab() {
             </div>
           </div>
           <p className="text-xs text-text-muted mt-3">
-            Go to the <strong>Pipeline</strong> tab to run these steps. Steps 02-06 require the cortex-pet-training repo with PyTorch installed.
+            Go to the <strong>Pipeline</strong> tab to run these steps. Steps 02-06 require Python with PyTorch/CUDA installed.
           </p>
         </div>
       )}

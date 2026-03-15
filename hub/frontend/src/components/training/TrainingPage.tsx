@@ -130,18 +130,18 @@ export function TrainingPage() {
                 <div className="bg-warning/10 border border-warning/30 rounded-lg p-4">
                   <h4 className="text-sm font-semibold text-warning mb-1">Pipeline Scripts Not Available</h4>
                   <p className="text-xs text-text-secondary mb-2">
-                    {!availability.training_dir_exists
-                      ? `Scripts directory not found. Set CORTEX_HUB_TRAINING_DIR to your cortex-pet-training folder.`
-                      : availability.is_bundled && !availability.has_system_python
-                      ? 'Python not found on PATH. Install Python and ensure it\'s accessible from the command line.'
-                      : 'The training pipeline steps require Python with PyTorch/CUDA.'}
+                    {availability.is_bundled && !availability.has_system_python
+                      ? 'Python not found on PATH. Install Python 3.10+ and ensure it\'s accessible from the command line.'
+                      : !availability.training_dir_exists
+                      ? 'Training scripts not found. This is unexpected — try reinstalling CortexHub.'
+                      : 'The training pipeline requires Python with PyTorch and CUDA (GPU).'}
                   </p>
                   <div className="text-xs text-text-muted space-y-1">
-                    <p><strong>Setup:</strong></p>
+                    <p><strong>Setup (one-time):</strong></p>
                     <ol className="list-decimal list-inside space-y-0.5 ml-2">
-                      <li>Clone the <code className="bg-surface-tertiary px-1 rounded">cortex-pet-training</code> repo</li>
-                      <li>Install dependencies: <code className="bg-surface-tertiary px-1 rounded">pip install -r requirements.txt</code></li>
-                      <li>Set env var: <code className="bg-surface-tertiary px-1 rounded">CORTEX_HUB_TRAINING_DIR=C:\path\to\cortex-pet-training</code></li>
+                      <li>Install <a href="https://www.python.org/downloads/" target="_blank" rel="noopener" className="text-accent hover:underline">Python 3.10+</a> (make sure "Add to PATH" is checked)</li>
+                      <li>Install <a href="https://pytorch.org/get-started/locally/" target="_blank" rel="noopener" className="text-accent hover:underline">PyTorch with CUDA</a>: <code className="bg-surface-tertiary px-1 rounded">pip install torch --index-url https://download.pytorch.org/whl/cu121</code></li>
+                      <li>Install ML libraries: <code className="bg-surface-tertiary px-1 rounded">pip install transformers peft trl datasets accelerate</code></li>
                       <li>Restart CortexHub</li>
                     </ol>
                   </div>
