@@ -294,6 +294,9 @@ async def apply_update():
             f"cd {_PI_CORE_DIR} && git rev-parse --abbrev-ref HEAD"
         )
 
+        # Stash any local changes (deploy.sh uses SCP, bypassing git)
+        _ssh_run(f"cd {_PI_CORE_DIR} && git stash", timeout=10)
+
         # Pull latest code
         rc, pull_out, pull_err = _ssh_run(
             f"cd {_PI_CORE_DIR} && git pull origin {branch}",
@@ -305,6 +308,9 @@ async def apply_update():
                 "error": f"git pull failed: {pull_err or pull_out}",
                 "rollback_hash": old_hash[:8],
             }
+
+        # Drop stash (pulled code supersedes SCP'd files)
+        _ssh_run(f"cd {_PI_CORE_DIR} && git stash drop 2>/dev/null || true", timeout=5)
 
         # Get new commit
         _, new_hash, _ = _ssh_run(
@@ -329,29 +335,27 @@ async def apply_update():
         if not service_ok:
             # Service failed — offer rollback info
             return {
-                "ok": False,
+                "success": False,
                 "error": "Service failed to start after update",
                 "old_commit": old_hash[:8],
                 "new_commit": new_hash[:8],
+                "pull_output": pull_out or "",
+                "service_restarted": False,
                 "rollback_hash": old_hash,
-                "rollback_hint": (
-                    f"ssh {_PI_SSH_ADDR} 'cd {_PI_CORE_DIR} && "
-                    f"git checkout {old_hash} && "
-                    f"sudo systemctl restart cortex-core'"
-                ),
             }
 
         return {
-            "ok": True,
+            "success": True,
             "old_commit": old_hash[:8],
             "new_commit": new_hash[:8],
+            "pull_output": pull_out or "",
+            "service_restarted": True,
             "branch": branch,
-            "pull_output": pull_out,
         }
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "SSH timed out — is the Pi reachable?"}
+        return {"success": False, "error": "SSH timed out — is the Pi reachable?", "old_commit": "", "new_commit": "", "pull_output": "", "service_restarted": False}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"success": False, "error": str(e), "old_commit": "", "new_commit": "", "pull_output": "", "service_restarted": False}
 
 
 @router.post("/update/rollback")
@@ -367,15 +371,20 @@ async def rollback_update(commit: str = ""):
         else:
             # Validate it looks like a commit hash
             if not all(c in "0123456789abcdef" for c in commit.lower()):
-                return {"ok": False, "error": "Invalid commit hash"}
+                return {"success": False, "error": "Invalid commit hash"}
             target = commit
+
+        # Save current commit before rollback
+        _, old_hash, _ = _ssh_run(
+            f"cd {_PI_CORE_DIR} && git rev-parse HEAD"
+        )
 
         rc, checkout_out, checkout_err = _ssh_run(
             f"cd {_PI_CORE_DIR} && git checkout {target}",
             timeout=15,
         )
         if rc != 0:
-            return {"ok": False, "error": f"Checkout failed: {checkout_err}"}
+            return {"success": False, "error": f"Checkout failed: {checkout_err}"}
 
         # Restart service
         _ssh_run("sudo systemctl restart cortex-core", timeout=20)
@@ -389,11 +398,12 @@ async def rollback_update(commit: str = ""):
         _, status, _ = _ssh_run("sudo systemctl is-active cortex-core")
 
         return {
-            "ok": True,
-            "commit": new_hash[:8],
-            "service_active": status == "active",
+            "success": True,
+            "previous_commit": old_hash[:8],
+            "rolled_back_to": new_hash[:8],
+            "service_restarted": status == "active",
         }
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "SSH timed out"}
+        return {"success": False, "error": "SSH timed out"}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"success": False, "error": str(e)}
