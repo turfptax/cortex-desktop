@@ -134,12 +134,13 @@ function MiniChart({ history }: { history: VitalsSnapshot[] }) {
   const plotW = W - pad.left - pad.right
   const plotH = H - pad.top - pad.bottom
 
-  const vitals: { key: keyof VitalsSnapshot; color: string; label: string }[] =
+  const vitals: { key: keyof VitalsSnapshot; color: string; label: string; scale?: number }[] =
     [
       { key: 'hunger', color: '#ffa000', label: 'Hunger' },
       { key: 'cleanliness', color: '#00a0ff', label: 'Clean' },
-      { key: 'energy', color: '#ffdc00', label: 'Energy' },
+      { key: 'energy', color: '#ff3c00', label: 'Energy' },
       { key: 'happiness', color: '#00c864', label: 'Happy' },
+      { key: 'intelligence', color: '#c084fc', label: 'IQ', scale: 100 },
     ]
 
   const sorted = [...history].sort(
@@ -150,13 +151,14 @@ function MiniChart({ history }: { history: VitalsSnapshot[] }) {
   const maxT = new Date(sorted[sorted.length - 1].created_at).getTime()
   const tRange = maxT - minT || 1
 
-  function toPath(key: keyof VitalsSnapshot) {
+  function toPath(key: keyof VitalsSnapshot, scale = 1) {
     return sorted
       .map((s, i) => {
         const x =
           pad.left +
           ((new Date(s.created_at).getTime() - minT) / tRange) * plotW
-        const v = Number(s[key]) ?? 0
+        const raw = Number(s[key]) ?? 0
+        const v = Math.min(raw / scale, 1)
         const y = pad.top + plotH - v * plotH
         return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
       })
@@ -183,10 +185,10 @@ function MiniChart({ history }: { history: VitalsSnapshot[] }) {
             opacity={0.4}
           />
         ))}
-        {vitals.map(({ key, color }) => (
+        {vitals.map(({ key, color, scale }) => (
           <path
             key={key}
-            d={toPath(key)}
+            d={toPath(key, scale)}
             fill="none"
             stroke={color}
             strokeWidth={2}
