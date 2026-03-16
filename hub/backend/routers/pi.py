@@ -112,6 +112,12 @@ async def pet_clean(req: PetCleanRequest):
     )
 
 
+@router.post("/pet/rest")
+async def pet_rest():
+    """Rest the pet — instant energy boost (+10%)."""
+    return await pi_client.send_command_parsed("pet_rest")
+
+
 @router.get("/pet/intelligence")
 async def pet_intelligence():
     """Get pet intelligence score breakdown."""
