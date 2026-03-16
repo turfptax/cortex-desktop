@@ -686,18 +686,29 @@ export function PetCareTab({ isOnline }: Props) {
           <h3 className="text-sm font-semibold text-text-primary">
             Vitals History
           </h3>
-          <div className="flex gap-1">
-            {[24, 48, 168].map((h) => (
+          <div className="flex gap-1 flex-wrap">
+            {([
+              { hours: 1, label: '1h' },
+              { hours: 2, label: '2h' },
+              { hours: 4, label: '4h' },
+              { hours: 8, label: '8h' },
+              { hours: 16, label: '16h' },
+              { hours: 24, label: '24h' },
+              { hours: 48, label: '2d' },
+              { hours: 168, label: '1w' },
+              { hours: 730, label: '1mo' },
+              { hours: 8760, label: '1y' },
+            ] as const).map(({ hours, label }) => (
               <button
-                key={h}
-                onClick={() => setHistoryHours(h)}
+                key={hours}
+                onClick={() => setHistoryHours(hours)}
                 className={`text-[10px] px-2 py-0.5 rounded cursor-pointer ${
-                  historyHours === h
+                  historyHours === hours
                     ? 'bg-accent text-white'
                     : 'text-text-muted hover:text-text-primary'
                 }`}
               >
-                {h === 168 ? '7d' : `${h}h`}
+                {label}
               </button>
             ))}
           </div>
