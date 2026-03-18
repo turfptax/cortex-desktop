@@ -287,14 +287,9 @@ export function PetCareTab({ isOnline }: Props) {
 
   const fetchAnalytics = useCallback(async () => {
     try {
-      const res = await apiFetch('/pi/cmd', {
-        method: 'POST',
-        body: JSON.stringify({
-          command: 'pet_analytics',
-          payload: { days: 365 },
-        }),
-      })
-      if (res?.data) setAnalytics(res.data)
+      const res = await apiFetch('/pi/pet/analytics?days=365')
+      const data = res?.data ?? res
+      if (data && data.stage_progression) setAnalytics(data)
     } catch { /* offline */ }
   }, [])
 
