@@ -75,6 +75,11 @@ export function StatusCard({ piStatus, onRefresh }: Props) {
         )}
       </div>
 
+      {/* Battery */}
+      {data.battery && (
+        <BatteryCard battery={data.battery} />
+      )}
+
       {/* Pet info */}
       {data.pet && (
         <div className="bg-surface-secondary rounded-xl p-5 border border-border">
@@ -121,6 +126,49 @@ function InfoCard({ label, value }: { label: string; value: string }) {
       <p className="text-sm font-medium text-text-primary truncate">
         {value}
       </p>
+    </div>
+  )
+}
+
+function BatteryCard({ battery }: { battery: { percentage?: number; charging?: boolean; voltage_v?: number; temperature_c?: number } }) {
+  const pct = battery.percentage ?? 0
+  const charging = battery.charging ?? false
+  const color = pct > 50 ? '#51cf66' : pct > 20 ? '#ffd43b' : '#ff6b6b'
+  const icon = charging ? '⚡' : pct > 75 ? '🔋' : pct > 20 ? '🪫' : '🪫'
+
+  return (
+    <div className="bg-surface-secondary rounded-xl p-5 border border-border">
+      <h4 className="text-xs font-medium text-text-muted uppercase mb-3">
+        Battery
+      </h4>
+      <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2">
+          <span className="text-2xl">{icon}</span>
+          <div>
+            <p className="text-2xl font-bold text-text-primary">
+              {Math.round(pct)}%
+              {charging && <span className="text-sm text-success ml-1">Charging</span>}
+            </p>
+          </div>
+        </div>
+        {/* Battery bar */}
+        <div className="flex-1">
+          <div className="h-6 bg-surface-tertiary rounded-full overflow-hidden border border-border">
+            <div
+              className="h-full rounded-full transition-all duration-500"
+              style={{ width: `${pct}%`, backgroundColor: color }}
+            />
+          </div>
+        </div>
+      </div>
+      <div className="flex gap-4 mt-2 text-xs text-text-muted">
+        {battery.voltage_v !== undefined && (
+          <span>Voltage: {battery.voltage_v.toFixed(2)}V</span>
+        )}
+        {battery.temperature_c !== undefined && (
+          <span>Temp: {battery.temperature_c.toFixed(1)}°C</span>
+        )}
+      </div>
     </div>
   )
 }

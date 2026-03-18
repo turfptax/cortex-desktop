@@ -40,7 +40,7 @@ export function DatasetTab() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [filter, setFilter] = useState<{ source?: string; stage?: number }>({})
 
-  const isReadOnly = filter.source === 'synthetic' || filter.source === 'learned'
+  const isPiData = filter.source === 'synthetic' || filter.source === 'learned'
 
   const fetchData = useCallback(async () => {
     try {
@@ -64,7 +64,11 @@ export function DatasetTab() {
 
   const handleDelete = async (id: string) => {
     try {
-      await apiFetch(`/training/dataset/${id}`, { method: 'DELETE' })
+      if (isPiData) {
+        await apiFetch(`/training/pi-dataset/${id}`, { method: 'DELETE' })
+      } else {
+        await apiFetch(`/training/dataset/${id}`, { method: 'DELETE' })
+      }
       fetchData()
     } catch (err) {
       console.error('Failed to delete:', err)
@@ -142,7 +146,7 @@ export function DatasetTab() {
           </span>
         </div>
 
-        {!isReadOnly && (
+        {!isPiData && (
           <button
             onClick={() => { setShowForm(!showForm); setEditingId(null) }}
             className="px-3 py-1.5 rounded-md text-xs font-medium bg-accent text-white hover:bg-accent-hover transition-colors cursor-pointer"
@@ -187,7 +191,7 @@ export function DatasetTab() {
               setEditingId(null)
               fetchData()
             }}
-            readOnly={isReadOnly}
+            readOnly={false}
           />
         ))}
       </div>

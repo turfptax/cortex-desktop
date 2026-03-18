@@ -316,6 +316,52 @@ async def dataset_stats():
     return dataset_manager.get_stats()
 
 
+# --- Pi training data management ---
+
+
+@router.delete("/pi-dataset/{example_id}")
+async def delete_pi_example(example_id: int):
+    """Delete a training example from the Pi's database."""
+    from services import pi_client
+    result = await pi_client.send_command_parsed(
+        "training_delete", {"ids": [example_id]}
+    )
+    if result is None:
+        raise HTTPException(status_code=502, detail="Pi unreachable")
+    return {"deleted": True, "id": example_id}
+
+
+@router.delete("/pi-dataset")
+async def delete_pi_examples(ids: str):
+    """Delete multiple training examples from Pi. Pass ids as comma-separated."""
+    from services import pi_client
+    id_list = [int(i) for i in ids.split(",") if i.strip().isdigit()]
+    if not id_list:
+        raise HTTPException(status_code=400, detail="No valid IDs")
+    result = await pi_client.send_command_parsed(
+        "training_delete", {"ids": id_list}
+    )
+    if result is None:
+        raise HTTPException(status_code=502, detail="Pi unreachable")
+    return {"deleted": True, "count": len(id_list)}
+
+
+class PiExampleUpdateRequest(BaseModel):
+    messages: list[dict]
+
+
+@router.put("/pi-dataset/{example_id}")
+async def update_pi_example(example_id: int, req: PiExampleUpdateRequest):
+    """Update a training example on the Pi."""
+    from services import pi_client
+    result = await pi_client.send_command_parsed(
+        "training_update", {"id": example_id, "messages": req.messages}
+    )
+    if result is None:
+        raise HTTPException(status_code=502, detail="Pi unreachable")
+    return {"updated": True, "id": example_id}
+
+
 # --- Auto-research endpoints ---
 
 

@@ -58,6 +58,24 @@ interface BadInteraction {
   created_at: string
 }
 
+interface StageProgression {
+  stage: number
+  reached_at: string
+  interactions: number
+}
+
+interface PetAnalytics {
+  total_interactions: number
+  current_mood_score: number
+  stage_progression: StageProgression[]
+  daily_trend: { date: string; avg_sentiment: number; count: number }[]
+  performance: Record<string, number>
+}
+
+const STAGE_NAMES = ['Primordial', 'Babbling', 'Echoing', 'Responding', 'Conversing']
+const STAGE_THRESHOLDS = [0, 50, 200, 1000, 5000]
+const STAGE_COLORS = ['#868e96', '#ffd43b', '#51cf66', '#339af0', '#cc5de8']
+
 // ── Helpers ─────────────────────────────────────────────────────
 
 function VitalBar({
@@ -233,6 +251,7 @@ export function PetCareTab({ isOnline }: Props) {
   const [tuckInResult, setTuckInResult] = useState<TuckInResult | null>(null)
   const [forceTrainLoading, setForceTrainLoading] = useState(false)
   const [forceTrainResult, setForceTrainResult] = useState<string | null>(null)
+  const [analytics, setAnalytics] = useState<PetAnalytics | null>(null)
 
   // ── Data fetching ─────────────────────────────────────────
 
@@ -266,6 +285,19 @@ export function PetCareTab({ isOnline }: Props) {
     } catch { /* offline */ }
   }, [historyHours])
 
+  const fetchAnalytics = useCallback(async () => {
+    try {
+      const res = await apiFetch('/pi/cmd', {
+        method: 'POST',
+        body: JSON.stringify({
+          command: 'pet_analytics',
+          payload: { days: 365 },
+        }),
+      })
+      if (res?.data) setAnalytics(res.data)
+    } catch { /* offline */ }
+  }, [])
+
   const fetchBadInteractions = useCallback(async () => {
     try {
       const res = await apiFetch('/pi/cmd', {
@@ -287,8 +319,9 @@ export function PetCareTab({ isOnline }: Props) {
       fetchComaStatus()
       fetchHistory()
       fetchBadInteractions()
+      fetchAnalytics()
     }
-  }, [isOnline, fetchVitals, fetchIntelligence, fetchComaStatus, fetchHistory, fetchBadInteractions])
+  }, [isOnline, fetchVitals, fetchIntelligence, fetchComaStatus, fetchHistory, fetchBadInteractions, fetchAnalytics])
 
   // Auto-refresh vitals every 30s
   useEffect(() => {
@@ -764,6 +797,134 @@ export function PetCareTab({ isOnline }: Props) {
           </div>
         ) : (
           <div className="text-xs text-text-muted">Loading intelligence...</div>
+        )}
+      </section>
+
+      {/* ── Evolution / Blooms ── */}
+      <section>
+        <h3 className="text-sm font-semibold text-text-primary mb-3">
+          Evolution
+        </h3>
+
+        {analytics ? (
+          <div className="bg-surface-tertiary rounded-lg p-4 space-y-4">
+            {/* Stage progress bar */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-text-muted">
+                  Total Interactions: <span className="text-text-primary font-medium">{analytics.total_interactions}</span>
+                </span>
+                <span className="text-xs text-text-muted">
+                  Current Stage: <span className="font-medium" style={{ color: STAGE_COLORS[analytics.stage_progression.length - 1] || STAGE_COLORS[0] }}>
+                    {STAGE_NAMES[analytics.stage_progression.length - 1] || STAGE_NAMES[0]}
+                  </span>
+                </span>
+              </div>
+
+              {/* Stage milestones */}
+              <div className="relative h-8 bg-surface-secondary rounded-full overflow-hidden">
+                {/* Fill bar based on progress to next stage */}
+                {(() => {
+                  const currentStage = analytics.stage_progression.length - 1
+                  const nextThreshold = STAGE_THRESHOLDS[currentStage + 1] || STAGE_THRESHOLDS[STAGE_THRESHOLDS.length - 1]
+                  const prevThreshold = STAGE_THRESHOLDS[currentStage] || 0
+                  const progress = nextThreshold > prevThreshold
+                    ? Math.min(1, (analytics.total_interactions - prevThreshold) / (nextThreshold - prevThreshold))
+                    : 1
+                  const totalProgress = currentStage >= STAGE_THRESHOLDS.length - 1
+                    ? 100
+                    : ((currentStage + progress) / (STAGE_THRESHOLDS.length - 1)) * 100
+                  return (
+                    <div
+                      className="h-full rounded-full transition-all duration-1000"
+                      style={{
+                        width: `${totalProgress}%`,
+                        background: `linear-gradient(90deg, ${STAGE_COLORS[0]}, ${STAGE_COLORS[Math.min(currentStage, STAGE_COLORS.length - 1)]})`,
+                      }}
+                    />
+                  )
+                })()}
+                {/* Stage markers */}
+                {STAGE_THRESHOLDS.slice(1).map((threshold, i) => {
+                  const pct = ((i + 1) / (STAGE_THRESHOLDS.length - 1)) * 100
+                  return (
+                    <div
+                      key={threshold}
+                      className="absolute top-0 h-full w-px bg-border"
+                      style={{ left: `${pct}%` }}
+                    />
+                  )
+                })}
+              </div>
+
+              {/* Stage labels */}
+              <div className="flex justify-between mt-1">
+                {STAGE_NAMES.map((name, i) => {
+                  const reached = i < analytics.stage_progression.length
+                  return (
+                    <span
+                      key={name}
+                      className="text-[9px] text-center"
+                      style={{ color: reached ? STAGE_COLORS[i] : '#555' }}
+                    >
+                      {name}
+                    </span>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Stage history timeline */}
+            {analytics.stage_progression.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="text-xs text-text-muted font-medium">Bloom History</h4>
+                {analytics.stage_progression.map((sp, i) => (
+                  <div key={sp.stage} className="flex items-center gap-3">
+                    <div
+                      className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0"
+                      style={{ backgroundColor: STAGE_COLORS[sp.stage] || STAGE_COLORS[0] }}
+                    >
+                      {sp.stage + 1}
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-xs font-medium text-text-primary">
+                        {STAGE_NAMES[sp.stage] || `Stage ${sp.stage}`}
+                      </div>
+                      <div className="text-[10px] text-text-muted">
+                        {sp.reached_at ? new Date(sp.reached_at + 'Z').toLocaleDateString(undefined, {
+                          month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit',
+                        }) : 'Unknown'}
+                        {' · '}
+                        {sp.interactions} interaction{sp.interactions !== 1 ? 's' : ''} at this stage
+                      </div>
+                    </div>
+                    {i < analytics.stage_progression.length - 1 && (
+                      <span className="text-green-400 text-xs">Evolved</span>
+                    )}
+                    {i === analytics.stage_progression.length - 1 && (
+                      <span className="text-accent text-xs">Current</span>
+                    )}
+                  </div>
+                ))}
+
+                {/* Next evolution hint */}
+                {analytics.stage_progression.length < STAGE_NAMES.length && (
+                  <div className="flex items-center gap-3 opacity-50">
+                    <div className="w-6 h-6 rounded-full border-2 border-dashed border-text-muted flex items-center justify-center text-xs text-text-muted shrink-0">
+                      ?
+                    </div>
+                    <div className="text-[10px] text-text-muted">
+                      Next: <span className="font-medium">{STAGE_NAMES[analytics.stage_progression.length]}</span>
+                      {' — needs '}
+                      {STAGE_THRESHOLDS[analytics.stage_progression.length] - analytics.total_interactions} more interactions
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="text-xs text-text-muted">Loading evolution data...</div>
         )}
       </section>
     </div>
