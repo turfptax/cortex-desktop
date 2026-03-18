@@ -80,8 +80,10 @@ export function HeartbeatTab({ isOnline }: Props) {
         apiFetch('/pi/pet/heartbeat-log?limit=100'),
         apiFetch('/pi/pet/heartbeat-status'),
       ])
-      if (Array.isArray(logRes)) setEntries(logRes)
-      if (statusRes && typeof statusRes === 'object') setStatus(statusRes as HeartbeatStatus)
+      const logData = logRes?.data ?? logRes
+      if (Array.isArray(logData)) setEntries(logData)
+      const statusData = statusRes?.data ?? statusRes
+      if (statusData && typeof statusData === 'object') setStatus(statusData as HeartbeatStatus)
     } catch (e) {
       console.error('Failed to fetch heartbeat data:', e)
     } finally {
