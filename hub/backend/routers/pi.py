@@ -170,6 +170,20 @@ async def pet_force_train():
     return await pi_client.send_command_parsed("force_train")
 
 
+@router.get("/pet/heartbeat-status")
+async def pet_heartbeat_status():
+    """Get heartbeat system status (enabled, interval, totals)."""
+    return await pi_client.send_command_parsed("heartbeat_status")
+
+
+@router.get("/pet/heartbeat-log")
+async def pet_heartbeat_log(limit: int = 50):
+    """Get recent heartbeat reflections."""
+    return await pi_client.send_command_parsed(
+        "heartbeat_log", {"limit": min(limit, 100)}
+    )
+
+
 @router.post("/notes")
 async def send_note(req: NoteRequest):
     """Send a note to the Pi."""

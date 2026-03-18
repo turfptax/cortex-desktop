@@ -186,6 +186,20 @@ TEACHER_ACTIVITY_TPL = (
     '[{{"user": "question about user habits", "assistant": "pet\'s aware response"}}]'
 )
 
+TEACHER_HEARTBEAT_TPL = (
+    "The AI pet had this autonomous thought during a heartbeat reflection:\n\n"
+    "Type: {prompt_type}\n"
+    "Prompt: {prompt}\n"
+    "Response: {response}\n"
+    "Vitals at the time — hunger: {hunger}%, clean: {clean}%, energy: {energy}%, happy: {happy}%\n"
+    "Battery: {battery}%\n\n"
+    "Generate {n} Q&A training pairs that teach the pet to have similar self-aware reflections.\n"
+    "The pet should show awareness of its own state, body, and passage of time.\n"
+    "Responses are 1-3 sentences, warm and introspective.\n\n"
+    'Respond with ONLY a JSON array, no other text:\n'
+    '[{{"user": "question about pet\'s inner life or self-awareness", "assistant": "pet\'s reflective response"}}]'
+)
+
 TEACHER_KNOWLEDGE_TPL = (
     "Based on the following data about the user, write a brief 2-4 sentence summary "
     "of what you learned about them. Focus on projects, interests, habits.\n\n"
@@ -198,6 +212,7 @@ TEACHER_KNOWLEDGE_TPL = (
 _DEFAULT_LEDGER = {
     "processed_note_ids": [],
     "processed_session_ids": [],
+    "processed_heartbeat_ids": [],
     "processed_activity_batch": None,
     "last_sync_at": None,
     "cycles": [],
@@ -390,7 +405,8 @@ class WorkItem:
 
 
 def _build_work_items(notes: list[dict], sessions: list[dict],
-                      activities: list[dict], n_examples: int) -> list[WorkItem]:
+                      activities: list[dict], n_examples: int,
+                      heartbeats: list[dict] | None = None) -> list[WorkItem]:
     """Build all synthesis work items up front for parallel dispatch."""
     items: list[WorkItem] = []
 
@@ -461,6 +477,32 @@ def _build_work_items(notes: list[dict], sessions: list[dict],
                 {"role": "assistant", "content": "["},
             ],
             source_data={},
+        ))
+
+    for hb in (heartbeats or []):
+        response = (hb.get("response") or "").strip()
+        if not response or len(response) < 10:
+            continue
+        prompt = TEACHER_HEARTBEAT_TPL.format(
+            prompt_type=hb.get("prompt_type", "unknown"),
+            prompt=hb.get("prompt", "")[:2000],
+            response=response[:2000],
+            hunger=round(hb.get("hunger", 0) * 100),
+            clean=round(hb.get("cleanliness", 0) * 100),
+            energy=round(hb.get("energy", 0) * 100),
+            happy=round(hb.get("happiness", 0) * 100),
+            battery=hb.get("battery_pct", 0),
+            n=2,
+        )
+        items.append(WorkItem(
+            item_type="heartbeat",
+            item_id=hb.get("id", "?"),
+            messages=[
+                {"role": "system", "content": TEACHER_SYSTEM},
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "["},
+            ],
+            source_data=hb,
         ))
 
     return items
@@ -672,6 +714,7 @@ def run_learn_cycle(server_overrides: list[dict] | None = None) -> dict:
         ledger = _load_ledger()
         processed_note_ids = set(ledger.get("processed_note_ids", []))
         processed_session_ids = set(ledger.get("processed_session_ids", []))
+        processed_heartbeat_ids = set(ledger.get("processed_heartbeat_ids", []))
 
         # Pull data
         _set_progress(phase="pulling_data")
@@ -679,17 +722,20 @@ def run_learn_cycle(server_overrides: list[dict] | None = None) -> dict:
         all_notes = _query_pi("notes", limit=1000)
         all_sessions = _query_pi("sessions", limit=500)
         all_activities = _query_pi("activities", limit=2000)
+        all_heartbeats = _query_pi("heartbeat_log", limit=500)
 
         new_notes = [n for n in all_notes if n.get("id") not in processed_note_ids]
         new_sessions = [s for s in all_sessions
                         if s.get("id", s.get("session_id")) not in processed_session_ids
                         and s.get("summary")]
+        new_heartbeats = [h for h in all_heartbeats if h.get("id") not in processed_heartbeat_ids]
 
         logger.info("  Notes: %d total, %d new", len(all_notes), len(new_notes))
         logger.info("  Sessions: %d total, %d new", len(all_sessions), len(new_sessions))
+        logger.info("  Heartbeats: %d total, %d new", len(all_heartbeats), len(new_heartbeats))
         logger.info("  Activities: %d total", len(all_activities))
 
-        total_new = len(new_notes) + len(new_sessions)
+        total_new = len(new_notes) + len(new_sessions) + len(new_heartbeats)
         if total_new == 0 and len(all_activities) < 5:
             logger.info("Nothing new to process.")
             _set_progress(phase="done")
@@ -697,7 +743,8 @@ def run_learn_cycle(server_overrides: list[dict] | None = None) -> dict:
                     "notes": 0, "sessions": 0, "examples": 0}
 
         # Build work items
-        work_items = _build_work_items(new_notes, new_sessions, all_activities, n_examples=3)
+        work_items = _build_work_items(new_notes, new_sessions, all_activities,
+                                       n_examples=3, heartbeats=new_heartbeats)
         logger.info("Built %d work items for parallel processing", len(work_items))
 
         # Process all items in parallel across servers
@@ -709,6 +756,8 @@ def run_learn_cycle(server_overrides: list[dict] | None = None) -> dict:
             processed_note_ids.add(n.get("id"))
         for s in new_sessions:
             processed_session_ids.add(s.get("id", s.get("session_id")))
+        for h in new_heartbeats:
+            processed_heartbeat_ids.add(h.get("id"))
 
         # Build data summary for knowledge generation
         data_summary_parts = []
@@ -721,6 +770,11 @@ def run_learn_cycle(server_overrides: list[dict] | None = None) -> dict:
             data_summary_parts.append(
                 f"Sessions ({len(new_sessions)}): "
                 + "; ".join(s.get("summary", "")[:100] for s in new_sessions[:5])
+            )
+        if new_heartbeats:
+            data_summary_parts.append(
+                f"Heartbeat reflections ({len(new_heartbeats)}): "
+                + "; ".join(h.get("response", "")[:80] for h in new_heartbeats[:5])
             )
         if all_activities and len(all_activities) >= 5:
             data_summary_parts.append(f"Activities: {len(all_activities)} logged")
@@ -782,6 +836,7 @@ def run_learn_cycle(server_overrides: list[dict] | None = None) -> dict:
             "started_at": datetime.now(timezone.utc).isoformat(),
             "notes_processed": len(new_notes),
             "sessions_processed": len(new_sessions),
+            "heartbeats_processed": len(new_heartbeats),
             "activities_processed": len(all_activities),
             "examples_generated": len(all_examples),
             "knowledge_summary": knowledge,
@@ -791,6 +846,7 @@ def run_learn_cycle(server_overrides: list[dict] | None = None) -> dict:
         }
         ledger["processed_note_ids"] = sorted(processed_note_ids)
         ledger["processed_session_ids"] = sorted(processed_session_ids)
+        ledger["processed_heartbeat_ids"] = sorted(processed_heartbeat_ids)
         ledger["last_sync_at"] = datetime.now(timezone.utc).isoformat()
         ledger["cycles"] = ledger.get("cycles", []) + [cycle]
         ledger["total_examples_generated"] = ledger.get("total_examples_generated", 0) + len(all_examples)
@@ -807,6 +863,7 @@ def run_learn_cycle(server_overrides: list[dict] | None = None) -> dict:
             "ok": True,
             "notes_processed": len(new_notes),
             "sessions_processed": len(new_sessions),
+            "heartbeats_processed": len(new_heartbeats),
             "examples_generated": len(all_examples),
             "knowledge_summary": knowledge,
             "elapsed_s": round(elapsed, 1),
