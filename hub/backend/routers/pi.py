@@ -158,6 +158,14 @@ async def pet_training_history():
     return await pi_client.send_command_parsed("pet_training_history")
 
 
+@router.get("/pet/analytics")
+async def pet_analytics(days: int = 365):
+    """Get pet evolution analytics (stage progression, mood trends)."""
+    return await pi_client.send_command_parsed(
+        "pet_analytics", {"days": min(days, 365)}
+    )
+
+
 @router.post("/pet/tuck-in")
 async def pet_tuck_in():
     """Tuck the pet in — put to sleep and check training readiness.

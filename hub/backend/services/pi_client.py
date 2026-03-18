@@ -63,10 +63,10 @@ async def get_status() -> dict:
     h = await health()
     if h and h.get("error"):
         return h
-    status = await send_command("get_status")
+    result = await send_command_parsed("status")
     return {
         "health": h,
-        "status": status,
+        "status": result.get("data") or {},
         "online": True,
     }
 
