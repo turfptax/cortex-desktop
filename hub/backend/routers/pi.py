@@ -160,14 +160,45 @@ async def pet_training_history():
 
 @router.post("/pet/tuck-in")
 async def pet_tuck_in():
-    """Tuck the pet in — put to sleep and check training readiness."""
-    return await pi_client.send_command_parsed("tuck_in")
+    """Tuck the pet in — put to sleep and check training readiness.
+
+    Since the Pi can't call back to the Hub (firewall), we report
+    dream_ready based on interactions/cooldown only (not hub reachability).
+    The Hub triggers training directly via /training/dream-cycle.
+    """
+    result = await pi_client.send_command_parsed("tuck_in")
+    # Override hub_available since training runs locally on the Hub
+    if result and result.get("data"):
+        result["data"]["hub_available"] = True
+        result["data"]["dream_ready"] = (
+            result["data"].get("interactions_ready", False)
+            and result["data"].get("cooldown_ok", False)
+        )
+    return result
 
 
 @router.post("/pet/force-train")
 async def pet_force_train():
-    """Force-trigger a dream training cycle, bypassing cooldown and interaction checks."""
-    return await pi_client.send_command_parsed("force_train")
+    """Force-trigger dream training cycle from the Hub side.
+
+    Instead of asking the Pi to call back to the Hub (blocked by firewall),
+    we put the pet to sleep, then start the dream cycle directly on the Hub.
+    """
+    # Put pet to sleep first
+    sleep_result = await pi_client.send_command_parsed("pet_sleep", {"reason": "force_train"})
+
+    # Start dream cycle on the Hub directly
+    from routers.training import start_dream_cycle, DreamCycleRequest
+    dream_req = DreamCycleRequest(
+        pi_ip=settings.pi_host,
+        pi_port=settings.pi_port,
+        trigger="force_train",
+    )
+    try:
+        dream_result = await start_dream_cycle(dream_req)
+        return {"data": {"started": True, "dream": dream_result}}
+    except Exception as e:
+        return {"data": None, "error": str(e)}
 
 
 @router.get("/pet/heartbeat-status")
