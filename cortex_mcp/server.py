@@ -659,6 +659,44 @@ def pet_chat(message: str, timeout: int = 120) -> str:
 
 
 @mcp.tool()
+def pet_feed(feed_type: str = "chat_snack") -> str:
+    """Feed the Cortex pet to restore hunger.
+
+    Args:
+        feed_type: Type of food — "chat_snack" (+15%), "data_meal" (+25%),
+                   or "training_feast" (+40%).
+    """
+    try:
+        bridge = _get_bridge_lazy()
+        return send_command(bridge, "pet_feed", {"type": feed_type})
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+@mcp.tool()
+def pet_clean() -> str:
+    """Clean the Cortex pet to restore cleanliness.
+
+    Performs a quick clean, discarding no specific interactions.
+    """
+    try:
+        bridge = _get_bridge_lazy()
+        return send_command(bridge, "pet_clean", {})
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+@mcp.tool()
+def pet_rest() -> str:
+    """Let the Cortex pet rest to restore energy (+10%)."""
+    try:
+        bridge = _get_bridge_lazy()
+        return send_command(bridge, "pet_rest")
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+@mcp.tool()
 def send_message(message: str) -> str:
     """Send an arbitrary message to the Pi Zero through the bridge.
 
