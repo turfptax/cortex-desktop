@@ -582,6 +582,83 @@ def pet_analytics(days: int = 7) -> str:
 
 
 @mcp.tool()
+def pet_chat(message: str, timeout: int = 120) -> str:
+    """Chat with the Cortex pet using its on-device LLM.
+
+    Sends a message to the pet and waits for its response. The pet runs a
+    small language model (Qwen 0.8B) on the Orange Pi, so responses take
+    10-60 seconds. Be patient!
+
+    The pet has its own personality shaped by its mood, hunger, energy, and
+    training history. Responses reflect its current emotional state.
+
+    Args:
+        message: What you want to say to the pet.
+        timeout: Max seconds to wait for a response (default 120).
+    """
+    import time as _time
+
+    try:
+        bridge = _get_bridge_lazy()
+
+        # Step 1: Send pet_ask — returns ACK with interaction ID
+        ack_raw = send_command(bridge, "pet_ask", {"prompt": message})
+        if "Error" in ack_raw or "timeout" in ack_raw.lower():
+            return "Failed to send message to pet: {}".format(ack_raw)
+
+        # Parse interaction ID from ACK
+        interaction_id = 0
+        if "ACK" in ack_raw:
+            try:
+                interaction_id = int(ack_raw.split(":")[-1].strip().rstrip(")"))
+            except (ValueError, IndexError):
+                pass
+
+        since_id = max(interaction_id - 1, 0)
+
+        # Step 2: Poll for the pet's response
+        deadline = _time.monotonic() + min(timeout, 180)
+        while _time.monotonic() < deadline:
+            _time.sleep(3.0)
+            poll_raw = send_command(
+                bridge, "pet_response", {"since_id": since_id}, timeout=10
+            )
+            if "Error" in poll_raw or "timeout" in poll_raw.lower():
+                continue
+
+            # Try to parse the JSON response list
+            try:
+                import json as _json
+                items = _json.loads(poll_raw)
+                if isinstance(items, list):
+                    # Find our specific response
+                    for item in items:
+                        if item.get("id") == interaction_id:
+                            return item.get("response", "(empty response)")
+                    # Or return the latest if available
+                    if items:
+                        latest = items[-1]
+                        return latest.get("response", "(empty response)")
+            except (ValueError, _json.JSONDecodeError):
+                # Response might be wrapped differently
+                if "RSP:pet_response:" in poll_raw:
+                    data_part = poll_raw.split("RSP:pet_response:", 1)[-1]
+                    try:
+                        items = _json.loads(data_part)
+                        if isinstance(items, list) and items:
+                            for item in items:
+                                if item.get("id") == interaction_id:
+                                    return item.get("response", "(empty response)")
+                            return items[-1].get("response", "(empty response)")
+                    except Exception:
+                        pass
+
+        return "(The pet didn't respond in time — it may be sleeping or in a coma.)"
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+@mcp.tool()
 def send_message(message: str) -> str:
     """Send an arbitrary message to the Pi Zero through the bridge.
 
