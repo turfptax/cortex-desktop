@@ -185,6 +185,12 @@ async def pet_tuck_in():
     return result
 
 
+@router.post("/pet/wake")
+async def pet_wake():
+    """Wake the pet from sleep."""
+    return await pi_client.send_command_parsed("pet_wake")
+
+
 @router.post("/pet/force-train")
 async def pet_force_train():
     """Force-trigger dream training cycle from the Hub side.

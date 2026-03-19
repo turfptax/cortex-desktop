@@ -251,6 +251,7 @@ export function PetCareTab({ isOnline }: Props) {
   const [tuckInResult, setTuckInResult] = useState<TuckInResult | null>(null)
   const [forceTrainLoading, setForceTrainLoading] = useState(false)
   const [forceTrainResult, setForceTrainResult] = useState<string | null>(null)
+  const [wakeLoading, setWakeLoading] = useState(false)
   const [analytics, setAnalytics] = useState<PetAnalytics | null>(null)
 
   // ── Data fetching ─────────────────────────────────────────
@@ -390,6 +391,19 @@ export function PetCareTab({ isOnline }: Props) {
       setTuckInResult({ error: err.message } as TuckInResult)
     } finally {
       setTuckInLoading(false)
+    }
+  }
+
+  const handleWake = async () => {
+    setWakeLoading(true)
+    try {
+      await apiFetch('/pi/pet/wake', { method: 'POST' })
+      setTuckInResult(null)
+      await fetchVitals()
+    } catch {
+      // ignore
+    } finally {
+      setWakeLoading(false)
     }
   }
 
@@ -622,16 +636,29 @@ export function PetCareTab({ isOnline }: Props) {
         </h3>
 
         <div className="grid grid-cols-2 gap-2 mb-2">
-          <button
-            onClick={handleTuckIn}
-            disabled={tuckInLoading}
-            className="bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 rounded-lg px-3 py-2.5 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
-          >
-            {tuckInLoading ? 'Tucking in...' : 'Tuck In'}
-            <div className="text-[9px] text-indigo-400/60 mt-0.5">
-              Sleep + check readiness
-            </div>
-          </button>
+          {vitals?.is_sleeping ? (
+            <button
+              onClick={handleWake}
+              disabled={wakeLoading}
+              className="bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 rounded-lg px-3 py-2.5 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
+            >
+              {wakeLoading ? 'Waking...' : 'Wake Up'}
+              <div className="text-[9px] text-amber-400/60 mt-0.5">
+                Wake from sleep
+              </div>
+            </button>
+          ) : (
+            <button
+              onClick={handleTuckIn}
+              disabled={tuckInLoading}
+              className="bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 rounded-lg px-3 py-2.5 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
+            >
+              {tuckInLoading ? 'Tucking in...' : 'Tuck In'}
+              <div className="text-[9px] text-indigo-400/60 mt-0.5">
+                Sleep + check readiness
+              </div>
+            </button>
+          )}
           <button
             onClick={handleForceTrain}
             disabled={
