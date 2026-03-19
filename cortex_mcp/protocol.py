@@ -113,7 +113,7 @@ def send_command(bridge, command, payload=None, timeout=None):
         return "ACK (id: {})".format(resp["data"])
     if resp["type"] == "RSP":
         data = resp["data"]
-        if isinstance(data, dict):
+        if isinstance(data, (dict, list)):
             return json.dumps(data, indent=2)
         return str(data)
     return resp["raw"]
