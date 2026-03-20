@@ -537,7 +537,7 @@ async def start_dream_cycle(req: DreamCycleRequest):
                 ("02", "Prepare Dataset", []),
                 ("03", "Train LoRA", []),
                 ("04", "Evaluate", ["--save"]),
-                ("06", "Export & Deploy", ["--merge"]),
+                ("06", "Export & Deploy", []),
             ]
 
             # Skip learn cycle if not requested
