@@ -653,6 +653,11 @@ async def start_dream_cycle(req: DreamCycleRequest):
 
                     proc.wait(timeout=3600)
 
+                    # Steps that are nice-to-have but not critical:
+                    # "00" (Sync) and "07" (Learn Cycle) — pipeline can
+                    # continue without them.
+                    NON_FATAL_STEPS = {"00", "07"}
+
                     if proc.returncode == 0:
                         results["steps_completed"].append(step_id)
                         _dream_state["steps_completed"].append(step_id)
@@ -664,7 +669,8 @@ async def start_dream_cycle(req: DreamCycleRequest):
                         )
                         results["errors"].append(err_msg)
                         _dream_state["errors"].append(err_msg)
-                        break  # Stop pipeline on failure
+                        if step_id not in NON_FATAL_STEPS:
+                            break  # Stop pipeline on critical failure
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     err_msg = f"Step {step_id} ({step_name}) timed out"
