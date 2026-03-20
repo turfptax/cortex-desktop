@@ -23,6 +23,7 @@ interface ModelPreset {
   recommended_lora_r: number
   recommended_lora_alpha: number
   dtype: string
+  recommended_gguf_type?: string
   notes: string
 }
 
@@ -49,6 +50,7 @@ const fields: FieldDef[] = [
   { section: 'lora', key: 'dropout', label: 'LoRA Dropout', type: 'number', step: 0.01 },
   { section: 'lora', key: 'target_modules', label: 'Target Modules', type: 'text', fullWidth: true },
   { section: 'model', key: 'max_seq_length', label: 'Max Seq Length', type: 'number' },
+  { section: 'model', key: 'gguf_quantization', label: 'GGUF Quant', type: 'text' },
   { section: 'data', key: 'test_split', label: 'Test Split', type: 'number', step: 0.05 },
 ]
 
@@ -107,6 +109,7 @@ export function HyperparamEditor({ config, onSave }: Props) {
         base_model: modelId,
         max_seq_length: preset.max_seq_length,
         dtype: preset.dtype,
+        gguf_quantization: preset.recommended_gguf_type || 'q8_0',
       },
       lora: {
         ...prev.lora,

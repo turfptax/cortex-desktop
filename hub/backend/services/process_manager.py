@@ -102,7 +102,7 @@ STEPS = {
         "name": "Export & Deploy",
         "script": "06_export_deploy.py",
         "description": "Merge LoRA adapter into base model, convert to GGUF format, and deploy the updated model to the Pi via SCP",
-        "args": ["--export-only", "--merge"],
+        "args": ["--merge"],
     },
     "pong_train": {
         "name": "Train Pong AI",
