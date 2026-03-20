@@ -172,16 +172,34 @@ async def pet_tuck_in():
 
     Since the Pi can't call back to the Hub (firewall), we report
     dream_ready based on interactions/cooldown only (not hub reachability).
-    The Hub triggers training directly via /training/dream-cycle.
+    If ready, the Hub triggers training directly via /training/dream-cycle.
     """
     result = await pi_client.send_command_parsed("tuck_in")
     # Override hub_available since training runs locally on the Hub
     if result and result.get("data"):
         result["data"]["hub_available"] = True
-        result["data"]["dream_ready"] = (
+        dream_ready = (
             result["data"].get("interactions_ready", False)
             and result["data"].get("cooldown_ok", False)
         )
+        result["data"]["dream_ready"] = dream_ready
+
+        # Auto-trigger dream training when all conditions are met
+        if dream_ready:
+            from routers.training import start_dream_cycle, DreamCycleRequest
+            dream_req = DreamCycleRequest(
+                pi_ip=settings.pi_host,
+                pi_port=settings.pi_port,
+                trigger="tuck_in",
+            )
+            try:
+                dream_result = await start_dream_cycle(dream_req)
+                result["data"]["dream_started"] = True
+                result["data"]["dream"] = dream_result
+            except Exception as e:
+                result["data"]["dream_started"] = False
+                result["data"]["dream_error"] = str(e)
+
     return result
 
 
