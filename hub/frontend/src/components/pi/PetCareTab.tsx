@@ -13,6 +13,7 @@ interface Vitals {
   is_sleeping?: boolean
   total_feeds: number
   total_cleans: number
+  bloom?: number
 }
 
 interface TuckInResult {
@@ -477,10 +478,15 @@ export function PetCareTab({ isOnline }: Props) {
             />
 
             {/* Stat boxes */}
-            <div className="grid grid-cols-4 gap-2 mt-3">
+            <div className="grid grid-cols-5 gap-2 mt-3">
               <StatBox
                 label="IQ"
                 value={Math.round(vitals.intelligence ?? 0)}
+              />
+              <StatBox
+                label="Bloom"
+                value={vitals.bloom ?? 0}
+                sub={vitals.bloom ? `B${vitals.bloom}` : '—'}
               />
               <StatBox label="Feeds" value={vitals.total_feeds ?? 0} />
               <StatBox label="Cleans" value={vitals.total_cleans ?? 0} />
