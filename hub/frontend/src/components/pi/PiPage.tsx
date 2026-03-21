@@ -30,7 +30,7 @@ export function PiPage({ status }: Props) {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h2 className="text-base font-semibold text-text-primary">
-              Pi Zero
+              Cortex Pi
             </h2>
             <span
               className={`px-2 py-0.5 rounded-full text-xs font-medium ${

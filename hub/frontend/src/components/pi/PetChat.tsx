@@ -1,5 +1,14 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { type PetMessage } from '../../hooks/usePi'
+import { apiFetch } from '../../lib/api'
+
+interface PetInfo {
+  bloom?: number
+  stage_name?: string
+  mood?: string
+  interaction_count?: number
+  intelligence?: number
+}
 
 interface Props {
   messages: PetMessage[]
@@ -10,6 +19,7 @@ interface Props {
 
 export function PetChat({ messages, isLoading, onSend, isOnline }: Props) {
   const [input, setInput] = useState('')
+  const [petInfo, setPetInfo] = useState<PetInfo | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -17,6 +27,23 @@ export function PetChat({ messages, isLoading, onSend, isOnline }: Props) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [messages])
+
+  // Fetch pet info (bloom, stage, etc.) on mount and after each message
+  const fetchPetInfo = useCallback(async () => {
+    try {
+      const res = await apiFetch('/pi/pet/status')
+      if (res?.data) setPetInfo(res.data)
+    } catch { /* offline */ }
+  }, [])
+
+  useEffect(() => {
+    if (isOnline) fetchPetInfo()
+  }, [isOnline, fetchPetInfo])
+
+  // Refresh pet info when message count changes (after new response)
+  useEffect(() => {
+    if (isOnline && messages.length > 0) fetchPetInfo()
+  }, [messages.length, isOnline, fetchPetInfo])
 
   const handleSubmit = () => {
     if (!input.trim() || isLoading) return
@@ -26,6 +53,36 @@ export function PetChat({ messages, isLoading, onSend, isOnline }: Props) {
 
   return (
     <div className="flex flex-col h-full">
+      {/* Pet info header */}
+      {isOnline && petInfo && (
+        <div className="px-6 py-2 border-b border-border bg-surface-secondary/50 flex items-center gap-3">
+          <span className="text-sm font-semibold text-text-primary">
+            Cortex{petInfo.bloom ? ` · B${petInfo.bloom}` : ''}
+          </span>
+          {petInfo.stage_name && (
+            <span className="text-xs text-text-muted">
+              {petInfo.stage_name}
+            </span>
+          )}
+          {petInfo.mood && (
+            <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+              petInfo.mood === 'happy' ? 'bg-success/20 text-success'
+              : petInfo.mood === 'content' ? 'bg-blue-500/20 text-blue-400'
+              : petInfo.mood === 'sad' ? 'bg-red-500/20 text-red-400'
+              : petInfo.mood === 'uneasy' ? 'bg-amber-500/20 text-amber-400'
+              : 'bg-surface-tertiary text-text-muted'
+            }`}>
+              {petInfo.mood}
+            </span>
+          )}
+          {petInfo.interaction_count != null && (
+            <span className="text-xs text-text-muted ml-auto tabular-nums">
+              {petInfo.interaction_count} chats
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
         {!isOnline && (

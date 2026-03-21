@@ -696,8 +696,10 @@ async def start_dream_cycle(req: DreamCycleRequest):
                     training_metrics["training_time_s"] = tlog.get(
                         "training_time_s")
                     training_metrics["dataset_size"] = tlog.get("train_samples")
-                    training_metrics["lora_version"] = tlog.get(
-                        "bloom_number", "dream")
+                    bloom_num = tlog.get("bloom_number")
+                    training_metrics["lora_version"] = (
+                        f"bloom-{bloom_num}" if bloom_num else "dream"
+                    )
             except Exception:
                 pass
 
