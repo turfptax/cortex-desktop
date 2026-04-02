@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { apiFetch } from '../../lib/api'
 
+type Channel = 'stable' | 'dev'
+
 interface UpdateInfo {
   ok: boolean
   current_version: string
@@ -13,6 +15,16 @@ interface UpdateInfo {
   release_notes?: string
   message?: string
   error?: string
+  channel?: string
+  is_prerelease?: boolean
+}
+
+function getStoredChannel(): Channel {
+  try {
+    const v = localStorage.getItem('cortex-update-channel')
+    if (v === 'dev') return 'dev'
+  } catch {}
+  return 'stable'
 }
 
 export function UpdateCard() {
@@ -20,12 +32,22 @@ export function UpdateCard() {
   const [checking, setChecking] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [updateError, setUpdateError] = useState('')
+  const [updateSuccess, setUpdateSuccess] = useState('')
+  const [channel, setChannel] = useState<Channel>(getStoredChannel)
+
+  const handleChannelChange = (ch: Channel) => {
+    setChannel(ch)
+    setInfo(null)
+    setUpdateError('')
+    setUpdateSuccess('')
+    try { localStorage.setItem('cortex-update-channel', ch) } catch {}
+  }
 
   const handleCheck = async () => {
     setChecking(true)
     setUpdateError('')
     try {
-      const res = await apiFetch<UpdateInfo>('/settings/check-update')
+      const res = await apiFetch<UpdateInfo>(`/settings/check-update?channel=${channel}`)
       setInfo(res)
     } catch {
       setInfo({ ok: false, error: 'Could not reach update server', current_version: '?', latest_version: '?', update_available: false })
@@ -33,18 +55,15 @@ export function UpdateCard() {
     setChecking(false)
   }
 
-  const [updateSuccess, setUpdateSuccess] = useState('')
-
   const handleUpdate = async () => {
     setUpdating(true)
     setUpdateError('')
     setUpdateSuccess('')
     try {
-      const res = await apiFetch<{ ok: boolean; error?: string; release_url?: string; message?: string; needs_restart?: boolean }>('/settings/apply-update', {
+      const res = await apiFetch<{ ok: boolean; error?: string; release_url?: string; message?: string; needs_restart?: boolean }>(`/settings/apply-update?channel=${channel}`, {
         method: 'POST',
       })
       if (!res.ok) {
-        // If no installer available, fall back to opening release page
         if (res.release_url) {
           window.open(res.release_url, '_blank')
           setUpdateError('No installer found — opened release page instead.')
@@ -52,11 +71,9 @@ export function UpdateCard() {
           setUpdateError(res.error || 'Update failed')
         }
       } else if (res.needs_restart) {
-        // Git pull succeeded — user needs to restart manually
         setUpdateSuccess(res.message || 'Update applied! Restart the app to use the new version.')
         setInfo(prev => prev ? { ...prev, update_available: false } : prev)
       }
-      // If ok without needs_restart, the installer will handle restart
     } catch {
       setUpdateError('Failed to start update. Try downloading manually.')
     }
@@ -78,17 +95,48 @@ export function UpdateCard() {
           {checking ? 'Checking...' : 'Check for Updates'}
         </button>
 
+        {/* Channel toggle */}
+        <div className="flex items-center bg-surface-secondary rounded-lg p-0.5 text-xs">
+          <button
+            onClick={() => handleChannelChange('stable')}
+            className={`px-3 py-1 rounded-md transition-colors cursor-pointer ${
+              channel === 'stable'
+                ? 'bg-surface-tertiary text-text-primary font-medium'
+                : 'text-text-muted hover:text-text-secondary'
+            }`}
+          >
+            Stable
+          </button>
+          <button
+            onClick={() => handleChannelChange('dev')}
+            className={`px-3 py-1 rounded-md transition-colors cursor-pointer ${
+              channel === 'dev'
+                ? 'bg-amber-500/20 text-amber-400 font-medium'
+                : 'text-text-muted hover:text-text-secondary'
+            }`}
+          >
+            Dev
+          </button>
+        </div>
+
         {info && !info.error && !info.update_available && (
           <span className="text-sm text-success">✅ You're up to date!</span>
         )}
       </div>
 
+      {channel === 'dev' && (
+        <p className="text-xs text-amber-400/80 mb-3">
+          ⚠️ Dev builds may be unstable. Use for testing new features before stable release.
+        </p>
+      )}
+
       {/* Update available banner */}
       {info?.update_available && (
-        <div className="bg-accent/10 border border-accent/30 rounded-lg p-4 space-y-3">
+        <div className={`${info.is_prerelease ? 'bg-amber-500/10 border-amber-500/30' : 'bg-accent/10 border-accent/30'} border rounded-lg p-4 space-y-3`}>
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-accent">
+              <p className={`text-sm font-medium ${info.is_prerelease ? 'text-amber-400' : 'text-accent'}`}>
+                {info.is_prerelease && <span className="bg-amber-500/20 text-amber-400 text-[10px] uppercase font-bold px-1.5 py-0.5 rounded mr-2">Pre-release</span>}
                 Update available: v{info.latest_version}
               </p>
               <p className="text-xs text-text-muted mt-0.5">
@@ -102,7 +150,11 @@ export function UpdateCard() {
               <button
                 onClick={handleUpdate}
                 disabled={updating}
-                className="px-3 py-1.5 bg-accent text-white text-xs rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-50 cursor-pointer"
+                className={`px-3 py-1.5 text-white text-xs rounded-lg transition-colors disabled:opacity-50 cursor-pointer ${
+                  info.is_prerelease
+                    ? 'bg-amber-600 hover:bg-amber-500'
+                    : 'bg-accent hover:bg-accent-hover'
+                }`}
               >
                 {updating ? 'Installing...' : 'Install Update'}
               </button>
@@ -120,7 +172,7 @@ export function UpdateCard() {
           </div>
 
           {updating && (
-            <p className="text-xs text-accent animate-pulse">
+            <p className={`text-xs animate-pulse ${info.is_prerelease ? 'text-amber-400' : 'text-accent'}`}>
               Downloading update... The app will close and restart automatically.
             </p>
           )}
@@ -154,6 +206,7 @@ export function UpdateCard() {
       {/* Version footer */}
       <p className="text-xs text-text-muted mt-3">
         Current version: v{info?.current_version || '0.1.0'}
+        {channel === 'dev' && <span className="text-amber-400/60"> &middot; Dev channel</span>}
       </p>
     </div>
   )
