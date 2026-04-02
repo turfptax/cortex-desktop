@@ -348,10 +348,15 @@ def _current_version() -> str:
 
 
 def _parse_version(v: str) -> tuple[int, ...]:
-    """Parse '0.1.0' or 'v0.1.0' into (0, 1, 0)."""
+    """Parse '0.1.0' or 'v0.1.0' into (0, 1, 0).
+
+    Strips pre-release suffixes like '-dev.1' or '-rc.2' for numeric comparison.
+    """
     v = v.lstrip("vV").strip()
+    # Split off pre-release suffix (e.g. "0.11.0-dev.1" -> "0.11.0")
+    base = v.split("-")[0]
     parts = []
-    for p in v.split("."):
+    for p in base.split("."):
         try:
             parts.append(int(p))
         except ValueError:
@@ -359,52 +364,92 @@ def _parse_version(v: str) -> tuple[int, ...]:
     return tuple(parts) or (0,)
 
 
+def _is_prerelease_tag(tag: str) -> bool:
+    """Check if a version tag is a pre-release (dev, rc, alpha, beta)."""
+    v = tag.lstrip("vV")
+    return any(suffix in v for suffix in ("-dev", "-rc", "-alpha", "-beta"))
+
+
+def _extract_release_assets(data: dict) -> tuple[str, str]:
+    """Extract installer and zip download URLs from a GitHub release."""
+    download_url = ""
+    installer_url = ""
+    for asset in data.get("assets", []):
+        name = asset.get("name", "")
+        dl = asset.get("browser_download_url", "")
+        if name.lower().startswith("cortexhub-setup") and name.endswith(".exe"):
+            installer_url = dl
+        elif name.endswith(".zip") and "windows" in name.lower():
+            download_url = dl
+        elif name.endswith(".zip") and not download_url:
+            download_url = dl
+    return installer_url, download_url
+
+
 @router.get("/check-update")
-async def check_update():
-    """Check GitHub releases for a newer version."""
+async def check_update(channel: str = "stable"):
+    """Check GitHub releases for a newer version.
+
+    Args:
+        channel: 'stable' (default) checks /releases/latest (excludes pre-releases).
+                 'dev' checks /releases and includes pre-releases (dev, rc, alpha, beta).
+    """
     current = _current_version()
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
     try:
         async with httpx.AsyncClient() as client:
-            r = await client.get(url, headers={"Accept": "application/vnd.github+json"}, timeout=10.0)
+            if channel == "dev":
+                # Fetch all releases, pick the first (newest) including pre-releases
+                url = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=10"
+                r = await client.get(url, headers={"Accept": "application/vnd.github+json"}, timeout=10.0)
 
-        if r.status_code == 404:
-            # No releases yet
-            return {
-                "ok": True,
-                "current_version": current,
-                "latest_version": current,
-                "update_available": False,
-                "message": "No releases published yet.",
-            }
+                if r.status_code != 200:
+                    return {"ok": False, "error": f"GitHub API returned {r.status_code}"}
 
-        if r.status_code != 200:
-            return {"ok": False, "error": f"GitHub API returned {r.status_code}"}
+                releases = r.json()
+                if not releases:
+                    return {
+                        "ok": True,
+                        "current_version": current,
+                        "latest_version": current,
+                        "update_available": False,
+                        "message": "No releases published yet.",
+                    }
 
-        data = r.json()
+                # First release is newest (includes pre-releases)
+                data = releases[0]
+            else:
+                # Stable: only latest non-prerelease
+                url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+                r = await client.get(url, headers={"Accept": "application/vnd.github+json"}, timeout=10.0)
+
+                if r.status_code == 404:
+                    return {
+                        "ok": True,
+                        "current_version": current,
+                        "latest_version": current,
+                        "update_available": False,
+                        "message": "No releases published yet.",
+                    }
+
+                if r.status_code != 200:
+                    return {"ok": False, "error": f"GitHub API returned {r.status_code}"}
+
+                data = r.json()
+
         latest_tag = data.get("tag_name", "")
         latest_version = latest_tag.lstrip("vV")
         html_url = data.get("html_url", f"https://github.com/{GITHUB_REPO}/releases")
         published = data.get("published_at", "")
         body = data.get("body", "")
+        is_prerelease = data.get("prerelease", False) or _is_prerelease_tag(latest_tag)
 
-        # Find the Windows asset download URLs
-        download_url = ""
-        installer_url = ""
-        for asset in data.get("assets", []):
-            name = asset.get("name", "")
-            dl = asset.get("browser_download_url", "")
-            # Installer .exe (e.g. CortexHub-Setup-0.3.0.exe)
-            if name.lower().startswith("cortexhub-setup") and name.endswith(".exe"):
-                installer_url = dl
-            # .zip fallback
-            elif name.endswith(".zip") and "windows" in name.lower():
-                download_url = dl
-            elif name.endswith(".zip") and not download_url:
-                download_url = dl
-
+        installer_url, download_url = _extract_release_assets(data)
         update_available = _parse_version(latest_version) > _parse_version(current)
+
+        # For dev channel, also consider same base version with prerelease suffix as "newer"
+        if channel == "dev" and not update_available and latest_version != current:
+            update_available = latest_version != current
 
         return {
             "ok": True,
@@ -416,6 +461,8 @@ async def check_update():
             "installer_url": installer_url,
             "published_at": published,
             "release_notes": body[:500] if body else "",
+            "channel": channel,
+            "is_prerelease": is_prerelease,
         }
 
     except Exception as e:
@@ -439,12 +486,12 @@ def _find_repo_root() -> Optional[Path]:
 
 
 @router.post("/apply-update")
-async def apply_update():
+async def apply_update(channel: str = "stable"):
     """Update the app — tries installer first, falls back to git pull for dev installs."""
     import subprocess
 
     # First, check what's available
-    update_info = await check_update()
+    update_info = await check_update(channel=channel)
     if not update_info.get("ok"):
         return {"ok": False, "error": update_info.get("error", "Failed to check for updates")}
 
