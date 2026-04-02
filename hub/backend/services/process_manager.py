@@ -208,8 +208,87 @@ def _read_output_thread(job: Job):
         _notify_subscribers(job.job_id, None)
 
 
+def _try_cortex_train_import():
+    """Try to import cortex_train for direct function calls."""
+    try:
+        from cortex_train.config import load_settings
+        from cortex_train.paths import TrainPaths
+        from cortex_train.progress import ProgressEvent
+        return True
+    except ImportError:
+        return False
+
+
+# Map step IDs to cortex_train step functions and their kwargs
+_DIRECT_STEP_MAP = {
+    "00": ("cortex_train.steps.sync", "run_sync", {"export_only": True}),
+    "02": ("cortex_train.steps.prepare", "run_prepare", {}),
+    "03": ("cortex_train.steps.train", "run_train", {}),
+    "04": ("cortex_train.steps.evaluate", "run_evaluate", {"save": True}),
+    "06": ("cortex_train.steps.deploy", "run_deploy", {"merge": True}),
+}
+
+
+def _run_direct_thread(job: Job, step: str):
+    """Run a cortex_train step function directly in a thread."""
+    try:
+        from cortex_train.config import load_settings
+        from cortex_train.paths import TrainPaths
+        from cortex_train.progress import ProgressEvent
+        import importlib
+
+        step_module, step_func, default_kwargs = _DIRECT_STEP_MAP[step]
+        mod = importlib.import_module(step_module)
+        fn = getattr(mod, step_func)
+
+        paths = TrainPaths()
+        train_settings = load_settings(paths.settings_path)
+
+        # Progress callback that feeds into the Job/SSE system
+        def on_progress(event: ProgressEvent):
+            pct_str = f" ({event.pct:.0f}%)" if event.pct is not None else ""
+            line = f"[{event.timestamp}] [{event.step}]{pct_str} {event.message}"
+            with job._lock:
+                job.log_lines.append(line)
+            _notify_subscribers(job.job_id, line)
+
+        result = fn(
+            settings=train_settings,
+            paths=paths,
+            on_progress=on_progress,
+            **default_kwargs,
+        )
+
+        # Report result
+        ok = result.get("ok", False)
+        summary = json.dumps(result, indent=2, default=str)
+        with job._lock:
+            job.log_lines.append(summary)
+        _notify_subscribers(job.job_id, summary)
+
+        job.return_code = 0 if ok else 1
+        job.status = "completed" if ok else "failed"
+    except Exception as e:
+        error_msg = f"[ERROR] {type(e).__name__}: {e}"
+        with job._lock:
+            job.log_lines.append(error_msg)
+        _notify_subscribers(job.job_id, error_msg)
+        job.return_code = 1
+        job.status = "failed"
+    finally:
+        job.end_time = time.time()
+        status_msg = f"[JOB {job.status.upper()}] exit code {job.return_code}"
+        with job._lock:
+            job.log_lines.append(status_msg)
+        _notify_subscribers(job.job_id, status_msg)
+        _notify_subscribers(job.job_id, None)  # Signal end
+
+
 async def start_job(step: str, extra_args: list[str] | None = None) -> Job:
-    """Start a training pipeline step as a subprocess."""
+    """Start a training pipeline step.
+
+    Tries cortex_train direct import first for supported steps,
+    falls back to subprocess for all steps."""
     global _loop
 
     if step not in STEPS:
@@ -230,6 +309,24 @@ async def start_job(step: str, extra_args: list[str] | None = None) -> Job:
     _jobs[job_id] = job
     _subscribers[job_id] = []
 
+    # Try cortex_train direct import for supported steps (no subprocess overhead)
+    if step in _DIRECT_STEP_MAP and not extra_args and _try_cortex_train_import():
+        job.status = "running"
+        job.start_time = time.time()
+
+        with job._lock:
+            job.log_lines.append(f"[cortex_train] Running step '{step}' directly (no subprocess)")
+
+        thread = threading.Thread(
+            target=_run_direct_thread,
+            args=(job, step),
+            daemon=True,
+            name=f"job-{job_id}-direct",
+        )
+        thread.start()
+        return job
+
+    # Fallback: subprocess execution
     # Build command — find a real Python interpreter
     # In PyInstaller bundle, sys.executable is the exe, not Python
     if getattr(sys, '_MEIPASS', None):
