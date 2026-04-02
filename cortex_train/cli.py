@@ -125,6 +125,112 @@ def prepare(ctx, no_notes, no_personality, no_curated, no_synthetic, no_heartbea
 
 
 @main.command()
+@click.option("--epochs", type=int, default=None, help="Override training epochs")
+@click.option("--batch-size", type=int, default=None, help="Override batch size")
+@click.option("--lr", type=float, default=None, help="Override learning rate")
+@click.option("--lora-rank", type=int, default=None, help="Override LoRA rank")
+@click.option("--lora-alpha", type=int, default=None, help="Override LoRA alpha")
+@click.option("--no-unsloth", is_flag=True, help="Skip Unsloth, use standard PEFT")
+@click.pass_context
+def train(ctx, epochs, batch_size, lr, lora_rank, lora_alpha, no_unsloth):
+    """Fine-tune base model with LoRA adapter (GPU required)."""
+    from cortex_train.steps.train import run_train
+
+    result = run_train(
+        settings=ctx.obj["settings"],
+        paths=ctx.obj["paths"],
+        on_progress=cli_progress,
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=lr,
+        lora_rank=lora_rank,
+        lora_alpha=lora_alpha,
+        no_unsloth=no_unsloth,
+    )
+    if result["ok"]:
+        click.echo(f"\nTraining complete: loss={result['final_loss']:.4f}, "
+                    f"bloom={result['bloom_number']}, {result['training_time_s']}s")
+
+
+@main.command("eval")
+@click.option("--save/--no-save", default=True, help="Save results to eval_results.json")
+@click.option("--max-tokens", type=int, default=128, help="Max tokens per response")
+@click.pass_context
+def evaluate(ctx, save, max_tokens):
+    """Evaluate fine-tuned model vs base (perplexity + responses)."""
+    from cortex_train.steps.evaluate import run_evaluate
+
+    result = run_evaluate(
+        settings=ctx.obj["settings"],
+        paths=ctx.obj["paths"],
+        on_progress=cli_progress,
+        save=save,
+        max_tokens=max_tokens,
+    )
+    if result["ok"]:
+        base = result.get("base_perplexity") or {}
+        ft = result.get("finetuned_perplexity") or {}
+        click.echo(f"\nBase perplexity: {base.get('perplexity', '?')}")
+        click.echo(f"Fine-tuned perplexity: {ft.get('perplexity', '?')}")
+
+
+@main.command()
+@click.option("--merge/--no-merge", default=True, help="Merge adapter into base (recommended)")
+@click.option("--export-only", is_flag=True, help="Export GGUF only, skip deploy")
+@click.option("--deploy-only", is_flag=True, help="Deploy existing GGUF only")
+@click.option("--quantization", type=str, default=None, help="GGUF quantization (q8_0, q4_k_m)")
+@click.pass_context
+def deploy(ctx, merge, export_only, deploy_only, quantization):
+    """Export LoRA to GGUF and deploy to Pi."""
+    from cortex_train.steps.deploy import run_deploy
+
+    result = run_deploy(
+        settings=ctx.obj["settings"],
+        paths=ctx.obj["paths"],
+        on_progress=cli_progress,
+        merge=merge,
+        export_only=export_only,
+        deploy_only=deploy_only,
+        quantization=quantization,
+    )
+    if result["ok"]:
+        click.echo(f"\nExported: {result['gguf_path']} ({result['gguf_size_mb']} MB)")
+        click.echo(f"Deployed: {result['deployed']}")
+
+
+@main.command()
+@click.option("--skip-sync", is_flag=True, help="Skip data sync from Pi")
+@click.option("--skip-learn", is_flag=True, help="Skip LM Studio synthesis")
+@click.option("--export-only", is_flag=True, help="Don't deploy to Pi")
+@click.option("--pi-ip", type=str, default=None, help="Override Pi IP address")
+@click.pass_context
+def dream(ctx, skip_sync, skip_learn, export_only, pi_ip):
+    """Run the full dream training cycle (sync -> train -> deploy)."""
+    from cortex_train.steps.dream import run_dream
+
+    result = run_dream(
+        settings=ctx.obj["settings"],
+        paths=ctx.obj["paths"],
+        on_progress=cli_progress,
+        skip_sync=skip_sync,
+        skip_synthesize=skip_learn,
+        export_only=export_only,
+        pi_ip=pi_ip,
+    )
+    if result["ok"]:
+        m = result.get("metrics", {})
+        click.echo(f"\nDream complete!")
+        click.echo(f"  Steps: {', '.join(result['steps_completed'])}")
+        click.echo(f"  Loss: {m.get('final_loss', '?')}")
+        click.echo(f"  Bloom: {m.get('bloom_number', '?')}")
+        click.echo(f"  Time: {result['elapsed_s']}s")
+    else:
+        click.echo(f"\nDream FAILED")
+        for err in result.get("errors", []):
+            click.echo(f"  ERROR: {err}")
+
+
+@main.command()
 @click.pass_context
 def status(ctx):
     """Show training status: bloom, last training, dataset size, Pi connection."""
