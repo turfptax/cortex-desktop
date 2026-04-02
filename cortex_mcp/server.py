@@ -230,6 +230,54 @@ def log_activity(program: str, details: str = "", file_path: str = "", project: 
 
 
 @mcp.tool()
+def log_time(
+    project: str,
+    duration_minutes: int,
+    description: str = "",
+    activity_type: str = "development",
+    date: str = "",
+    project_name: str = "",
+    org_tag: str = "",
+) -> str:
+    """Log a time entry for work done on a project.
+
+    Creates a time entry and automatically creates the project if it doesn't
+    exist yet. Use this to log work after a session — estimate duration from
+    the conversation context.
+
+    Args:
+        project: Project tag (e.g. "cortex-desktop", "bewell"). Auto-creates if missing.
+        duration_minutes: Estimated duration in minutes.
+        description: Brief description of the work done.
+        activity_type: Type of work: development, bugfix, research, documentation,
+                      devops, meeting, design, testing, planning.
+        date: Approximate date/time as ISO string (e.g. "2026-04-02T14:00:00").
+              Defaults to now if omitted.
+        project_name: Friendly name for new projects (e.g. "Cortex Desktop").
+                     Defaults to project tag if omitted.
+        org_tag: Optional organization tag.
+    """
+    try:
+        payload = {
+            "project": project,
+            "duration_minutes": duration_minutes,
+        }
+        if description:
+            payload["description"] = description
+        if activity_type and activity_type != "development":
+            payload["activity_type"] = activity_type
+        if date:
+            payload["date"] = date
+        if project_name:
+            payload["project_name"] = project_name
+        if org_tag:
+            payload["org_tag"] = org_tag
+        return send_command(_get_bridge_lazy(), "log_time", payload)
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+@mcp.tool()
 def log_search(query: str, url: str = "", source: str = "web", project: str = "") -> str:
     """Log a web search or research query.
 
