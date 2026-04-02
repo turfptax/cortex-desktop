@@ -471,31 +471,15 @@ async def start_dream_cycle(req: DreamCycleRequest):
     from services import pi_client
 
     def _run_dream():
-        """Background thread that orchestrates the dream pipeline."""
+        """Background thread that orchestrates the dream pipeline.
+
+        Tries cortex_train.steps.dream for direct execution (no subprocesses).
+        Falls back to subprocess-based pipeline if cortex_train is unavailable.
+        """
         import time
-        import subprocess
-        import sys
-        import shutil
-        import os
-        from pathlib import Path
+        import urllib.request
         from datetime import datetime, timezone
 
-        scripts_dir = Path(settings.scripts_dir)
-        training_dir = Path(settings.training_dir)
-        results = {"steps_completed": [], "errors": []}
-
-        # Find a real Python interpreter (PyInstaller bundle uses the exe)
-        if getattr(sys, '_MEIPASS', None):
-            python_exe = shutil.which("python") or shutil.which("python3")
-            if not python_exe:
-                _dream_state["active"] = False
-                _dream_state["errors"] = ["Cannot find Python interpreter on PATH"]
-                _dream_state["completed_at"] = datetime.now(timezone.utc).isoformat()
-                return
-        else:
-            python_exe = sys.executable
-
-        # Initialize dream state
         _dream_state["active"] = True
         _dream_state["started_at"] = datetime.now(timezone.utc).isoformat()
         _dream_state["completed_at"] = None
@@ -505,16 +489,27 @@ async def start_dream_cycle(req: DreamCycleRequest):
         _dream_state["trigger"] = req.trigger
         _dream_state["current_step"] = None
         _dream_state["current_step_name"] = None
+        _dream_state["progress"] = None
+
+        # Step name mapping for dream state updates
+        STEP_NAMES = {
+            "sync": "Sync Data", "synthesize": "Learn Cycle",
+            "prepare": "Prepare Dataset", "train": "Train LoRA",
+            "evaluate": "Evaluate", "deploy": "Export & Deploy",
+        }
+        # Map cortex_train step names to old step IDs for frontend compat
+        STEP_IDS = {
+            "sync": "00", "synthesize": "07", "prepare": "02",
+            "train": "03", "evaluate": "04", "deploy": "06",
+        }
 
         try:
             # Record old intelligence for delta reporting
             old_intelligence = 0
             try:
-                import urllib.request
                 url = f"http://{req.pi_ip}:{req.pi_port}/api/cmd"
                 payload = json.dumps({
-                    "command": "pet_intelligence",
-                    "payload": "",
+                    "command": "pet_intelligence", "payload": "",
                 }).encode()
                 http_req = urllib.request.Request(
                     url, data=payload, method="POST",
@@ -530,198 +525,63 @@ async def start_dream_cycle(req: DreamCycleRequest):
             except Exception:
                 pass
 
-            # Step sequence for dream training
-            dream_steps = [
-                ("00", "Sync Data", ["--export-only"]),
-                ("07", "Learn Cycle", []),
-                ("02", "Prepare Dataset", []),
-                ("03", "Train LoRA", []),
-                ("04", "Evaluate", ["--save"]),
-                ("06", "Export & Deploy", []),
-            ]
+            # Try cortex_train direct execution
+            try:
+                from cortex_train.steps.dream import run_dream
+                from cortex_train.config import load_settings
+                from cortex_train.paths import TrainPaths
+                from cortex_train.progress import ProgressEvent
 
-            # Skip learn cycle if not requested
-            if not req.run_learn_cycle:
-                dream_steps = [
-                    s for s in dream_steps if s[0] != "07"
+                paths = TrainPaths()
+                train_settings = load_settings(paths.settings_path)
+                train_settings.pi.host = req.pi_ip
+
+                _dream_state["steps_total"] = 6
+
+                def dream_progress(event: ProgressEvent):
+                    """Map cortex_train progress events to _dream_state."""
+                    step_id = STEP_IDS.get(event.step, event.step)
+                    step_name = STEP_NAMES.get(event.step, event.step)
+                    _dream_state["current_step"] = step_id
+                    _dream_state["current_step_name"] = step_name
+                    if event.pct is not None and event.metrics:
+                        _dream_state["progress"] = {
+                            "pct": event.pct,
+                            **event.metrics,
+                        }
+
+                result = run_dream(
+                    settings=train_settings,
+                    paths=paths,
+                    on_progress=dream_progress,
+                    skip_synthesize=not req.run_learn_cycle,
+                )
+
+                # Map result to dream state
+                _dream_state["steps_completed"] = [
+                    STEP_IDS.get(s, s) for s in result.get("steps_completed", [])
                 ]
+                _dream_state["errors"] = result.get("errors", [])
 
-            _dream_state["steps_total"] = len(dream_steps)
+                # Build training metrics for Pi notification
+                metrics = result.get("metrics", {})
+                training_metrics = {
+                    "old_intelligence": old_intelligence,
+                    "final_loss": metrics.get("final_loss"),
+                    "training_time_s": metrics.get("training_time_s"),
+                    "dataset_size": metrics.get("dataset_size"),
+                    "lora_version": metrics.get("lora_version", "dream"),
+                    "perplexity_base": (metrics.get("base_perplexity") or {}).get("perplexity"),
+                    "perplexity_finetuned": (metrics.get("finetuned_perplexity") or {}).get("perplexity"),
+                }
 
-            # Read training epochs for progress calculation
-            train_cfg_epochs = None
-            try:
-                tcfg = settings.load_training_config()
-                train_cfg_epochs = tcfg.get("training", {}).get("epochs", 3)
-            except Exception:
-                train_cfg_epochs = 3
-
-            for step_id, step_name, extra_args in dream_steps:
-                _dream_state["current_step"] = step_id
-                _dream_state["current_step_name"] = step_name
-
-                step_info = process_manager.STEPS.get(step_id)
-                if not step_info:
-                    results["errors"].append(f"Unknown step: {step_id}")
-                    _dream_state["errors"].append(f"Unknown step: {step_id}")
-                    continue
-
-                script_path = scripts_dir / step_info["script"]
-                if not script_path.exists():
-                    results["errors"].append(
-                        f"Script not found: {step_info['script']}")
-                    _dream_state["errors"].append(
-                        f"Script not found: {step_info['script']}")
-                    continue
-
-                cmd_args = [python_exe, "-u", str(script_path)]
-                cmd_args.extend(step_info.get("args", []))
-                cmd_args.extend(extra_args)
-
-                # Force UTF-8 for subprocess output
-                env = os.environ.copy()
-                env["PYTHONIOENCODING"] = "utf-8"
-                env["PYTHONUTF8"] = "1"
-
-                # Reset progress for this step
-                _dream_state["progress"] = None
-
-                try:
-                    proc = subprocess.Popen(
-                        cmd_args,
-                        cwd=str(training_dir),
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                        env=env,
-                    )
-                    stderr_lines = []
-                    step_start = time.time()
-
-                    # Stream output line-by-line, parse training progress
-                    for line in proc.stdout:
-                        line = line.rstrip()
-                        stderr_lines.append(line)
-                        # Keep last 100 lines for error reporting
-                        if len(stderr_lines) > 100:
-                            stderr_lines.pop(0)
-
-                        # Parse HuggingFace Trainer log lines:
-                        #   {'loss': 0.42, 'grad_norm': 1.2, 'learning_rate': 0.0001, 'epoch': 1.5}
-                        if step_id == "03" and "'loss'" in line:
-                            try:
-                                import ast
-                                # Find the dict in the line
-                                start = line.index("{")
-                                end = line.index("}") + 1
-                                log_dict = ast.literal_eval(line[start:end])
-                                progress = {
-                                    "loss": round(log_dict.get("loss", 0), 4),
-                                    "epoch": round(log_dict.get("epoch", 0), 2),
-                                    "learning_rate": log_dict.get("learning_rate"),
-                                    "elapsed_s": round(time.time() - step_start, 1),
-                                }
-                                # Parse total epochs from config
-                                total_epochs = train_cfg_epochs
-                                if total_epochs:
-                                    progress["total_epochs"] = total_epochs
-                                    progress["pct"] = round(
-                                        log_dict.get("epoch", 0) / total_epochs * 100, 1
-                                    )
-                                _dream_state["progress"] = progress
-                            except Exception:
-                                pass
-
-                        # Parse tqdm progress bars (fallback):
-                        #   30%|███       | 30/100 [05:00<10:00]
-                        elif step_id == "03" and "%" in line and "|" in line:
-                            try:
-                                import re as _re
-                                m = _re.search(r"(\d+)%\|", line)
-                                if m:
-                                    pct = int(m.group(1))
-                                    cur_progress = _dream_state.get("progress") or {}
-                                    cur_progress["pct"] = pct
-                                    cur_progress["elapsed_s"] = round(
-                                        time.time() - step_start, 1
-                                    )
-                                    _dream_state["progress"] = cur_progress
-                            except Exception:
-                                pass
-
-                    proc.wait(timeout=3600)
-
-                    # Steps that are nice-to-have but not critical:
-                    # "00" (Sync) and "07" (Learn Cycle) — pipeline can
-                    # continue without them.
-                    NON_FATAL_STEPS = {"00", "07"}
-
-                    if proc.returncode == 0:
-                        results["steps_completed"].append(step_id)
-                        _dream_state["steps_completed"].append(step_id)
-                    else:
-                        last_output = "\n".join(stderr_lines[-10:])
-                        err_msg = (
-                            f"Step {step_id} ({step_name}) failed: "
-                            f"{last_output[:500]}"
-                        )
-                        results["errors"].append(err_msg)
-                        _dream_state["errors"].append(err_msg)
-                        if step_id not in NON_FATAL_STEPS:
-                            break  # Stop pipeline on critical failure
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    err_msg = f"Step {step_id} ({step_name}) timed out"
-                    results["errors"].append(err_msg)
-                    _dream_state["errors"].append(err_msg)
-                    break
-                except Exception as e:
-                    err_msg = f"Step {step_id} ({step_name}) error: {e}"
-                    results["errors"].append(err_msg)
-                    _dream_state["errors"].append(err_msg)
-                    break
-                finally:
-                    _dream_state["progress"] = None
-
-            # Read training results
-            training_metrics = {"old_intelligence": old_intelligence}
-            try:
-                log_path = training_dir / "models" / "pet-lora" / "training_log.json"
-                if log_path.exists():
-                    with open(log_path) as f:
-                        tlog = json.load(f)
-                    training_metrics["final_loss"] = tlog.get("final_loss")
-                    training_metrics["training_time_s"] = tlog.get(
-                        "training_time_s")
-                    training_metrics["dataset_size"] = tlog.get("train_samples")
-                    bloom_num = tlog.get("bloom_number")
-                    training_metrics["lora_version"] = (
-                        f"bloom-{bloom_num}" if bloom_num else "dream"
-                    )
-            except Exception:
-                pass
-
-            try:
-                eval_path = (training_dir / "models" / "pet-lora"
-                             / "eval_results.json")
-                if eval_path.exists():
-                    with open(eval_path) as f:
-                        elog = json.load(f)
-                    training_metrics["perplexity_base"] = (
-                        elog.get("base_perplexity", {}).get("perplexity"))
-                    training_metrics["perplexity_finetuned"] = (
-                        elog.get("finetuned_perplexity", {}).get("perplexity"))
-            except Exception:
-                pass
-
-            # Deploy is now handled by step "06" (06_export_deploy.py --merge)
-            # which does: merge LoRA → GGUF (configurable quant) → SCP → restart llama-server
+            except ImportError:
+                # cortex_train not available — fall back to subprocess pipeline
+                _run_dream_subprocess(req, old_intelligence)
+                return
 
             # Notify Pi that dream is complete
             try:
-                import urllib.request
                 url = f"http://{req.pi_ip}:{req.pi_port}/api/cmd"
                 payload = json.dumps({
                     "command": "dream_complete",
@@ -737,10 +597,10 @@ async def start_dream_cycle(req: DreamCycleRequest):
                 with urllib.request.urlopen(http_req, timeout=30) as resp:
                     resp.read()
             except Exception as e:
-                results["errors"].append(f"Failed to notify Pi: {e}")
+                _dream_state["errors"].append(f"Failed to notify Pi: {e}")
 
-            # Store metrics in dream state
             _dream_state["metrics"] = training_metrics
+
         except Exception as exc:
             _dream_state["errors"].append(f"Dream thread crashed: {exc}")
         finally:
@@ -748,6 +608,121 @@ async def start_dream_cycle(req: DreamCycleRequest):
             _dream_state["completed_at"] = datetime.now(timezone.utc).isoformat()
             _dream_state["current_step"] = None
             _dream_state["current_step_name"] = None
+            _dream_state["progress"] = None
+
+    def _run_dream_subprocess(req_inner, old_intelligence):
+        """Fallback: subprocess-based dream pipeline (when cortex_train unavailable)."""
+        import subprocess
+        import sys
+        import shutil
+        import os
+        from pathlib import Path
+        from datetime import datetime, timezone
+
+        scripts_dir = Path(settings.scripts_dir)
+        training_dir = Path(settings.training_dir)
+
+        if getattr(sys, '_MEIPASS', None):
+            python_exe = shutil.which("python") or shutil.which("python3")
+            if not python_exe:
+                _dream_state["errors"] = ["Cannot find Python interpreter on PATH"]
+                _dream_state["active"] = False
+                _dream_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+                return
+        else:
+            python_exe = sys.executable
+
+        dream_steps = [
+            ("00", "Sync Data", ["--export-only"]),
+            ("07", "Learn Cycle", []),
+            ("02", "Prepare Dataset", []),
+            ("03", "Train LoRA", []),
+            ("04", "Evaluate", ["--save"]),
+            ("06", "Export & Deploy", []),
+        ]
+        if not req_inner.run_learn_cycle:
+            dream_steps = [s for s in dream_steps if s[0] != "07"]
+
+        _dream_state["steps_total"] = len(dream_steps)
+        NON_FATAL_STEPS = {"00", "07"}
+
+        for step_id, step_name, extra_args in dream_steps:
+            _dream_state["current_step"] = step_id
+            _dream_state["current_step_name"] = step_name
+            _dream_state["progress"] = None
+
+            step_info = process_manager.STEPS.get(step_id)
+            if not step_info:
+                _dream_state["errors"].append(f"Unknown step: {step_id}")
+                continue
+
+            script_path = scripts_dir / step_info["script"]
+            if not script_path.exists():
+                _dream_state["errors"].append(f"Script not found: {step_info['script']}")
+                continue
+
+            cmd_args = [python_exe, "-u", str(script_path)]
+            cmd_args.extend(step_info.get("args", []))
+            cmd_args.extend(extra_args)
+
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            env["PYTHONUTF8"] = "1"
+
+            try:
+                proc = subprocess.Popen(
+                    cmd_args, cwd=str(training_dir),
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, encoding="utf-8", errors="replace", env=env,
+                )
+                for line in proc.stdout:
+                    pass  # Drain output
+                proc.wait(timeout=3600)
+
+                if proc.returncode == 0:
+                    _dream_state["steps_completed"].append(step_id)
+                else:
+                    _dream_state["errors"].append(f"Step {step_id} ({step_name}) failed")
+                    if step_id not in NON_FATAL_STEPS:
+                        break
+            except Exception as e:
+                _dream_state["errors"].append(f"Step {step_id} error: {e}")
+                if step_id not in NON_FATAL_STEPS:
+                    break
+
+        # Read metrics and notify Pi (same as cortex_train path)
+        training_metrics = {"old_intelligence": old_intelligence}
+        try:
+            log_path = training_dir / "models" / "pet-lora" / "training_log.json"
+            if log_path.exists():
+                with open(log_path) as f:
+                    tlog = json.load(f)
+                training_metrics["final_loss"] = tlog.get("final_loss")
+                training_metrics["training_time_s"] = tlog.get("training_time_s")
+                training_metrics["dataset_size"] = tlog.get("train_samples")
+                bloom_num = tlog.get("bloom_number")
+                training_metrics["lora_version"] = f"bloom-{bloom_num}" if bloom_num else "dream"
+        except Exception:
+            pass
+
+        try:
+            import urllib.request
+            url = f"http://{req_inner.pi_ip}:{req_inner.pi_port}/api/cmd"
+            payload = json.dumps({"command": "dream_complete", "payload": training_metrics}).encode()
+            http_req = urllib.request.Request(
+                url, data=payload, method="POST",
+                headers={"Content-Type": "application/json", "Authorization": _pi_auth_header()},
+            )
+            with urllib.request.urlopen(http_req, timeout=30) as resp:
+                resp.read()
+        except Exception as e:
+            _dream_state["errors"].append(f"Failed to notify Pi: {e}")
+
+        _dream_state["metrics"] = training_metrics
+        _dream_state["active"] = False
+        _dream_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+        _dream_state["current_step"] = None
+        _dream_state["current_step_name"] = None
 
     # Launch dream in background thread
     thread = threading.Thread(target=_run_dream, daemon=True,
