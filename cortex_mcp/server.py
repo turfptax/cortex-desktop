@@ -129,18 +129,26 @@ mcp = FastMCP(
         "4. Call session_end with a summary before the conversation ends.\n\n"
 
         "CAPABILITIES:\n"
-        "- Notes: send_note (tags, project, type: note/decision/bug/reminder/idea/todo/context)\n"
-        "- Sessions: session_start/session_end (tracks conversations across computers)\n"
-        "- Activities: log_activity (program, file, project tracking)\n"
-        "- Searches: log_search (research history)\n"
-        "- Database: query any table (notes, activities, searches, sessions, "
-        "projects, computers, people, files)\n"
-        "- File metadata: file_register, file_list, file_search\n"
-        "- File transfer (WiFi only): file_upload (local -> Pi), "
-        "file_download (Pi -> local)\n"
-        "- WiFi provisioning: wifi_scan, wifi_status, wifi_config "
-        "(provision new networks remotely over BLE)\n"
+        "- Notes: send_note, note_update, notes_search\n"
+        "- Projects: project_upsert, project_list\n"
+        "- Sessions: session_start/session_end\n"
+        "- Activities: log_activity, log_time\n"
+        "- Searches: log_search\n"
+        "- Database: query, upsert_row, delete_row, table_counts\n"
+        "- Files: file_register, file_list, file_search, "
+        "file_upload, file_download (WiFi only)\n"
+        "- Audit: audit_projects, audit_notes, audit_data_quality, weekly_review\n"
+        "- Pet: pet_chat, pet_feed, pet_clean, pet_rest, pet_analytics\n"
+        "- WiFi: wifi_scan, wifi_status, wifi_config\n"
         "- Diagnostics: ping, get_status, connection_info\n\n"
+
+        "WEEKLY REVIEW WORKFLOW:\n"
+        "1. Call weekly_review for a full database health report.\n"
+        "2. Review stale projects — update status with project_upsert or "
+        "archive inactive ones.\n"
+        "3. Triage untagged notes — use note_update to add tags and projects.\n"
+        "4. Check data quality with audit_data_quality.\n"
+        "5. Ask the user questions about projects and log decisions as notes.\n\n"
 
         "FILE OPERATIONS: Files on the Pi are organized by category: "
         "recordings, notes, logs, uploads. Use file_upload to send a file "
@@ -829,6 +837,551 @@ def connection_info() -> str:
                 info += "\nAuto-detected ESP32: {}".format(auto)
 
         return info
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+# ===================================================================
+# Project Management Tools
+# ===================================================================
+
+
+@mcp.tool()
+def project_upsert(
+    tag: str,
+    name: str = "",
+    status: str = "active",
+    priority: int = 3,
+    description: str = "",
+    category: str = "",
+    org_tag: str = "",
+    github_url: str = "",
+    collaborators: str = "",
+) -> str:
+    """Create or update a project in the Cortex database.
+
+    If the project tag already exists, its fields are updated.
+    If it doesn't exist, a new project is created.
+
+    Args:
+        tag: Unique project identifier (e.g. "cortex-desktop", "bewell"). Required.
+        name: Human-friendly name (e.g. "Cortex Desktop"). Defaults to tag.
+        status: Project status: active, archived, paused, completed.
+        priority: Priority 1-5 (1 = highest).
+        description: What the project is about.
+        category: Project category (e.g. "ai", "web", "hardware").
+        org_tag: Organization this project belongs to.
+        github_url: GitHub repository URL.
+        collaborators: Comma-separated list of collaborator names/IDs.
+    """
+    try:
+        payload = {"tag": tag}
+        if name:
+            payload["name"] = name
+        if status:
+            payload["status"] = status
+        if priority != 3:
+            payload["priority"] = priority
+        if description:
+            payload["description"] = description
+        if category:
+            payload["category"] = category
+        if org_tag:
+            payload["org_tag"] = org_tag
+        if github_url:
+            payload["github_url"] = github_url
+        if collaborators:
+            payload["collaborators"] = collaborators
+        _notify_esp32("project_upsert")
+        return send_command(_get_bridge_lazy(), "project_upsert", payload)
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+@mcp.tool()
+def project_list(status: str = "", category: str = "", limit: int = 50) -> str:
+    """List all projects, optionally filtered by status or category.
+
+    Args:
+        status: Filter by status (active, archived, paused, completed). Empty for all.
+        category: Filter by category. Empty for all.
+        limit: Max results (default 50).
+    """
+    try:
+        payload = {
+            "table": "projects",
+            "limit": limit,
+            "order_by": "last_touched DESC",
+        }
+        filters = {}
+        if status:
+            filters["status"] = status
+        if category:
+            filters["category"] = category
+        if filters:
+            payload["filters"] = filters
+        return send_command(_get_bridge_lazy(), "query", payload, timeout=10)
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+# ===================================================================
+# Note Management Tools
+# ===================================================================
+
+
+@mcp.tool()
+def note_update(note_id: int, tags: str = "", project: str = "", note_type: str = "") -> str:
+    """Update an existing note's tags, project, or type.
+
+    Use this to triage and categorize notes during review.
+
+    Args:
+        note_id: The note ID to update. Required.
+        tags: New comma-separated tags (replaces existing).
+        project: New project tag to assign.
+        note_type: New note type: note, decision, bug, reminder, idea, todo, context.
+    """
+    try:
+        row_data = {"id": note_id}
+        if tags:
+            row_data["tags"] = tags
+        if project:
+            row_data["project"] = project
+        if note_type:
+            row_data["note_type"] = note_type
+        payload = {"table": "notes", "data": row_data}
+        _notify_esp32("upsert")
+        return send_command(_get_bridge_lazy(), "upsert", payload)
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+@mcp.tool()
+def notes_search(search_text: str, project: str = "", note_type: str = "", limit: int = 30) -> str:
+    """Search notes by content text, with optional project/type filters.
+
+    Performs a case-insensitive substring search across note content.
+    Also supports filtering by project tag and note type.
+
+    Args:
+        search_text: Text to search for in note content. Required.
+        project: Filter to notes in this project only.
+        note_type: Filter by type: note, decision, bug, reminder, idea, todo, context.
+        limit: Max results (default 30).
+    """
+    try:
+        # The Pi query command only supports exact = filters, so we fetch
+        # a larger set and filter client-side for content matching.
+        payload = {
+            "table": "notes",
+            "limit": 100,
+            "order_by": "created_at DESC",
+        }
+        filters = {}
+        if project:
+            filters["project"] = project
+        if note_type:
+            filters["note_type"] = note_type
+        if filters:
+            payload["filters"] = filters
+        raw = send_command(_get_bridge_lazy(), "query", payload, timeout=10)
+
+        # Parse response and filter by content
+        if raw.startswith("RSP:query:"):
+            data = json.loads(raw[len("RSP:query:"):])
+        elif raw.startswith("["):
+            data = json.loads(raw)
+        else:
+            return raw  # Error or unexpected format
+
+        needle = search_text.lower()
+        matches = [
+            row for row in data
+            if needle in (row.get("content") or "").lower()
+        ][:limit]
+        return json.dumps(matches, indent=2, default=str)
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+# ===================================================================
+# Generic CRUD Tools
+# ===================================================================
+
+
+@mcp.tool()
+def upsert_row(table: str, data: str) -> str:
+    """Insert or update a row in any Cortex database table.
+
+    If the data includes an 'id' (or primary key) that already exists,
+    the row is updated. Otherwise a new row is inserted.
+
+    Args:
+        table: Table name (notes, projects, activities, searches, sessions,
+               computers, people, files, organizations, time_entries).
+        data: JSON string of column-value pairs, e.g. '{"tag":"my-proj","name":"My Project"}'.
+    """
+    try:
+        try:
+            row_data = json.loads(data)
+        except (json.JSONDecodeError, ValueError):
+            return "Error: 'data' must be valid JSON (e.g. '{\"tag\":\"my-proj\"}')"
+        payload = {"table": table, "data": row_data}
+        _notify_esp32("upsert")
+        return send_command(_get_bridge_lazy(), "upsert", payload)
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+@mcp.tool()
+def delete_row(table: str, row_id: int) -> str:
+    """Delete a row from a Cortex database table by its ID.
+
+    Args:
+        table: Table name (notes, activities, searches, sessions, files, etc.).
+        row_id: The row ID to delete.
+    """
+    try:
+        payload = {"table": table, "id": row_id}
+        _notify_esp32("delete")
+        return send_command(_get_bridge_lazy(), "delete", payload)
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+@mcp.tool()
+def table_counts() -> str:
+    """Get row counts for all tables in the Cortex database.
+
+    Returns a summary of how many rows each table contains.
+    Useful for a quick health check or data overview.
+    """
+    try:
+        return send_command(_get_bridge_lazy(), "table_counts", timeout=10)
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+# ===================================================================
+# Audit & Upkeep Tools
+# ===================================================================
+
+
+def _query_table(table, filters=None, limit=100, order_by="created_at DESC"):
+    """Internal helper: query a table and return parsed list of dicts."""
+    payload = {"table": table, "limit": limit, "order_by": order_by}
+    if filters:
+        payload["filters"] = filters
+    raw = send_command(_get_bridge_lazy(), "query", payload, timeout=15)
+    if raw.startswith("RSP:query:"):
+        return json.loads(raw[len("RSP:query:"):])
+    elif raw.startswith("["):
+        return json.loads(raw)
+    return []
+
+
+@mcp.tool()
+def audit_projects(stale_days: int = 30) -> str:
+    """Audit all projects for staleness, missing data, and activity levels.
+
+    Reviews each project and flags issues:
+    - Stale: no activity (notes, sessions, time entries) in N+ days
+    - Missing description
+    - No time logged
+    - No notes linked
+
+    Args:
+        stale_days: Number of days without activity to consider a project stale (default 30).
+    """
+    try:
+        from datetime import datetime, timedelta
+
+        projects = _query_table("projects", limit=100, order_by="last_touched DESC")
+        notes = _query_table("notes", limit=100)
+        time_entries = _query_table("time_entries", limit=100, order_by="created_at DESC")
+
+        # Index notes and time by project
+        notes_by_project = {}
+        for n in notes:
+            p = n.get("project", "")
+            if p:
+                notes_by_project.setdefault(p, []).append(n)
+
+        time_by_project = {}
+        for t in time_entries:
+            p = t.get("project_tag", "")
+            if p:
+                time_by_project.setdefault(p, []).append(t)
+
+        cutoff = (datetime.utcnow() - timedelta(days=stale_days)).isoformat()
+        report = []
+
+        for proj in projects:
+            tag = proj.get("tag", "")
+            issues = []
+            last_touched = proj.get("last_touched") or proj.get("created_at") or ""
+
+            if last_touched and last_touched < cutoff:
+                issues.append("stale (no activity in {}+ days)".format(stale_days))
+            if not proj.get("description"):
+                issues.append("missing description")
+
+            note_count = len(notes_by_project.get(tag, []))
+            time_count = len(time_by_project.get(tag, []))
+            total_hours = proj.get("total_hours", 0)
+
+            if time_count == 0:
+                issues.append("no time logged")
+            if note_count == 0:
+                issues.append("no notes linked")
+
+            report.append({
+                "tag": tag,
+                "name": proj.get("name", ""),
+                "status": proj.get("status", ""),
+                "last_touched": last_touched,
+                "total_hours": total_hours,
+                "note_count": note_count,
+                "time_entry_count": time_count,
+                "issues": issues,
+            })
+
+        # Sort: projects with issues first, then by last_touched
+        report.sort(key=lambda x: (len(x["issues"]) == 0, x.get("last_touched") or ""))
+
+        summary = {
+            "total_projects": len(projects),
+            "projects_with_issues": sum(1 for r in report if r["issues"]),
+            "stale_projects": sum(1 for r in report if any("stale" in i for i in r["issues"])),
+            "projects": report,
+        }
+        return json.dumps(summary, indent=2, default=str)
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+@mcp.tool()
+def audit_notes(limit: int = 50) -> str:
+    """Find notes that need triage — untagged, uncategorized, or unlinked.
+
+    Returns notes missing tags, project assignment, or using the default 'note' type.
+    Use note_update to fix them.
+
+    Args:
+        limit: Max notes to return (default 50).
+    """
+    try:
+        notes = _query_table("notes", limit=100, order_by="created_at DESC")
+
+        untagged = []
+        no_project = []
+        default_type = []
+
+        for n in notes:
+            note_id = n.get("id")
+            preview = (n.get("content") or "")[:100]
+            entry = {
+                "id": note_id,
+                "preview": preview,
+                "created_at": n.get("created_at", ""),
+                "tags": n.get("tags", ""),
+                "project": n.get("project", ""),
+                "note_type": n.get("note_type", ""),
+            }
+            if not n.get("tags"):
+                untagged.append(entry)
+            if not n.get("project"):
+                no_project.append(entry)
+            if n.get("note_type", "note") == "note":
+                default_type.append(entry)
+
+        result = {
+            "total_notes_checked": len(notes),
+            "untagged_count": len(untagged),
+            "no_project_count": len(no_project),
+            "default_type_count": len(default_type),
+            "untagged": untagged[:limit],
+            "no_project": no_project[:limit],
+            "default_type": default_type[:limit],
+        }
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+@mcp.tool()
+def audit_data_quality() -> str:
+    """Run a data quality and health check on the Cortex database.
+
+    Checks:
+    - Table row counts
+    - Sessions with no summary (incomplete)
+    - Projects with no activity
+    - Orphaned time entries (project doesn't exist)
+    - Overall database health summary
+    """
+    try:
+        # Get table counts
+        counts_raw = send_command(_get_bridge_lazy(), "table_counts", timeout=10)
+        if counts_raw.startswith("RSP:table_counts:"):
+            counts = json.loads(counts_raw[len("RSP:table_counts:"):])
+        elif counts_raw.startswith("{"):
+            counts = json.loads(counts_raw)
+        else:
+            counts = {}
+
+        # Check for incomplete sessions (no summary)
+        sessions = _query_table("sessions", limit=50, order_by="started_at DESC")
+        incomplete_sessions = [
+            {"id": s.get("id"), "started_at": s.get("started_at"), "ai_platform": s.get("ai_platform")}
+            for s in sessions
+            if not s.get("summary") and not s.get("ended_at")
+        ]
+
+        # Check projects with no recent activity
+        projects = _query_table("projects", limit=100, order_by="last_touched DESC")
+        project_tags = {p.get("tag") for p in projects}
+
+        # Check time entries referencing non-existent projects
+        time_entries = _query_table("time_entries", limit=100, order_by="created_at DESC")
+        orphaned_time = [
+            {"id": t.get("id"), "project_tag": t.get("project_tag"), "description": t.get("description")}
+            for t in time_entries
+            if t.get("project_tag") and t.get("project_tag") not in project_tags
+        ]
+
+        issues = []
+        if incomplete_sessions:
+            issues.append("{} incomplete sessions (no summary/end)".format(len(incomplete_sessions)))
+        if orphaned_time:
+            issues.append("{} time entries reference non-existent projects".format(len(orphaned_time)))
+        if counts.get("notes", 0) == 0:
+            issues.append("No notes in database")
+        if counts.get("projects", 0) == 0:
+            issues.append("No projects in database")
+
+        result = {
+            "table_counts": counts,
+            "issues_found": len(issues),
+            "issues": issues,
+            "incomplete_sessions": incomplete_sessions[:10],
+            "orphaned_time_entries": orphaned_time[:10],
+            "health": "good" if len(issues) == 0 else "needs attention",
+        }
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return "Error: {}".format(e)
+
+
+@mcp.tool()
+def weekly_review() -> str:
+    """Run a comprehensive weekly review of the Cortex database.
+
+    Combines table counts, project audit, note triage, and recent session
+    summary into a single structured report. Use this at the start of a
+    weekly upkeep session to understand what needs attention.
+
+    The report includes:
+    - Database overview (row counts)
+    - Project health (stale, missing data)
+    - Notes needing triage (untagged, uncategorized)
+    - Recent sessions summary
+    - Actionable recommendations
+    """
+    try:
+        from datetime import datetime, timedelta
+
+        # 1. Table counts
+        counts_raw = send_command(_get_bridge_lazy(), "table_counts", timeout=10)
+        if counts_raw.startswith("RSP:table_counts:"):
+            counts = json.loads(counts_raw[len("RSP:table_counts:"):])
+        elif counts_raw.startswith("{"):
+            counts = json.loads(counts_raw)
+        else:
+            counts = {}
+
+        # 2. Projects
+        projects = _query_table("projects", limit=100, order_by="last_touched DESC")
+        cutoff_30d = (datetime.utcnow() - timedelta(days=30)).isoformat()
+        cutoff_7d = (datetime.utcnow() - timedelta(days=7)).isoformat()
+
+        active_projects = [p for p in projects if p.get("status") == "active"]
+        stale_projects = [
+            p.get("tag") for p in active_projects
+            if (p.get("last_touched") or "") < cutoff_30d
+        ]
+
+        # 3. Notes triage
+        notes = _query_table("notes", limit=100, order_by="created_at DESC")
+        recent_notes = [n for n in notes if (n.get("created_at") or "") >= cutoff_7d]
+        untagged_notes = [n for n in notes if not n.get("tags")]
+        no_project_notes = [n for n in notes if not n.get("project")]
+
+        # 4. Recent sessions
+        sessions = _query_table("sessions", limit=10, order_by="started_at DESC")
+        recent_sessions = []
+        for s in sessions:
+            recent_sessions.append({
+                "id": s.get("id"),
+                "started_at": s.get("started_at"),
+                "summary": (s.get("summary") or "(no summary)")[:120],
+                "projects": s.get("projects", ""),
+            })
+
+        # 5. Time entries this week
+        time_entries = _query_table("time_entries", limit=100, order_by="created_at DESC")
+        weekly_time = [t for t in time_entries if (t.get("created_at") or "") >= cutoff_7d]
+        weekly_hours = sum(t.get("duration_minutes", 0) for t in weekly_time) / 60.0
+
+        # 6. Build recommendations
+        recommendations = []
+        if stale_projects:
+            recommendations.append(
+                "Review {} stale projects: {}".format(
+                    len(stale_projects), ", ".join(stale_projects[:5])
+                )
+            )
+        if untagged_notes:
+            recommendations.append(
+                "Triage {} untagged notes (use note_update to add tags)".format(len(untagged_notes))
+            )
+        if no_project_notes:
+            recommendations.append(
+                "Link {} notes to projects (use note_update)".format(len(no_project_notes))
+            )
+        incomplete = [s for s in sessions if not s.get("summary") and not s.get("ended_at")]
+        if incomplete:
+            recommendations.append(
+                "Close {} incomplete sessions".format(len(incomplete))
+            )
+        if not recommendations:
+            recommendations.append("Everything looks good! Database is well-maintained.")
+
+        report = {
+            "report_date": datetime.utcnow().isoformat()[:10],
+            "database_overview": counts,
+            "projects": {
+                "total": len(projects),
+                "active": len(active_projects),
+                "stale_30d": stale_projects,
+            },
+            "notes": {
+                "total": counts.get("notes", len(notes)),
+                "added_this_week": len(recent_notes),
+                "untagged": len(untagged_notes),
+                "no_project": len(no_project_notes),
+            },
+            "sessions": {
+                "recent": recent_sessions[:5],
+            },
+            "time_tracking": {
+                "hours_this_week": round(weekly_hours, 1),
+                "entries_this_week": len(weekly_time),
+            },
+            "recommendations": recommendations,
+        }
+        return json.dumps(report, indent=2, default=str)
     except Exception as e:
         return "Error: {}".format(e)
 
