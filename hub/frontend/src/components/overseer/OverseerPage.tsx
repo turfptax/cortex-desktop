@@ -194,7 +194,11 @@ export function OverseerPage() {
       setScan(r)
       setLastAction(`Scan found ${r.total ?? 0} Claude Code session files`)
       // Default-select files NOT already imported
-      const known = new Set(imports.map((i) => i.session_id))
+      // ImportRow.id is "claude-code:<uuid>" — strip the prefix to compare
+      // against ScanRow.session_id (the bare uuid).
+      const known = new Set(
+        imports.map((i) => i.id.split(':').slice(1).join(':') || i.id)
+      )
       const sel = new Set<string>()
       for (const f of r.found || []) {
         if (!known.has(f.session_id)) sel.add(f.path)
@@ -412,7 +416,9 @@ export function OverseerPage() {
                 </thead>
                 <tbody>
                   {scan.found.map((f) => {
-                    const known = imports.some((i) => i.session_id === f.session_id)
+                    const known = imports.some(
+                      (i) => i.id.split(':').slice(1).join(':') === f.session_id
+                    )
                     return (
                       <tr
                         key={f.path}
