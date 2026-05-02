@@ -348,20 +348,37 @@ def _current_version() -> str:
 
 
 def _parse_version(v: str) -> tuple[int, ...]:
-    """Parse '0.1.0' or 'v0.1.0' into (0, 1, 0).
+    """Parse '0.1.0', 'v0.1.0', or '0.13.0-dev.9' into a sortable tuple.
 
-    Strips pre-release suffixes like '-dev.1' or '-rc.2' for numeric comparison.
+    Stable releases sort above any pre-release of the same base version,
+    and the trailing pre-release integer is parsed numerically so
+    dev.13 > dev.9 (not lexicographically, where '1' < '9').
+
+        '0.13.0'        -> (0, 13, 0, 1, 0)
+        '0.13.0-dev.9'  -> (0, 13, 0, 0, 9)
+        '0.13.0-dev.13' -> (0, 13, 0, 0, 13)
     """
     v = v.lstrip("vV").strip()
-    # Split off pre-release suffix (e.g. "0.11.0-dev.1" -> "0.11.0")
-    base = v.split("-")[0]
-    parts = []
+    if "-" in v:
+        base, suffix = v.split("-", 1)
+    else:
+        base, suffix = v, ""
+
+    base_parts = []
     for p in base.split("."):
         try:
-            parts.append(int(p))
+            base_parts.append(int(p))
         except ValueError:
             break
-    return tuple(parts) or (0,)
+
+    if suffix:
+        tail = suffix.rsplit(".", 1)[-1] if "." in suffix else ""
+        try:
+            prerelease_n = int(tail)
+        except ValueError:
+            prerelease_n = 0
+        return tuple(base_parts) + (0, prerelease_n)
+    return tuple(base_parts) + (1, 0)
 
 
 def _is_prerelease_tag(tag: str) -> bool:
@@ -416,7 +433,13 @@ async def check_update(channel: str = "stable"):
                         "message": "No releases published yet.",
                     }
 
-                # First release is newest (includes pre-releases)
+                # GitHub returns releases roughly by created_at + tag-string sort,
+                # NOT by semantic version — so '-dev.9' lex-sorts above '-dev.13'.
+                # Sort ourselves using the same parser the comparison uses.
+                releases.sort(
+                    key=lambda r: _parse_version(r.get("tag_name", "")),
+                    reverse=True,
+                )
                 data = releases[0]
             else:
                 # Stable: only latest non-prerelease
@@ -446,10 +469,6 @@ async def check_update(channel: str = "stable"):
 
         installer_url, download_url = _extract_release_assets(data)
         update_available = _parse_version(latest_version) > _parse_version(current)
-
-        # For dev channel, also consider same base version with prerelease suffix as "newer"
-        if channel == "dev" and not update_available and latest_version != current:
-            update_available = latest_version != current
 
         return {
             "ok": True,
