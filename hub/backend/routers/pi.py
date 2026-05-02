@@ -69,9 +69,15 @@ async def check_online():
     return {"online": online}
 
 
+# ── Pet endpoints (slice 2c2c2) ───────────────────────────────────
+# All proxy through the new /plugins/pet/* HTTP routes added in
+# slice 2c2c1. Responses are wrapped in to_legacy_shape() to keep the
+# {data: ..., error: ...} contract the frontend already expects.
+
+
 @router.post("/pet/ask")
 async def pet_ask(req: PetAskRequest):
-    """Send a message to the pet on the Pi."""
+    """Send a message to the pet on the Pi (async ack-then-poll)."""
     return await pi_client.pet_ask(req.prompt)
 
 
@@ -93,77 +99,87 @@ async def pet_history(limit: int = 20):
 @router.get("/pet/vitals")
 async def pet_vitals():
     """Get current pet vitals (hunger, cleanliness, energy, etc.)."""
-    return await pi_client.send_command_parsed("pet_vitals")
+    raw = await pi_client.plugin_call("pet", "GET", "/vitals")
+    return pi_client.to_legacy_shape(raw)
 
 
 @router.post("/pet/feed")
 async def pet_feed(req: PetFeedRequest):
     """Feed the pet."""
-    return await pi_client.send_command_parsed(
-        "pet_feed", {"type": req.type}
-    )
+    raw = await pi_client.plugin_call("pet", "POST", "/feed", {"type": req.type})
+    return pi_client.to_legacy_shape(raw)
 
 
 @router.post("/pet/clean")
 async def pet_clean(req: PetCleanRequest):
     """Clean the pet by discarding bad interactions."""
-    return await pi_client.send_command_parsed(
-        "pet_clean", {"discard_ids": req.discard_ids}
+    raw = await pi_client.plugin_call(
+        "pet", "POST", "/clean", {"discard_ids": req.discard_ids}
     )
+    return pi_client.to_legacy_shape(raw)
 
 
 @router.post("/pet/rest")
 async def pet_rest():
     """Rest the pet — instant energy boost (+10%)."""
-    return await pi_client.send_command_parsed("pet_rest")
+    raw = await pi_client.plugin_call("pet", "POST", "/rest")
+    return pi_client.to_legacy_shape(raw)
 
 
 @router.get("/pet/intelligence")
 async def pet_intelligence():
     """Get pet intelligence score breakdown."""
-    return await pi_client.send_command_parsed("pet_intelligence")
+    raw = await pi_client.plugin_call("pet", "GET", "/intelligence")
+    return pi_client.to_legacy_shape(raw)
 
 
 @router.post("/pet/update-intelligence")
 async def pet_update_intelligence(req: PetUpdateIntelligenceRequest):
     """Push training metrics to update pet intelligence."""
-    return await pi_client.send_command_parsed(
-        "pet_update_intelligence", req.model_dump(exclude_none=True)
+    raw = await pi_client.plugin_call(
+        "pet", "POST", "/intelligence",
+        req.model_dump(exclude_none=True),
     )
+    return pi_client.to_legacy_shape(raw)
 
 
 @router.get("/pet/vitals-history")
 async def pet_vitals_history(hours: int = 24):
     """Get vitals history for charting."""
-    return await pi_client.send_command_parsed(
-        "pet_vitals_history", {"hours": hours}
+    raw = await pi_client.plugin_call(
+        "pet", "GET", "/vitals/history", {"hours": hours}
     )
+    return pi_client.to_legacy_shape(raw)
 
 
 @router.get("/pet/coma-status")
 async def pet_coma_status():
     """Get detailed coma status."""
-    return await pi_client.send_command_parsed("pet_coma_status")
+    raw = await pi_client.plugin_call("pet", "GET", "/coma/status")
+    return pi_client.to_legacy_shape(raw)
 
 
 @router.get("/pet/coma-history")
 async def pet_coma_history():
     """Get past coma events."""
-    return await pi_client.send_command_parsed("pet_coma_history")
+    raw = await pi_client.plugin_call("pet", "GET", "/coma/history")
+    return pi_client.to_legacy_shape(raw)
 
 
 @router.get("/pet/training-history")
 async def pet_training_history():
     """Get LoRA deployment and intelligence history."""
-    return await pi_client.send_command_parsed("pet_training_history")
+    raw = await pi_client.plugin_call("pet", "GET", "/training-history")
+    return pi_client.to_legacy_shape(raw)
 
 
 @router.get("/pet/analytics")
 async def pet_analytics(days: int = 365):
     """Get pet evolution analytics (stage progression, mood trends)."""
-    return await pi_client.send_command_parsed(
-        "pet_analytics", {"days": min(days, 365)}
+    raw = await pi_client.plugin_call(
+        "pet", "GET", "/analytics", {"days": min(days, 365)}
     )
+    return pi_client.to_legacy_shape(raw)
 
 
 @router.post("/pet/tuck-in")
@@ -174,7 +190,8 @@ async def pet_tuck_in():
     dream_ready based on interactions/cooldown only (not hub reachability).
     If ready, the Hub triggers training directly via /training/dream-cycle.
     """
-    result = await pi_client.send_command_parsed("tuck_in")
+    raw = await pi_client.plugin_call("pet", "POST", "/tuck-in")
+    result = pi_client.to_legacy_shape(raw)
     # Override hub_available since training runs locally on the Hub
     if result and result.get("data"):
         result["data"]["hub_available"] = True
@@ -206,7 +223,8 @@ async def pet_tuck_in():
 @router.post("/pet/wake")
 async def pet_wake():
     """Wake the pet from sleep."""
-    return await pi_client.send_command_parsed("pet_wake")
+    raw = await pi_client.plugin_call("pet", "POST", "/wake")
+    return pi_client.to_legacy_shape(raw)
 
 
 @router.post("/pet/force-train")
@@ -215,9 +233,13 @@ async def pet_force_train():
 
     Instead of asking the Pi to call back to the Hub (blocked by firewall),
     we put the pet to sleep, then start the dream cycle directly on the Hub.
+    (slice 2c2c1 dropped the Pi-side force_train command; this Hub-side
+    flow is the only path now, which is what was already happening anyway.)
     """
     # Put pet to sleep first
-    sleep_result = await pi_client.send_command_parsed("pet_sleep", {"reason": "force_train"})
+    await pi_client.plugin_call(
+        "pet", "POST", "/sleep", {"reason": "force_train"}
+    )
 
     # Start dream cycle on the Hub directly
     from routers.training import start_dream_cycle, DreamCycleRequest
@@ -236,15 +258,17 @@ async def pet_force_train():
 @router.get("/pet/heartbeat-status")
 async def pet_heartbeat_status():
     """Get heartbeat system status (enabled, interval, totals)."""
-    return await pi_client.send_command_parsed("heartbeat_status")
+    raw = await pi_client.plugin_call("pet", "GET", "/heartbeat")
+    return pi_client.to_legacy_shape(raw)
 
 
 @router.get("/pet/heartbeat-log")
 async def pet_heartbeat_log(limit: int = 50):
     """Get recent heartbeat reflections."""
-    return await pi_client.send_command_parsed(
-        "heartbeat_log", {"limit": min(limit, 100)}
+    raw = await pi_client.plugin_call(
+        "pet", "GET", "/heartbeat/log", {"limit": min(limit, 100)}
     )
+    return pi_client.to_legacy_shape(raw)
 
 
 @router.post("/notes")

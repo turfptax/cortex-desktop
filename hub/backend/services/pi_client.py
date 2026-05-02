@@ -58,6 +58,55 @@ async def send_command(command: str, payload: dict | None = None) -> dict:
         return {"error": str(e)}
 
 
+async def plugin_call(
+    plugin: str,
+    method: str,
+    route: str,
+    payload: dict | None = None,
+    timeout: float = 30.0,
+) -> dict:
+    """Call a plugin route on the Pi.
+
+    Hits /plugins/<plugin><route> with HTTP Basic Auth. For GET, payload
+    becomes URL query params. For POST/PUT/DELETE, payload becomes the
+    JSON body. Returns the plugin handler's dict directly: {ok, ...fields}
+    on success, {ok: false, error: "..."} on transport failure.
+
+    Slice 2c2c2 — replaces send_command_parsed("pet_*") for the 23 pet
+    routes after slice 2c2c1 moved them out of the legacy CMD: protocol.
+    """
+    method = method.upper()
+    url = f"{settings.pi_base_url}/plugins/{plugin}{route}"
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            kwargs = {"headers": _headers()}
+            if method == "GET" and payload:
+                kwargs["params"] = payload
+            elif payload is not None:
+                kwargs["json"] = payload
+            resp = await client.request(method, url, **kwargs)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.TimeoutException:
+        return {"ok": False, "error": "Pi request timed out"}
+    except httpx.ConnectError:
+        return {"ok": False, "error": "Cannot connect to Pi"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def to_legacy_shape(plugin_response: dict) -> dict:
+    """Adapt {ok: true, ...fields} -> {data: {...fields}, error: None}.
+
+    Matches the shape send_command_parsed returned so the existing
+    frontend (Pi page, etc.) keeps working without any React/TS changes.
+    """
+    if plugin_response.get("ok"):
+        data = {k: v for k, v in plugin_response.items() if k != "ok"}
+        return {"data": data, "error": None}
+    return {"data": None, "error": plugin_response.get("error", "unknown")}
+
+
 async def get_status() -> dict:
     """Get combined Pi status (health + get_status command)."""
     h = await health()
@@ -72,56 +121,51 @@ async def get_status() -> dict:
 
 
 async def pet_ask(prompt: str, poll_timeout: float = 120.0) -> dict:
-    """Send pet_ask command, then poll for the actual response.
+    """POST /plugins/pet/chat then poll /plugins/pet/responses for the result.
 
-    pet_ask is async on the Pi: it returns ACK immediately, and the
-    inference result arrives later via pet_response.  We poll until we
-    get the response matching our interaction ID or the timeout expires.
+    Pet inference is async on the Pi: /chat returns ACK with an interaction
+    ID, the response arrives later via /responses. We poll until we get our
+    specific response or the timeout expires.
 
-    The Pi's display loop also drains the response queue, so we use
-    since_id to retrieve responses from the recent-responses list even
-    if the display already consumed them from the queue.
+    Slice 2c2c2 — was previously send_command("pet_ask")+poll on pet_response.
     """
     import asyncio
     import time
 
-    ack = await send_command("pet_ask", {"prompt": prompt})
-    ack_resp = ack.get("response", "")
-    if not isinstance(ack_resp, str) or not ack_resp.startswith("ACK:pet_ask:"):
-        return ack  # error or unexpected
-
-    # Extract the interaction ID so we can filter for our specific response
-    try:
-        interaction_id = int(ack_resp.split(":")[-1])
-    except (ValueError, IndexError):
-        interaction_id = 0
-    since_id = interaction_id - 1  # get responses with id >= our interaction
+    ack = await plugin_call("pet", "POST", "/chat", {"prompt": prompt})
+    if not ack.get("ok"):
+        return {
+            "response": "(failed to send to pet)",
+            "error": ack.get("error", "unknown"),
+        }
+    interaction_id = ack.get("interaction_id", 0) or 0
+    since_id = max(interaction_id - 1, 0)
 
     deadline = time.monotonic() + poll_timeout
     while time.monotonic() < deadline:
         await asyncio.sleep(2.0)
-        poll = await send_command("pet_response", {"since_id": since_id})
-        resp_str = poll.get("response", "")
-        if isinstance(resp_str, str) and resp_str.startswith("RSP:pet_response:"):
-            try:
-                items = _json.loads(resp_str[len("RSP:pet_response:"):])
-                # Find our specific response by interaction ID
-                for item in items:
-                    if item.get("id") == interaction_id:
-                        return {"response": item.get("response", ""), "data": item}
-                # If no exact match but items exist, return the latest
-                if items:
-                    latest = items[-1]
-                    return {"response": latest.get("response", ""), "data": latest}
-            except (ValueError, _json.JSONDecodeError):
-                pass
+        poll = await plugin_call(
+            "pet", "GET", "/responses", {"since_id": since_id}, timeout=10.0
+        )
+        if not poll.get("ok"):
+            continue
+        items = poll.get("responses", []) or []
+        # Find our specific response by interaction ID
+        for item in items:
+            if item.get("id") == interaction_id:
+                return {"response": item.get("response", ""), "data": item}
+        # If no exact match but items exist, return the latest
+        if items:
+            latest = items[-1]
+            return {"response": latest.get("response", ""), "data": latest}
 
     return {"response": "(no response — inference timed out)", "error": "timeout"}
 
 
 async def pet_history(limit: int = 20) -> dict:
-    """Get pet conversation history."""
-    return await send_command("pet_history", {"limit": limit})
+    """GET /plugins/pet/history?limit=N (returns legacy shape for compat)."""
+    raw = await plugin_call("pet", "GET", "/history", {"limit": limit})
+    return to_legacy_shape(raw)
 
 
 async def send_command_parsed(
@@ -153,10 +197,14 @@ async def send_command_parsed(
 
 
 async def pet_status() -> dict:
-    """Get pet status (stage, mood, XP). Parses the RSP: protocol response."""
-    result = await send_command_parsed("pet_status")
-    # Remap for backward compat: existing frontend expects {pet: ...}
-    return {"pet": result.get("data"), "error": result.get("error")}
+    """GET /plugins/pet/status — remapped to {pet: ...} for frontend compat."""
+    raw = await plugin_call("pet", "GET", "/status")
+    if raw.get("ok"):
+        # The new endpoint returns engine_loaded/heartbeat_running/stats etc;
+        # the existing frontend reads pet_status's pet.X fields, which match
+        # the keys inside `stats`. Surface stats under "pet".
+        return {"pet": raw.get("stats"), "error": None}
+    return {"pet": None, "error": raw.get("error", "unknown")}
 
 
 async def send_note(
