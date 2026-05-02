@@ -620,6 +620,29 @@ def shell_exec(command: str, timeout: int = 30, cwd: str = "") -> str:
         return "Error: {}".format(e)
 
 
+def _pet_plugin_call(method, route, payload=None, timeout=30):
+    """Helper: call /plugins/pet/<route> via the bridge if it supports it.
+
+    Slice 2c2c2 — pet CMD handlers were removed from cortex_protocol; the
+    pet plugin now serves them under /plugins/pet/* HTTP routes. Only the
+    WiFi bridge supports these directly. Returns (result_dict, err_str).
+    """
+    bridge = _get_bridge_lazy()
+    fn = getattr(bridge, "plugin_call", None)
+    if fn is None:
+        return None, ("Pet routes need the WiFi bridge to the Pi "
+                      "(BLE/serial fallback can't reach plugin endpoints).")
+    try:
+        result = fn("pet", method, route, payload, timeout=timeout)
+    except Exception as e:
+        return None, str(e)
+    if not isinstance(result, dict):
+        return None, "Bad response shape from Pi"
+    if not result.get("ok"):
+        return None, result.get("error", "unknown error")
+    return result, None
+
+
 @mcp.tool()
 def pet_analytics(days: int = 7) -> str:
     """Get pet analytics: mood trends, interaction frequency, stage progress.
@@ -630,11 +653,12 @@ def pet_analytics(days: int = 7) -> str:
     Args:
         days: Number of days to analyze (default 7, max 90).
     """
-    try:
-        payload = {"days": min(days, 90)}
-        return send_command(_get_bridge_lazy(), "pet_analytics", payload, timeout=10)
-    except Exception as e:
-        return "Error: {}".format(e)
+    import json as _json
+    result, err = _pet_plugin_call("GET", "/analytics",
+                                    {"days": min(days, 90)}, timeout=10)
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
 
 
 @mcp.tool()
@@ -654,64 +678,30 @@ def pet_chat(message: str, timeout: int = 120) -> str:
     """
     import time as _time
 
-    try:
-        bridge = _get_bridge_lazy()
+    # Step 1: POST /plugins/pet/chat — returns {ok, interaction_id}
+    ack, err = _pet_plugin_call("POST", "/chat", {"prompt": message}, timeout=10)
+    if err:
+        return "Failed to send message to pet: {}".format(err)
+    interaction_id = ack.get("interaction_id", 0) or 0
+    since_id = max(interaction_id - 1, 0)
 
-        # Step 1: Send pet_ask — returns ACK with interaction ID
-        ack_raw = send_command(bridge, "pet_ask", {"prompt": message})
-        if "Error" in ack_raw or "timeout" in ack_raw.lower():
-            return "Failed to send message to pet: {}".format(ack_raw)
+    # Step 2: Poll GET /plugins/pet/responses?since_id=N for the result
+    deadline = _time.monotonic() + min(timeout, 180)
+    while _time.monotonic() < deadline:
+        _time.sleep(3.0)
+        poll, perr = _pet_plugin_call(
+            "GET", "/responses", {"since_id": since_id}, timeout=10
+        )
+        if perr:
+            continue
+        items = poll.get("responses", []) or []
+        for item in items:
+            if item.get("id") == interaction_id:
+                return item.get("response", "(empty response)")
+        if items:
+            return items[-1].get("response", "(empty response)")
 
-        # Parse interaction ID from ACK
-        interaction_id = 0
-        if "ACK" in ack_raw:
-            try:
-                interaction_id = int(ack_raw.split(":")[-1].strip().rstrip(")"))
-            except (ValueError, IndexError):
-                pass
-
-        since_id = max(interaction_id - 1, 0)
-
-        # Step 2: Poll for the pet's response
-        deadline = _time.monotonic() + min(timeout, 180)
-        while _time.monotonic() < deadline:
-            _time.sleep(3.0)
-            poll_raw = send_command(
-                bridge, "pet_response", {"since_id": since_id}, timeout=10
-            )
-            if "Error" in poll_raw or "timeout" in poll_raw.lower():
-                continue
-
-            # Try to parse the JSON response list
-            try:
-                import json as _json
-                items = _json.loads(poll_raw)
-                if isinstance(items, list):
-                    # Find our specific response
-                    for item in items:
-                        if item.get("id") == interaction_id:
-                            return item.get("response", "(empty response)")
-                    # Or return the latest if available
-                    if items:
-                        latest = items[-1]
-                        return latest.get("response", "(empty response)")
-            except (ValueError, _json.JSONDecodeError):
-                # Response might be wrapped differently
-                if "RSP:pet_response:" in poll_raw:
-                    data_part = poll_raw.split("RSP:pet_response:", 1)[-1]
-                    try:
-                        items = _json.loads(data_part)
-                        if isinstance(items, list) and items:
-                            for item in items:
-                                if item.get("id") == interaction_id:
-                                    return item.get("response", "(empty response)")
-                            return items[-1].get("response", "(empty response)")
-                    except Exception:
-                        pass
-
-        return "(The pet didn't respond in time — it may be sleeping or in a coma.)"
-    except Exception as e:
-        return "Error: {}".format(e)
+    return "(The pet didn't respond in time — it may be sleeping or in a coma.)"
 
 
 @mcp.tool()
@@ -722,11 +712,12 @@ def pet_feed(feed_type: str = "chat_snack") -> str:
         feed_type: Type of food — "chat_snack" (+15%), "data_meal" (+25%),
                    or "training_feast" (+40%).
     """
-    try:
-        bridge = _get_bridge_lazy()
-        return send_command(bridge, "pet_feed", {"type": feed_type})
-    except Exception as e:
-        return "Error: {}".format(e)
+    result, err = _pet_plugin_call("POST", "/feed", {"type": feed_type})
+    if err:
+        return "Error: {}".format(err)
+    return "Fed pet ({}). Hunger now {:.0%}.".format(
+        result.get("type", feed_type), result.get("hunger", 0) or 0
+    )
 
 
 @mcp.tool()
@@ -735,21 +726,22 @@ def pet_clean() -> str:
 
     Performs a quick clean, discarding no specific interactions.
     """
-    try:
-        bridge = _get_bridge_lazy()
-        return send_command(bridge, "pet_clean", {})
-    except Exception as e:
-        return "Error: {}".format(e)
+    result, err = _pet_plugin_call("POST", "/clean", {"discard_ids": []})
+    if err:
+        return "Error: {}".format(err)
+    return "Cleaned pet. Cleanliness now {:.0%}, discarded {} interaction(s).".format(
+        result.get("cleanliness", 0) or 0,
+        len(result.get("discarded", []) or []),
+    )
 
 
 @mcp.tool()
 def pet_rest() -> str:
     """Let the Cortex pet rest to restore energy (+10%)."""
-    try:
-        bridge = _get_bridge_lazy()
-        return send_command(bridge, "pet_rest")
-    except Exception as e:
-        return "Error: {}".format(e)
+    result, err = _pet_plugin_call("POST", "/rest")
+    if err:
+        return "Error: {}".format(err)
+    return "Pet rested. Energy now {:.0%}.".format(result.get("energy", 0) or 0)
 
 
 @mcp.tool()

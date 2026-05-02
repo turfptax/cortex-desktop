@@ -190,6 +190,40 @@ class WiFiBridge:
     def default_timeout(self):
         return 10.0
 
+    # -- Plugin route calls (slice 2c2c2) --
+
+    def plugin_call(self, plugin, method, route, payload=None, timeout=30):
+        """Call a plugin's HTTP route mounted at /plugins/<plugin><route>.
+
+        For GET, payload (if any) becomes URL query params. For POST/PUT/DELETE
+        payload becomes the JSON body. Returns the plugin handler's dict
+        directly: {ok: true, ...} or {ok: false, error: "..."}.
+
+        Used by cortex_mcp/server.py pet tools after slice 2c2c1 moved the
+        pet CMD handlers out of the legacy /api/cmd protocol.
+        """
+        method = method.upper()
+        path = "/plugins/{}{}".format(plugin, route)
+
+        if method == "GET" and payload:
+            from urllib.parse import urlencode
+            qs = urlencode({k: v for k, v in payload.items() if v is not None})
+            path = "{}?{}".format(path, qs)
+            body = None
+        else:
+            body = payload
+
+        try:
+            return self._request(method, path, body, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            try:
+                err = json.loads(e.read())
+                return {"ok": False, "error": err.get("error", str(e))}
+            except Exception:
+                return {"ok": False, "error": "HTTP {}".format(e.code)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     # -- File operations (WiFi-only features) --
 
     def list_files(self, category):
