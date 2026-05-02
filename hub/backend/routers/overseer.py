@@ -171,6 +171,94 @@ async def future_notes():
     return await pi_client.plugin_call("overseer", "GET", "/future-notes")
 
 
+# ── Slice 3e proxies ────────────────────────────────────────────
+
+@router.get("/projects")
+async def list_projects():
+    return await pi_client.plugin_call("overseer", "GET", "/projects")
+
+
+@router.post("/projects/classify")
+async def classify_now():
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/projects/classify", {})
+
+
+class ProjectSettingRequest(BaseModel):
+    project: str
+    treat_as: str   # auto | human | automation | ignore
+
+
+@router.post("/projects/setting")
+async def set_project_setting(req: ProjectSettingRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/projects/setting", req.dict())
+
+
+@router.get("/rollups")
+async def list_rollups(project: str = "", limit: int = 100):
+    payload = {"limit": limit}
+    if project:
+        payload["project"] = project
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/rollups", payload)
+
+
+class ChatRequest(BaseModel):
+    message: str
+    backend: str | None = None
+    max_tokens: int = 800
+    temperature: float = 0.7
+
+
+@router.post("/chat")
+async def chat(req: ChatRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/chat", req.dict(exclude_none=True),
+        timeout=120.0,
+    )
+
+
+@router.get("/chat/history")
+async def chat_history(limit: int = 50):
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/chat/history", {"limit": limit})
+
+
+@router.post("/chat/clear")
+async def chat_clear():
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/chat/clear", {})
+
+
+@router.get("/notifications")
+async def notifications(include_dismissed: int = 0, limit: int = 100):
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/notifications",
+        {"include_dismissed": include_dismissed, "limit": limit})
+
+
+class DismissNotificationRequest(BaseModel):
+    id: int | None = None
+    all: bool = False
+
+
+@router.post("/notifications/dismiss")
+async def dismiss_notification(req: DismissNotificationRequest):
+    body: dict = {}
+    if req.id is not None:
+        body["id"] = req.id
+    if req.all:
+        body["all"] = True
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/notifications/dismiss", body)
+
+
+@router.get("/budget")
+async def budget():
+    return await pi_client.plugin_call("overseer", "GET", "/budget")
+
+
 # ── Local Claude Code .jsonl scanner ────────────────────────────
 
 def _claude_projects_dir() -> Path:

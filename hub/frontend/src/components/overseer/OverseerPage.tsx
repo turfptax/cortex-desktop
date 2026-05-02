@@ -117,6 +117,68 @@ interface LlmStatsResp {
   period_days?: number
 }
 
+interface ChatMessage {
+  id: number
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  created_at: string
+  backend?: string
+  model?: string
+  latency_ms?: number
+  cost_usd?: number
+}
+
+interface ChatHistoryResp {
+  ok: boolean
+  messages?: ChatMessage[]
+  total?: number
+}
+
+interface ChatSendResp {
+  ok: boolean
+  reply?: string
+  model?: string
+  backend?: string
+  latency_ms?: number
+  cost_usd?: number
+  error?: string
+}
+
+interface NotificationRow {
+  id: number
+  severity: 'info' | 'warn' | 'important'
+  title: string
+  body: string
+  rule_name: string
+  rule_key: string
+  related_table: string
+  related_id: string
+  created_at: string
+  dismissed_at: string | null
+}
+
+interface NotificationsResp {
+  ok: boolean
+  notifications?: NotificationRow[]
+  unread_count?: number
+}
+
+interface BudgetSnapshot {
+  date: string
+  cost_used_usd: number
+  cost_max_usd: number
+  cost_remaining_usd: number
+  calls_used: number
+  calls_max: number
+  calls_remaining: number
+  exhausted: boolean
+}
+
+interface BudgetResp {
+  ok: boolean
+  budget?: BudgetSnapshot
+}
+
 // ── Helpers ───────────────────────────────────────────────────
 
 function fmtBytes(n?: number): string {
@@ -147,7 +209,10 @@ function fmtRelative(iso?: string | null): string {
 
 // ── Page ──────────────────────────────────────────────────────
 
+type Tab = 'overview' | 'chat' | 'notifications'
+
 export function OverseerPage() {
+  const [tab, setTab] = useState<Tab>('overview')
   const [status, setStatus] = useState<StatusResp | null>(null)
   const [wm, setWm] = useState<WorkingMemoryResp | null>(null)
   const [imports, setImports] = useState<ImportRow[]>([])
@@ -155,6 +220,12 @@ export function OverseerPage() {
   const [llmStats, setLlmStats] = useState<LlmStatsResp | null>(null)
   const [scan, setScan] = useState<ScanResp | null>(null)
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set())
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
+  const [chatInput, setChatInput] = useState<string>('')
+  const [chatSending, setChatSending] = useState<boolean>(false)
+  const [notifications, setNotifications] = useState<NotificationRow[]>([])
+  const [notificationsUnread, setNotificationsUnread] = useState<number>(0)
+  const [budget, setBudget] = useState<BudgetSnapshot | null>(null)
   const [busy, setBusy] = useState<string>('')
   const [lastAction, setLastAction] = useState<string>('')
   const [error, setError] = useState<string>('')
@@ -162,20 +233,34 @@ export function OverseerPage() {
   const refreshAll = async () => {
     setError('')
     try {
-      const [s, w, l, ls, im] = await Promise.all([
+      const [s, w, l, ls, im, n, b] = await Promise.all([
         apiFetch<StatusResp>('/overseer/status'),
         apiFetch<WorkingMemoryResp>('/overseer/working-memory'),
         apiFetch<LoopResp>('/overseer/loop'),
         apiFetch<LlmStatsResp>('/overseer/llm/stats?days=7'),
         apiFetch<ImportsResp>('/overseer/imports?limit=200'),
+        apiFetch<NotificationsResp>('/overseer/notifications'),
+        apiFetch<BudgetResp>('/overseer/budget'),
       ])
       setStatus(s)
       setWm(w)
       setLoop(l)
       setLlmStats(ls)
       setImports(im.imports || [])
+      setNotifications(n.notifications || [])
+      setNotificationsUnread(n.unread_count || 0)
+      setBudget(b.budget || null)
     } catch (e: any) {
       setError(`Refresh failed: ${e?.message || e}`)
+    }
+  }
+
+  const refreshChat = async () => {
+    try {
+      const r = await apiFetch<ChatHistoryResp>('/overseer/chat/history?limit=200')
+      setChatMessages(r.messages || [])
+    } catch (e: any) {
+      setError(`Chat refresh failed: ${e?.message || e}`)
     }
   }
 
@@ -184,6 +269,76 @@ export function OverseerPage() {
     const t = setInterval(refreshAll, 30000)
     return () => clearInterval(t)
   }, [])
+
+  useEffect(() => {
+    if (tab === 'chat') refreshChat()
+  }, [tab])
+
+  const handleSendChat = async () => {
+    const message = chatInput.trim()
+    if (!message || chatSending) return
+    setChatSending(true)
+    setError('')
+    // Optimistic: append user msg locally so the input clears immediately
+    const optimistic: ChatMessage = {
+      id: -Date.now(),
+      role: 'user',
+      content: message,
+      created_at: new Date().toISOString(),
+    }
+    setChatMessages((prev) => [...prev, optimistic])
+    setChatInput('')
+    try {
+      const r = await apiFetch<ChatSendResp>('/overseer/chat', {
+        method: 'POST',
+        body: JSON.stringify({ message }),
+      })
+      if (!r.ok) {
+        setError(`Chat error: ${r.error || 'unknown'}`)
+      }
+      // Always re-fetch so we get the persisted IDs + assistant reply
+      await refreshChat()
+    } catch (e: any) {
+      setError(`Chat failed: ${e?.message || e}`)
+    } finally {
+      setChatSending(false)
+    }
+  }
+
+  const handleClearChat = async () => {
+    if (!confirm('Clear the entire chat thread? This cannot be undone.')) return
+    try {
+      await apiFetch<any>('/overseer/chat/clear', { method: 'POST' })
+      setChatMessages([])
+      setLastAction('Chat thread cleared')
+    } catch (e: any) {
+      setError(`Clear failed: ${e?.message || e}`)
+    }
+  }
+
+  const handleDismissNotification = async (id: number) => {
+    try {
+      await apiFetch<any>('/overseer/notifications/dismiss', {
+        method: 'POST',
+        body: JSON.stringify({ id }),
+      })
+      await refreshAll()
+    } catch (e: any) {
+      setError(`Dismiss failed: ${e?.message || e}`)
+    }
+  }
+
+  const handleDismissAllNotifications = async () => {
+    try {
+      await apiFetch<any>('/overseer/notifications/dismiss', {
+        method: 'POST',
+        body: JSON.stringify({ all: true }),
+      })
+      await refreshAll()
+    } catch (e: any) {
+      setError(`Dismiss-all failed: ${e?.message || e}`)
+    }
+  }
 
   const handleScan = async () => {
     setBusy('Scanning ~/.claude/projects/...')
@@ -290,8 +445,8 @@ export function OverseerPage() {
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="px-6 py-3 border-b border-border bg-surface-secondary">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-3 flex-wrap">
             <h2 className="text-base font-semibold text-text-primary">
               Overseer
             </h2>
@@ -304,6 +459,9 @@ export function OverseerPage() {
                 Loop idle
               </span>
             )}
+            {budget && (
+              <BudgetIndicator budget={budget} />
+            )}
             {status?.working_memory_built_at && (
               <span className="text-xs text-text-muted">
                 wm built {fmtRelative(status.working_memory_built_at)}
@@ -314,6 +472,25 @@ export function OverseerPage() {
             {busy && (
               <span className="text-xs text-text-muted">{busy}</span>
             )}
+            <div className="flex gap-1 bg-surface-tertiary rounded-lg p-0.5">
+              {([
+                ['overview', 'Overview'],
+                ['chat', 'Chat'],
+                ['notifications', `Bell${notificationsUnread > 0 ? ` (${notificationsUnread})` : ''}`],
+              ] as const).map(([id, label]) => (
+                <button
+                  key={id}
+                  onClick={() => setTab(id as Tab)}
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                    tab === id
+                      ? 'bg-accent text-white'
+                      : 'text-text-secondary hover:text-text-primary'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <button
               onClick={refreshAll}
               disabled={!!busy}
@@ -339,6 +516,25 @@ export function OverseerPage() {
       </div>
 
       {/* Body */}
+      {tab === 'chat' && (
+        <ChatPanel
+          messages={chatMessages}
+          input={chatInput}
+          setInput={setChatInput}
+          sending={chatSending}
+          onSend={handleSendChat}
+          onClear={handleClearChat}
+          onRefresh={refreshChat}
+        />
+      )}
+      {tab === 'notifications' && (
+        <NotificationsPanel
+          notifications={notifications}
+          onDismiss={handleDismissNotification}
+          onDismissAll={handleDismissAllNotifications}
+        />
+      )}
+      {tab === 'overview' && (
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
 
         {/* Stats grid */}
@@ -564,11 +760,231 @@ export function OverseerPage() {
           </Card>
         </div>
       </div>
+      )}
     </div>
   )
 }
 
 // ── Sub-components ────────────────────────────────────────────
+
+function BudgetIndicator({ budget }: { budget: BudgetSnapshot }) {
+  const pctCost = budget.cost_max_usd > 0
+    ? Math.min(100, Math.round((budget.cost_used_usd / budget.cost_max_usd) * 100))
+    : 0
+  const cls = budget.exhausted
+    ? 'text-red-400'
+    : pctCost > 70
+      ? 'text-amber-400'
+      : 'text-text-muted'
+  return (
+    <span className={`text-xs ${cls}`} title={`Daily cap: ${budget.cost_max_usd} / ${budget.calls_max} calls. Resets at UTC midnight.`}>
+      Today: ${budget.cost_used_usd.toFixed(2)} / ${budget.cost_max_usd.toFixed(2)}
+      {' '}({budget.calls_used}/{budget.calls_max} calls)
+    </span>
+  )
+}
+
+function NotificationsPanel({
+  notifications,
+  onDismiss,
+  onDismissAll,
+}: {
+  notifications: NotificationRow[]
+  onDismiss: (id: number) => void
+  onDismissAll: () => void
+}) {
+  const unread = notifications.filter((n) => !n.dismissed_at)
+  return (
+    <div className="flex-1 overflow-y-auto p-6">
+      <div className="max-w-3xl mx-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-base font-semibold text-text-primary">
+            Notifications ({unread.length} unread)
+          </h3>
+          {unread.length > 0 && (
+            <button
+              onClick={onDismissAll}
+              className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer"
+            >
+              Dismiss all
+            </button>
+          )}
+        </div>
+        {unread.length === 0 ? (
+          <div className="text-sm text-text-muted py-8 text-center">
+            All caught up. Notifications will appear here when the overseer
+            flags something — stale projects, automation anomalies, growing
+            backlogs.
+          </div>
+        ) : (
+          <ul className="space-y-2">
+            {unread.map((n) => (
+              <li
+                key={n.id}
+                className="rounded-lg border border-border bg-surface-secondary p-3 flex justify-between gap-3"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase ${
+                        n.severity === 'important'
+                          ? 'bg-red-500/20 text-red-400'
+                          : n.severity === 'warn'
+                            ? 'bg-amber-500/20 text-amber-400'
+                            : 'bg-text-muted/20 text-text-muted'
+                      }`}
+                    >
+                      {n.severity}
+                    </span>
+                    <span className="text-sm text-text-primary font-medium">
+                      {n.title}
+                    </span>
+                    <span className="text-xs text-text-muted ml-auto whitespace-nowrap">
+                      {n.created_at?.slice(0, 16)}
+                    </span>
+                  </div>
+                  {n.body && (
+                    <p className="text-xs text-text-secondary mt-1.5 leading-relaxed">
+                      {n.body}
+                    </p>
+                  )}
+                  <div className="text-[10px] text-text-muted mt-1.5 font-mono">
+                    rule={n.rule_name} · key={n.rule_key}
+                  </div>
+                </div>
+                <button
+                  onClick={() => onDismiss(n.id)}
+                  className="text-text-muted hover:text-text-primary text-lg leading-none cursor-pointer"
+                  title="Dismiss"
+                >
+                  ✕
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ChatPanel({
+  messages,
+  input,
+  setInput,
+  sending,
+  onSend,
+  onClear,
+  onRefresh,
+}: {
+  messages: ChatMessage[]
+  input: string
+  setInput: (v: string) => void
+  sending: boolean
+  onSend: () => void
+  onClear: () => void
+  onRefresh: () => void
+}) {
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex items-center justify-between px-6 py-2 border-b border-border">
+        <div className="text-xs text-text-muted">
+          {messages.length} message{messages.length === 1 ? '' : 's'} · single ongoing thread
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={onRefresh}
+            disabled={sending}
+            className="px-3 py-1 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer disabled:opacity-50"
+          >
+            Refresh
+          </button>
+          <button
+            onClick={onClear}
+            disabled={sending || messages.length === 0}
+            className="px-3 py-1 rounded-md text-xs font-medium text-text-muted hover:text-red-400 cursor-pointer disabled:opacity-50"
+          >
+            Clear thread
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-6 py-4">
+        <div className="max-w-3xl mx-auto space-y-4">
+          {messages.length === 0 ? (
+            <div className="text-sm text-text-muted text-center py-12">
+              Talk to the overseer. It has access to your working memory,
+              recent gists, themes, and the institutional notes left by the
+              first instance. Ask anything — what you've been working on,
+              what you might be forgetting, what it thinks of a pattern it
+              has noticed.
+            </div>
+          ) : (
+            messages.map((m) => (
+              <ChatBubble key={m.id} m={m} />
+            ))
+          )}
+          {sending && (
+            <div className="text-xs text-text-muted">
+              <span className="inline-block animate-pulse">Thinking…</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="border-t border-border px-6 py-3 bg-surface-secondary">
+        <div className="max-w-3xl mx-auto flex gap-2">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                onSend()
+              }
+            }}
+            placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+            disabled={sending}
+            rows={2}
+            className="flex-1 rounded-md border border-border bg-surface-tertiary px-3 py-2 text-sm text-text-primary placeholder:text-text-muted resize-none focus:outline-none focus:border-accent disabled:opacity-50"
+          />
+          <button
+            onClick={onSend}
+            disabled={sending || !input.trim()}
+            className="px-4 py-2 rounded-md text-sm font-medium bg-accent hover:bg-accent-hover text-white cursor-pointer disabled:opacity-50 self-end"
+          >
+            {sending ? 'Sending…' : 'Send'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ChatBubble({ m }: { m: ChatMessage }) {
+  const isUser = m.role === 'user'
+  return (
+    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+      <div
+        className={`max-w-[80%] rounded-lg px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
+          isUser
+            ? 'bg-accent/15 text-text-primary border border-accent/30'
+            : 'bg-surface-secondary text-text-primary border border-border'
+        }`}
+      >
+        <div className="text-[10px] uppercase tracking-wide text-text-muted mb-1">
+          {isUser ? 'you' : 'overseer'}
+          {!isUser && m.model && (
+            <span className="ml-2 normal-case">
+              {m.model} · {m.latency_ms}ms · ${(m.cost_usd ?? 0).toFixed(4)}
+            </span>
+          )}
+        </div>
+        {m.content}
+      </div>
+    </div>
+  )
+}
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
