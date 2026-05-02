@@ -259,6 +259,47 @@ async def budget():
     return await pi_client.plugin_call("overseer", "GET", "/budget")
 
 
+# ── Slice 3f: dialectic ─────────────────────────────────────────
+
+@router.get("/dialectic")
+async def list_dialectic(status: str = "", severity: str = "",
+                          artifact_type: str = "",
+                          limit: int = 100, offset: int = 0):
+    payload: dict = {"limit": limit, "offset": offset}
+    if status:
+        payload["status"] = status
+    if severity:
+        payload["severity"] = severity
+    if artifact_type:
+        payload["artifact_type"] = artifact_type
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/dialectic", payload)
+
+
+@router.get("/dialectic/get")
+async def get_dialectic(id: int):
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/dialectic/get", {"id": id})
+
+
+class ResolveDialecticRequest(BaseModel):
+    id: int
+    resolution: str            # opus | gemma | third | productive
+    resolution_text: str = ""
+
+
+@router.post("/dialectic/resolve")
+async def resolve_dialectic(req: ResolveDialecticRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/dialectic/resolve", req.dict())
+
+
+@router.get("/dialectic/counts")
+async def dialectic_counts():
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/dialectic/counts")
+
+
 # ── Local Claude Code .jsonl scanner ────────────────────────────
 
 def _claude_projects_dir() -> Path:
