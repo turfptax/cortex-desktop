@@ -308,6 +308,54 @@ async def journal(limit: int = 30):
         "overseer", "GET", "/journal", {"limit": limit})
 
 
+# ── Slice 3f.5 #2: question-centered ────────────────────────────
+
+@router.get("/questions/get")
+async def question_detail(id: int, recent_n: int = 20):
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/questions/get",
+        {"id": id, "recent_n": recent_n})
+
+
+class QuestionLifecycleRequest(BaseModel):
+    id: int
+    lifecycle: str   # dormant | active | partially_answered | resolved | abandoned
+
+
+@router.post("/questions/lifecycle")
+async def question_lifecycle(req: QuestionLifecycleRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/questions/lifecycle", req.dict())
+
+
+class QuestionUpsertRequest(BaseModel):
+    id: int | None = None
+    question: str = ""
+    body: str = ""
+    confidence: str = "med"
+    tags: list[str] = []
+
+
+@router.post("/questions/upsert")
+async def question_upsert(req: QuestionUpsertRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/questions/upsert",
+        req.dict(exclude_none=True))
+
+
+class RouteExistingRequest(BaseModel):
+    limit: int = 100
+    max_cost_usd: float = 0.50
+
+
+@router.post("/questions/route-existing")
+async def route_existing(req: RouteExistingRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/questions/route-existing", req.dict(),
+        timeout=600.0,
+    )
+
+
 # ── Local Claude Code .jsonl scanner ────────────────────────────
 
 def _claude_projects_dir() -> Path:
