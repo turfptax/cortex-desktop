@@ -356,6 +356,76 @@ async def route_existing(req: RouteExistingRequest):
     )
 
 
+# ── Slice 3f.5 #4: known blindspots ─────────────────────────────
+
+@router.get("/blindspots")
+async def list_blindspots(active_only: int = 1, model: str = "",
+                           topic: str = ""):
+    payload: dict = {"active_only": active_only}
+    if model:
+        payload["model"] = model
+    if topic:
+        payload["topic"] = topic
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/blindspots", payload)
+
+
+class BlindspotUpsertRequest(BaseModel):
+    id: int | None = None
+    model_pattern: str
+    topic_pattern: str = ""
+    direction: str = "general"
+    confidence_adjustment: int = 0
+    body: str
+    rationale: str = ""
+    confidence: str = "med"
+    source: str = "user"
+    is_active: bool = True
+
+
+@router.post("/blindspots/upsert")
+async def upsert_blindspot(req: BlindspotUpsertRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/blindspots/upsert",
+        req.dict(exclude_none=True))
+
+
+class BlindspotActiveRequest(BaseModel):
+    id: int
+    is_active: bool = True
+
+
+@router.post("/blindspots/active")
+async def set_blindspot_active(req: BlindspotActiveRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/blindspots/active", req.dict())
+
+
+class CorrectionRequest(BaseModel):
+    what_was_wrong: str
+    user_correction: str = ""
+    model: str = ""
+    artifact_table: str = ""
+    artifact_id: int | None = None
+    topic: str = ""
+    severity: str = "med"
+    source: str = "manual"
+
+
+@router.post("/corrections")
+async def log_correction(req: CorrectionRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/corrections",
+        req.dict(exclude_none=True))
+
+
+@router.get("/corrections")
+async def list_corrections(limit: int = 100, undistilled_only: int = 0):
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/corrections",
+        {"limit": limit, "undistilled_only": undistilled_only})
+
+
 # ── Local Claude Code .jsonl scanner ────────────────────────────
 
 def _claude_projects_dir() -> Path:
