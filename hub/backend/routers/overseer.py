@@ -300,6 +300,14 @@ async def dialectic_counts():
         "overseer", "GET", "/dialectic/counts")
 
 
+# ── Slice 3f.5: overseer journal (the thinking layer) ──────────
+
+@router.get("/journal")
+async def journal(limit: int = 30):
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/journal", {"limit": limit})
+
+
 # ── Local Claude Code .jsonl scanner ────────────────────────────
 
 def _claude_projects_dir() -> Path:
