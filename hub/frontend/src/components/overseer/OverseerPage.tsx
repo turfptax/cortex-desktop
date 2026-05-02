@@ -340,6 +340,31 @@ export function OverseerPage() {
     }
   }
 
+  const handleOpenNotificationInChat = (n: NotificationRow) => {
+    // Pre-fill a chat prompt from the notification's content and switch
+    // to the chat tab. The user can edit before sending. This is the
+    // minimal feedback loop — full per-rule actions (Archive/Snooze/etc.)
+    // come in 3f.
+    const ruleHints: Record<string, string> = {
+      stale_active_project:
+        "Should I archive this, ramp it back up, or is the staleness fine?",
+      automation_anomaly:
+        "What likely went wrong, and is it worth investigating?",
+      import_backlog:
+        "Should I just kick off /backfill, or is there a better strategy?",
+    }
+    const hint = ruleHints[n.rule_name] ||
+      "What do you make of this, and what should I do?"
+    const prefill = [
+      `You flagged: "${n.title}"`,
+      n.body ? `\nDetails: ${n.body}` : "",
+      `\nRule: ${n.rule_name}, key: ${n.rule_key}`,
+      `\n\n${hint}`,
+    ].join("")
+    setChatInput(prefill)
+    setTab('chat')
+  }
+
   const handleScan = async () => {
     setBusy('Scanning ~/.claude/projects/...')
     setLastAction('')
@@ -383,7 +408,7 @@ export function OverseerPage() {
       })
       const c = r?.counts || {}
       setLastAction(
-        `Import: ${c.imported ?? 0} new, ${c.skipped ?? 0} skipped, ${c.failed ?? 0} failed (of ${c.requested ?? 0})`
+        `Import: ${c.imported ?? 0} new, ${c.skipped ?? 0} already on Pi (dedup), ${c.failed ?? 0} failed (of ${c.requested ?? 0})`
       )
       setSelectedPaths(new Set())
       await refreshAll()
@@ -532,6 +557,7 @@ export function OverseerPage() {
           notifications={notifications}
           onDismiss={handleDismissNotification}
           onDismissAll={handleDismissAllNotifications}
+          onOpenInChat={handleOpenNotificationInChat}
         />
       )}
       {tab === 'overview' && (
@@ -612,9 +638,18 @@ export function OverseerPage() {
                 </thead>
                 <tbody>
                   {scan.found.map((f) => {
-                    const known = imports.some(
+                    // The encoded folder name (`C--dev-ttx-VOICE-NVIDIA`)
+                    // and the imported `project` field (cwd basename, e.g.
+                    // `VOICE NVIDIA`) often differ — Claude Code's path
+                    // encoding flattens slashes/colons but the cwd in the
+                    // .jsonl preserves spaces and original casing. Look up
+                    // the matching import and surface its project name so
+                    // the user can see "yes this folder is the same as
+                    // that imported project."
+                    const matchedImport = imports.find(
                       (i) => i.id.split(':').slice(1).join(':') === f.session_id
                     )
+                    const known = !!matchedImport
                     return (
                       <tr
                         key={f.path}
@@ -630,6 +665,12 @@ export function OverseerPage() {
                         </td>
                         <td className="p-2 text-text-secondary truncate max-w-xs">
                           {f.project_folder}
+                          {known && matchedImport!.project &&
+                              matchedImport!.project !== f.project_folder && (
+                            <span className="block text-[10px] text-text-muted mt-0.5">
+                              imported as: {matchedImport!.project}
+                            </span>
+                          )}
                         </td>
                         <td className="p-2 text-text-muted font-mono">
                           {f.session_id.slice(0, 8)}
@@ -788,10 +829,12 @@ function NotificationsPanel({
   notifications,
   onDismiss,
   onDismissAll,
+  onOpenInChat,
 }: {
   notifications: NotificationRow[]
   onDismiss: (id: number) => void
   onDismissAll: () => void
+  onOpenInChat: (n: NotificationRow) => void
 }) {
   const unread = notifications.filter((n) => !n.dismissed_at)
   return (
@@ -851,10 +894,19 @@ function NotificationsPanel({
                   <div className="text-[10px] text-text-muted mt-1.5 font-mono">
                     rule={n.rule_name} · key={n.rule_key}
                   </div>
+                  <div className="mt-2">
+                    <button
+                      onClick={() => onOpenInChat(n)}
+                      className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent/15 hover:bg-accent/25 text-accent-hover cursor-pointer"
+                      title="Pre-fills the Chat tab with this notification's context so you can ask the overseer what to do"
+                    >
+                      Open in chat
+                    </button>
+                  </div>
                 </div>
                 <button
                   onClick={() => onDismiss(n.id)}
-                  className="text-text-muted hover:text-text-primary text-lg leading-none cursor-pointer"
+                  className="text-text-muted hover:text-text-primary text-lg leading-none cursor-pointer self-start"
                   title="Dismiss"
                 >
                   ✕
