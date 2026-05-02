@@ -19,9 +19,39 @@ interface StatusResp {
   error?: string
 }
 
+interface WMQuestionEvidence {
+  contribution: string
+  reason: string
+  evidence_table: string
+  evidence_id: number
+  evidence_body?: string
+  evidence_label?: string
+  evidence_confidence?: string
+  evidence_created_at?: string
+}
+
+interface WMTopQuestion {
+  id: number
+  question: string
+  body?: string
+  confidence: string
+  lifecycle: string
+  evidence_count: number
+  tags?: string[]
+  recent_evidence?: WMQuestionEvidence[]
+}
+
+interface WMUnfiledGist {
+  id: number
+  body: string
+  period_label?: string
+  created_at?: string
+}
+
 interface WorkingMemory {
   built_at?: string
   schema_version?: number
+  top_questions?: WMTopQuestion[]   // Slice 3f.5 #2: PRIMARY view
   top_projects?: Array<{
     tag: string
     name: string
@@ -30,7 +60,7 @@ interface WorkingMemory {
   }>
   recent_decisions?: Array<{ id: number; content: string; created_at: string }>
   open_todos?: Array<{ id: number; content: string; created_at: string }>
-  open_questions?: Array<{
+  open_questions?: Array<{   // legacy back-compat
     id: number
     question: string
     confidence: string
@@ -39,7 +69,10 @@ interface WorkingMemory {
   recent_themes?: Array<{ id: number; title: string; confidence: string }>
   recent_episode_titles?: string[]
   last_week_digest?: string
+  unfiled_recent_gists?: WMUnfiledGist[]
   future_overseer_notes_count?: number
+  journal_entry_count?: number
+  blindspots?: BlindspotRow[]
 }
 
 interface WorkingMemoryResp {
@@ -179,6 +212,76 @@ interface BudgetResp {
   budget?: BudgetSnapshot
 }
 
+// ── Slice 3f + 3f.5 types ─────────────────────────────────────
+
+interface DialecticRow {
+  id: number
+  artifact_type: string
+  artifact_id: number | null
+  purpose: string
+  opus_model: string
+  gemma_model: string
+  opus_text: string
+  gemma_text: string
+  opus_confidence: string
+  gemma_confidence: string
+  severity: 'none' | 'minor' | 'significant'
+  similarity: number
+  diff_summary: string
+  source_context: string
+  status: 'open' | 'resolved' | 'productive'
+  resolution: string
+  resolution_text: string
+  resolved_at: string | null
+  opus_cost_usd: number
+  gemma_cost_usd: number
+  created_at: string
+}
+
+interface DialecticListResp {
+  ok: boolean
+  dialectics?: DialecticRow[]
+  counts?: {
+    open: number
+    open_significant: number
+    open_minor: number
+    resolved: number
+    productive: number
+    total: number
+  }
+}
+
+interface JournalEntry {
+  id: number
+  written_at: string
+  instance_id: string
+  triggered_by: string
+  body: string
+  provisionality: 'high' | 'med' | 'low'
+  model: string
+  cost_usd: number
+}
+
+interface JournalResp {
+  ok: boolean
+  entries?: JournalEntry[]
+  total?: number
+}
+
+interface BlindspotRow {
+  id: number
+  model_pattern: string
+  topic_pattern: string
+  direction: string
+  confidence_adjustment: number
+  body: string
+  rationale: string
+  confidence: string
+  is_active: number
+  apply_count: number
+  last_applied_at: string | null
+}
+
 // ── Helpers ───────────────────────────────────────────────────
 
 function fmtBytes(n?: number): string {
@@ -209,7 +312,7 @@ function fmtRelative(iso?: string | null): string {
 
 // ── Page ──────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'chat' | 'notifications'
+type Tab = 'overview' | 'chat' | 'dialectic' | 'journal' | 'notifications'
 
 export function OverseerPage() {
   const [tab, setTab] = useState<Tab>('overview')
@@ -226,6 +329,11 @@ export function OverseerPage() {
   const [notifications, setNotifications] = useState<NotificationRow[]>([])
   const [notificationsUnread, setNotificationsUnread] = useState<number>(0)
   const [budget, setBudget] = useState<BudgetSnapshot | null>(null)
+  const [dialectics, setDialectics] = useState<DialecticRow[]>([])
+  const [dialecticCounts, setDialecticCounts] = useState<DialecticListResp['counts'] | null>(null)
+  const [journal, setJournal] = useState<JournalEntry[]>([])
+  const [blindspots, setBlindspots] = useState<BlindspotRow[]>([])
+  const [expandedDialecticId, setExpandedDialecticId] = useState<number | null>(null)
   const [busy, setBusy] = useState<string>('')
   const [lastAction, setLastAction] = useState<string>('')
   const [error, setError] = useState<string>('')
@@ -233,7 +341,7 @@ export function OverseerPage() {
   const refreshAll = async () => {
     setError('')
     try {
-      const [s, w, l, ls, im, n, b] = await Promise.all([
+      const [s, w, l, ls, im, n, b, d, bs] = await Promise.all([
         apiFetch<StatusResp>('/overseer/status'),
         apiFetch<WorkingMemoryResp>('/overseer/working-memory'),
         apiFetch<LoopResp>('/overseer/loop'),
@@ -241,6 +349,10 @@ export function OverseerPage() {
         apiFetch<ImportsResp>('/overseer/imports?limit=200'),
         apiFetch<NotificationsResp>('/overseer/notifications'),
         apiFetch<BudgetResp>('/overseer/budget'),
+        apiFetch<DialecticListResp>('/overseer/dialectic?limit=100'),
+        apiFetch<{ ok: boolean; blindspots?: BlindspotRow[] }>(
+          '/overseer/blindspots?active_only=1'
+        ),
       ])
       setStatus(s)
       setWm(w)
@@ -250,8 +362,20 @@ export function OverseerPage() {
       setNotifications(n.notifications || [])
       setNotificationsUnread(n.unread_count || 0)
       setBudget(b.budget || null)
+      setDialectics(d.dialectics || [])
+      setDialecticCounts(d.counts || null)
+      setBlindspots(bs.blindspots || [])
     } catch (e: any) {
       setError(`Refresh failed: ${e?.message || e}`)
+    }
+  }
+
+  const refreshJournal = async () => {
+    try {
+      const r = await apiFetch<JournalResp>('/overseer/journal?limit=100')
+      setJournal(r.entries || [])
+    } catch (e: any) {
+      setError(`Journal refresh failed: ${e?.message || e}`)
     }
   }
 
@@ -272,6 +396,7 @@ export function OverseerPage() {
 
   useEffect(() => {
     if (tab === 'chat') refreshChat()
+    if (tab === 'journal') refreshJournal()
   }, [tab])
 
   const handleSendChat = async () => {
@@ -337,6 +462,23 @@ export function OverseerPage() {
       await refreshAll()
     } catch (e: any) {
       setError(`Dismiss-all failed: ${e?.message || e}`)
+    }
+  }
+
+  const handleResolveDialectic = async (
+    id: number,
+    resolution: 'opus' | 'gemma' | 'third' | 'productive',
+    resolution_text = ''
+  ) => {
+    try {
+      await apiFetch<any>('/overseer/dialectic/resolve', {
+        method: 'POST',
+        body: JSON.stringify({ id, resolution, resolution_text }),
+      })
+      setExpandedDialecticId(null)
+      await refreshAll()
+    } catch (e: any) {
+      setError(`Resolve failed: ${e?.message || e}`)
     }
   }
 
@@ -501,6 +643,8 @@ export function OverseerPage() {
               {([
                 ['overview', 'Overview'],
                 ['chat', 'Chat'],
+                ['dialectic', `Dialectic${dialecticCounts && dialecticCounts.open > 0 ? ` (${dialecticCounts.open})` : ''}`],
+                ['journal', 'Journal'],
                 ['notifications', `Bell${notificationsUnread > 0 ? ` (${notificationsUnread})` : ''}`],
               ] as const).map(([id, label]) => (
                 <button
@@ -560,6 +704,22 @@ export function OverseerPage() {
           onOpenInChat={handleOpenNotificationInChat}
         />
       )}
+      {tab === 'dialectic' && (
+        <DialecticPanel
+          dialectics={dialectics}
+          counts={dialecticCounts}
+          expandedId={expandedDialecticId}
+          setExpandedId={setExpandedDialecticId}
+          onResolve={handleResolveDialectic}
+          onRefresh={refreshAll}
+        />
+      )}
+      {tab === 'journal' && (
+        <JournalPanel
+          entries={journal}
+          onRefresh={refreshJournal}
+        />
+      )}
       {tab === 'overview' && (
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
 
@@ -590,6 +750,29 @@ export function OverseerPage() {
             }
           />
         </section>
+
+        {/* Slice 3f.5 #4: blindspots indicator */}
+        {blindspots.length > 0 && (
+          <Card title={`Known blindspots (${blindspots.length} active — apply to interpretations below)`}>
+            <ul className="space-y-2 text-xs">
+              {blindspots.slice(0, 8).map((b) => (
+                <li key={b.id} className="flex gap-2">
+                  <span className="text-text-muted font-mono shrink-0">
+                    {b.model_pattern}
+                  </span>
+                  <span className="text-text-secondary">{b.body}</span>
+                  {b.confidence_adjustment !== 0 && (
+                    <span className={`shrink-0 text-[10px] uppercase font-medium ${
+                      b.confidence_adjustment > 0 ? 'text-amber-400' : 'text-text-muted'
+                    }`}>
+                      {b.confidence_adjustment > 0 ? '+1 conf' : '-1 conf'}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </Card>
+        )}
 
         {/* Working memory */}
         <Card title="Working Memory">
@@ -1110,7 +1293,57 @@ function WorkingMemoryView({ wm }: { wm: WorkingMemory }) {
         </div>
       )}
 
-      {wm.open_questions && wm.open_questions.length > 0 && (
+      {/* Slice 3f.5 #2: question-centered primary view (with evidence) */}
+      {wm.top_questions && wm.top_questions.length > 0 ? (
+        <div>
+          <div className="text-text-muted uppercase tracking-wide mb-1">
+            Open Questions ({wm.top_questions.length}) — primary axis
+          </div>
+          <ul className="space-y-3">
+            {wm.top_questions.map((q) => (
+              <li key={q.id} className="border-l-2 border-border pl-3">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-text-muted text-[10px] uppercase">
+                    [{q.confidence} · {q.lifecycle} · {q.evidence_count}ev]
+                  </span>
+                  <span className="text-text-primary font-medium">
+                    {q.question}
+                  </span>
+                </div>
+                {q.recent_evidence && q.recent_evidence.length > 0 && (
+                  <ul className="mt-1 space-y-0.5">
+                    {q.recent_evidence.slice(0, 3).map((ev, i) => {
+                      const body =
+                        ev.evidence_body || ev.reason || '(no body)'
+                      const contribColor =
+                        ev.contribution === 'complicates'
+                          ? 'text-amber-400'
+                          : ev.contribution === 'reframes'
+                            ? 'text-accent-hover'
+                            : ev.contribution === 'answers'
+                              ? 'text-success'
+                              : 'text-text-muted'
+                      return (
+                        <li
+                          key={`${q.id}-${i}`}
+                          className="text-[11px] text-text-secondary"
+                        >
+                          <span className={`mr-1 ${contribColor}`}>
+                            ◆ [{ev.contribution}]
+                          </span>
+                          {body.length > 200
+                            ? body.slice(0, 200) + '…'
+                            : body}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : wm.open_questions && wm.open_questions.length > 0 ? (
         <div>
           <div className="text-text-muted uppercase tracking-wide mb-1">
             Open Questions ({wm.open_questions.length})
@@ -1122,6 +1355,25 @@ function WorkingMemoryView({ wm }: { wm: WorkingMemory }) {
                   [{q.confidence}]
                 </span>
                 {q.question}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {wm.unfiled_recent_gists && wm.unfiled_recent_gists.length > 0 && (
+        <div>
+          <div className="text-text-muted uppercase tracking-wide mb-1">
+            Unfiled Recent Gists ({wm.unfiled_recent_gists.length})
+            <span className="ml-2 normal-case text-[10px] italic">
+              (didn't route to any open question — possibly a new
+              question forming)
+            </span>
+          </div>
+          <ul className="space-y-1 text-text-secondary text-[11px]">
+            {wm.unfiled_recent_gists.slice(0, 5).map((g) => (
+              <li key={g.id}>
+                • {g.body.length > 200 ? g.body.slice(0, 200) + '…' : g.body}
               </li>
             ))}
           </ul>
@@ -1163,5 +1415,387 @@ function WorkingMemoryView({ wm }: { wm: WorkingMemory }) {
         </div>
       )}
     </div>
+  )
+}
+
+// ── Slice 3f.5 #3: Public Dialectic UI ──────────────────────
+
+function DialecticPanel({
+  dialectics,
+  counts,
+  expandedId,
+  setExpandedId,
+  onResolve,
+  onRefresh,
+}: {
+  dialectics: DialecticRow[]
+  counts: DialecticListResp['counts'] | null
+  expandedId: number | null
+  setExpandedId: (id: number | null) => void
+  onResolve: (id: number, resolution: 'opus' | 'gemma' | 'third' | 'productive', text?: string) => void
+  onRefresh: () => void
+}) {
+  const open = dialectics.filter((d) => d.status === 'open')
+  const productive = dialectics.filter((d) => d.status === 'productive')
+  const resolved = dialectics.filter((d) => d.status === 'resolved')
+  return (
+    <div className="flex-1 overflow-y-auto p-6">
+      <div className="max-w-5xl mx-auto space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-base font-semibold text-text-primary">
+              Open questions in the overseer's interpretation
+            </h3>
+            <p className="text-xs text-text-muted mt-1">
+              Where Opus 4.7 and Gemma 3 generated different readings of
+              the same source. The disagreement is the data — agree
+              with one, propose a third, or mark as productive (don't
+              resolve; stay live as a caveat).
+            </p>
+          </div>
+          <button
+            onClick={onRefresh}
+            className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer"
+          >
+            Refresh
+          </button>
+        </div>
+        {counts && (
+          <div className="flex gap-2 flex-wrap text-xs">
+            <span className="px-2 py-1 rounded-md bg-amber-500/15 text-amber-300">
+              {counts.open} open
+            </span>
+            <span className="px-2 py-1 rounded-md bg-red-500/15 text-red-300">
+              {counts.open_significant} significant
+            </span>
+            <span className="px-2 py-1 rounded-md bg-text-muted/15 text-text-muted">
+              {counts.open_minor} minor
+            </span>
+            <span className="px-2 py-1 rounded-md bg-success/15 text-success">
+              {counts.resolved} resolved
+            </span>
+            <span className="px-2 py-1 rounded-md bg-accent/15 text-accent-hover">
+              {counts.productive} productive
+            </span>
+          </div>
+        )}
+
+        {open.length === 0 && resolved.length === 0 && productive.length === 0 ? (
+          <div className="text-sm text-text-muted py-12 text-center">
+            No paired generations yet. They land here automatically as
+            the loop summarizes new sessions and imports.
+          </div>
+        ) : (
+          <>
+            <DialecticList
+              title="Open"
+              items={open}
+              expandedId={expandedId}
+              setExpandedId={setExpandedId}
+              onResolve={onResolve}
+              showResolve
+              emptyHint="No open dialectics — all caught up."
+            />
+            {productive.length > 0 && (
+              <DialecticList
+                title="Productive (live caveats)"
+                items={productive}
+                expandedId={expandedId}
+                setExpandedId={setExpandedId}
+                onResolve={onResolve}
+                showResolve={false}
+              />
+            )}
+            {resolved.length > 0 && (
+              <DialecticList
+                title="Resolved"
+                items={resolved}
+                expandedId={expandedId}
+                setExpandedId={setExpandedId}
+                onResolve={onResolve}
+                showResolve={false}
+                collapsed
+              />
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function DialecticList({
+  title,
+  items,
+  expandedId,
+  setExpandedId,
+  onResolve,
+  showResolve,
+  emptyHint,
+  collapsed,
+}: {
+  title: string
+  items: DialecticRow[]
+  expandedId: number | null
+  setExpandedId: (id: number | null) => void
+  onResolve: (id: number, resolution: 'opus' | 'gemma' | 'third' | 'productive', text?: string) => void
+  showResolve: boolean
+  emptyHint?: string
+  collapsed?: boolean
+}) {
+  const [show, setShow] = useState(!collapsed)
+  return (
+    <section>
+      <button
+        className="text-sm font-medium text-text-primary mb-3 flex items-center gap-2 cursor-pointer"
+        onClick={() => setShow(!show)}
+      >
+        <span>{show ? '▾' : '▸'}</span>
+        <span>{title} ({items.length})</span>
+      </button>
+      {show && (
+        items.length === 0 ? (
+          <div className="text-xs text-text-muted">{emptyHint}</div>
+        ) : (
+          <ul className="space-y-2">
+            {items.map((d) => (
+              <DialecticRowView
+                key={d.id}
+                d={d}
+                expanded={expandedId === d.id}
+                onToggle={() =>
+                  setExpandedId(expandedId === d.id ? null : d.id)
+                }
+                onResolve={onResolve}
+                showResolve={showResolve}
+              />
+            ))}
+          </ul>
+        )
+      )}
+    </section>
+  )
+}
+
+function DialecticRowView({
+  d,
+  expanded,
+  onToggle,
+  onResolve,
+  showResolve,
+}: {
+  d: DialecticRow
+  expanded: boolean
+  onToggle: () => void
+  onResolve: (id: number, resolution: 'opus' | 'gemma' | 'third' | 'productive', text?: string) => void
+  showResolve: boolean
+}) {
+  const [thirdText, setThirdText] = useState('')
+  const sevColor =
+    d.severity === 'significant'
+      ? 'bg-red-500/20 text-red-400'
+      : d.severity === 'minor'
+        ? 'bg-amber-500/20 text-amber-400'
+        : 'bg-text-muted/20 text-text-muted'
+  return (
+    <li className="rounded-lg border border-border bg-surface-secondary">
+      <button
+        onClick={onToggle}
+        className="w-full text-left p-3 flex items-start gap-3 cursor-pointer"
+      >
+        <span
+          className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase shrink-0 ${sevColor}`}
+        >
+          {d.severity}
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="text-xs text-text-muted mb-0.5">
+            {d.purpose} · {d.artifact_type}#{d.artifact_id} ·{' '}
+            sim {(d.similarity * 100).toFixed(0)}% ·{' '}
+            {d.created_at?.slice(0, 16)}
+          </div>
+          <div className="text-sm text-text-primary truncate">
+            {d.diff_summary || `${d.opus_text.slice(0, 100)}…`}
+          </div>
+          {d.source_context && (
+            <div className="text-[11px] text-text-muted mt-0.5 truncate">
+              source: {d.source_context}
+            </div>
+          )}
+        </div>
+        <span className="text-text-muted text-lg leading-none shrink-0">
+          {expanded ? '▾' : '▸'}
+        </span>
+      </button>
+      {expanded && (
+        <div className="border-t border-border p-3 space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="rounded-md border border-border bg-surface-tertiary p-3">
+              <div className="text-[10px] uppercase tracking-wide text-text-muted mb-1">
+                Opus 4.7
+              </div>
+              <p className="text-sm text-text-primary leading-relaxed whitespace-pre-wrap">
+                {d.opus_text}
+              </p>
+              <div className="text-[10px] text-text-muted mt-2">
+                conf={d.opus_confidence} · ${d.opus_cost_usd.toFixed(4)}
+              </div>
+            </div>
+            <div className="rounded-md border border-border bg-surface-tertiary p-3">
+              <div className="text-[10px] uppercase tracking-wide text-text-muted mb-1">
+                Gemma 3 27B
+              </div>
+              <p className="text-sm text-text-primary leading-relaxed whitespace-pre-wrap">
+                {d.gemma_text}
+              </p>
+              <div className="text-[10px] text-text-muted mt-2">
+                conf={d.gemma_confidence} · ${d.gemma_cost_usd.toFixed(4)}
+              </div>
+            </div>
+          </div>
+          {showResolve ? (
+            <div className="space-y-2">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => onResolve(d.id, 'opus')}
+                  className="px-3 py-1.5 rounded-md text-xs font-medium bg-accent/15 hover:bg-accent/25 text-accent-hover cursor-pointer"
+                >
+                  Agree with Opus
+                </button>
+                <button
+                  onClick={() => onResolve(d.id, 'gemma')}
+                  className="px-3 py-1.5 rounded-md text-xs font-medium bg-accent/15 hover:bg-accent/25 text-accent-hover cursor-pointer"
+                >
+                  Agree with Gemma
+                </button>
+                <button
+                  onClick={() => onResolve(d.id, 'productive')}
+                  className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer"
+                  title="Don't resolve — keep as a live caveat in working memory"
+                >
+                  Mark productive (don't resolve)
+                </button>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={thirdText}
+                  onChange={(e) => setThirdText(e.target.value)}
+                  placeholder="Or propose a third reading…"
+                  className="flex-1 rounded-md border border-border bg-surface-tertiary px-3 py-1.5 text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent"
+                />
+                <button
+                  onClick={() => {
+                    if (thirdText.trim()) {
+                      onResolve(d.id, 'third', thirdText.trim())
+                      setThirdText('')
+                    }
+                  }}
+                  disabled={!thirdText.trim()}
+                  className="px-3 py-1.5 rounded-md text-xs font-medium bg-accent hover:bg-accent-hover text-white cursor-pointer disabled:opacity-40"
+                >
+                  Submit third
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="text-xs text-text-muted">
+              Status: {d.status}
+              {d.resolution && <> · resolution: {d.resolution}</>}
+              {d.resolution_text && (
+                <div className="mt-1 italic text-text-secondary">
+                  "{d.resolution_text}"
+                </div>
+              )}
+              {d.resolved_at && (
+                <div className="mt-1">
+                  resolved at {d.resolved_at.slice(0, 19)}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </li>
+  )
+}
+
+// ── Slice 3f.5 #1: Journal viewer ───────────────────────────
+
+function JournalPanel({
+  entries,
+  onRefresh,
+}: {
+  entries: JournalEntry[]
+  onRefresh: () => void
+}) {
+  const reversed = [...entries].reverse() // newest first
+  return (
+    <div className="flex-1 overflow-y-auto p-6">
+      <div className="max-w-3xl mx-auto space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-base font-semibold text-text-primary">
+              Overseer journal
+            </h3>
+            <p className="text-xs text-text-muted mt-1">
+              The overseer's first-person reflections at the end of each
+              notable tick. Append-only — these aren't for you, they're
+              for future instances of the overseer to read at boot. You
+              get to read along.
+            </p>
+          </div>
+          <button
+            onClick={onRefresh}
+            className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer"
+          >
+            Refresh
+          </button>
+        </div>
+        {reversed.length === 0 ? (
+          <div className="text-sm text-text-muted py-12 text-center">
+            No journal entries yet. They appear after the loop runs ticks
+            with notable work (typically every 5 minutes when there's new
+            data to chew on).
+          </div>
+        ) : (
+          <ul className="space-y-3">
+            {reversed.map((j) => (
+              <JournalEntryView key={j.id} j={j} />
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function JournalEntryView({ j }: { j: JournalEntry }) {
+  const provColor =
+    j.provisionality === 'high'
+      ? 'bg-success/15 text-success'
+      : j.provisionality === 'low'
+        ? 'bg-red-500/15 text-red-400'
+        : 'bg-text-muted/15 text-text-muted'
+  return (
+    <li className="rounded-lg border border-border bg-surface-secondary p-4">
+      <div className="flex items-center gap-2 mb-2">
+        <span
+          className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase ${provColor}`}
+          title="Overseer's self-reported confidence in this entry"
+        >
+          prov: {j.provisionality}
+        </span>
+        <span className="text-xs text-text-muted">
+          {j.written_at?.slice(0, 19)}
+        </span>
+        <span className="text-[11px] text-text-muted ml-auto truncate max-w-xs font-mono">
+          {j.triggered_by} · {j.model}
+        </span>
+      </div>
+      <p className="text-sm text-text-primary leading-relaxed whitespace-pre-wrap">
+        {j.body}
+      </p>
+    </li>
   )
 }
