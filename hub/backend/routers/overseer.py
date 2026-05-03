@@ -781,3 +781,78 @@ async def explorer_graph():
     (evidence, derived_from, in_project)."""
     return await pi_client.plugin_call(
         "overseer", "GET", "/explorer/graph", {})
+
+
+# ── Slice 4 CP1a/CP1b: project rollups + narrative ──────────────
+
+
+@router.get("/projects/summary")
+async def projects_summary(
+    order_by: str = "last_active_at",
+    descending: int = 1,
+):
+    """Proxy: GET /plugins/overseer/projects/summary
+
+    Returns the full list of project_summaries rows (stats + top
+    files + models + narrative). order_by whitelisted server-side
+    to: last_active_at | session_count | cost_usd_estimate |
+    total_minutes | total_messages | first_active_at |
+    stats_updated_at | project. Defaults: last_active_at desc.
+    """
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/projects/summary",
+        {"order_by": order_by, "descending": int(descending)},
+    )
+
+
+@router.get("/projects/summary/get")
+async def project_summary_get(project: str):
+    """Proxy: GET /plugins/overseer/projects/summary/get?project=<name>"""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/projects/summary/get",
+        {"project": project},
+    )
+
+
+class ProjectRefreshRequest(BaseModel):
+    project: str
+
+
+@router.post("/projects/summary/refresh")
+async def project_summary_refresh(req: ProjectRefreshRequest):
+    """Proxy: POST /plugins/overseer/projects/summary/refresh —
+    recompute one project's deterministic stats from
+    imported_sessions + each row's metadata_json."""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/projects/summary/refresh",
+        req.dict(),
+    )
+
+
+@router.post("/projects/summary/refresh-all")
+async def project_summary_refresh_all():
+    """Proxy: POST /plugins/overseer/projects/summary/refresh-all
+    — recompute every project. Cheap (no LLM), but scales with
+    imported_sessions row count."""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/projects/summary/refresh-all",
+        {}, timeout=120.0,
+    )
+
+
+class ProjectNarrativeRequest(BaseModel):
+    project: str
+    force: bool | None = True
+    max_cost_usd: float | None = None
+
+
+@router.post("/narrative/generate")
+async def narrative_generate(req: ProjectNarrativeRequest):
+    """Proxy: POST /plugins/overseer/narrative/generate — manual
+    Sonnet/Opus narrative regen for one project. Bypasses the loop's
+    24h + ≥3-sessions gate by default."""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/narrative/generate",
+        req.dict(exclude_none=True),
+        timeout=120.0,
+    )
