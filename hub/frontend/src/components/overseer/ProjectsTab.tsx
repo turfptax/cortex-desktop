@@ -151,28 +151,70 @@ function shortPath(p: string): string {
   return parts.slice(-2).join('/')
 }
 
-// Activity-shape callout — surfaces in the metrics row.
-// "Quick queries" when median active is under 2 min. Tory's nice-
-// to-have from CP2 spec.
-function activityShape(p: ProjectRollup): { label: string; tone: string } | null {
+// Activity-shape callout — surfaces in the card header.
+// Icons make the shape readable at a glance when scanning a long
+// list (Tory's dev.12 ask).
+//   ⚡  quick-queries (UFOSINT pattern: ≥5 sessions, median <2min)
+//   🌒  dormant spike (single session, last_active >60d)
+//   ○   dormant (last_active >60d, multi-session)
+//   ·   no measured active time (rare; backfilled but parser missed)
+//
+// `kind` lets the card decide layout/opacity (dormant variants get
+// opacity-60).
+type ShapeKind = 'quick-queries' | 'dormant-spike' | 'dormant'
+                | 'no-active-time'
+
+interface ActivityShape {
+  kind: ShapeKind
+  label: string
+  icon: string
+  tone: string
+}
+
+function activityShape(p: ProjectRollup): ActivityShape | null {
   const lastIso = p.last_active_at
   if (lastIso) {
-    const days = (Date.now() - new Date(lastIso).getTime()) / (24 * 3600 * 1000)
+    const days = (Date.now() - new Date(lastIso).getTime())
+                 / (24 * 3600 * 1000)
     if (days >= 60 && p.session_count <= 1) {
-      return { label: 'dormant spike', tone: 'text-amber-400/80' }
+      return {
+        kind: 'dormant-spike',
+        label: 'dormant spike',
+        icon: '🌒',
+        tone: 'text-amber-400/80',
+      }
     }
     if (days >= 60) {
-      return { label: 'dormant', tone: 'text-text-muted' }
+      return {
+        kind: 'dormant',
+        label: 'dormant',
+        icon: '○',
+        tone: 'text-text-muted',
+      }
     }
   }
   if (p.session_count >= 5
       && p.median_active_minutes_per_session < 2) {
-    return { label: 'mostly quick queries', tone: 'text-text-muted' }
+    return {
+      kind: 'quick-queries',
+      label: 'mostly quick queries',
+      icon: '⚡',
+      tone: 'text-text-muted',
+    }
   }
   if (p.active_minutes_total === 0 && p.session_count > 0) {
-    return { label: 'no measured active time', tone: 'text-text-muted' }
+    return {
+      kind: 'no-active-time',
+      label: 'no measured active time',
+      icon: '·',
+      tone: 'text-text-muted',
+    }
   }
   return null
+}
+
+function isDormantShape(s: ActivityShape | null): boolean {
+  return !!s && (s.kind === 'dormant' || s.kind === 'dormant-spike')
 }
 
 // ── Card ─────────────────────────────────────────────────────────
@@ -189,6 +231,7 @@ function ProjectCard({ rollup, expanded, toggleExpanded, busy, onRegenerate }: C
   const ratio = ratioPct(rollup.active_minutes_total, rollup.total_minutes)
   const shape = activityShape(rollup)
   const hasNarrative = rollup.narrative.trim().length > 0
+  const dormant = isDormantShape(shape)
   const narrativeStale = (() => {
     if (!rollup.narrative_updated_at) return false
     const d = new Date(rollup.narrative_updated_at.includes('T')
@@ -198,16 +241,24 @@ function ProjectCard({ rollup, expanded, toggleExpanded, busy, onRegenerate }: C
     return days > 14
   })()
 
+  // Dormant cards visually fade so active projects dominate the
+  // sorted list. Hover restores full opacity so they're still
+  // clickable without feeling broken.
+  const cardOpacity = dormant
+    ? 'opacity-60 hover:opacity-100 transition-opacity'
+    : ''
+
   return (
-    <article className="bg-surface-secondary rounded-xl border border-border overflow-hidden">
-      {/* Header */}
+    <article className={`bg-surface-secondary rounded-xl border border-border overflow-hidden ${cardOpacity}`}>
+      {/* Header — project name is the strongest anchor at the top */}
       <header className="px-5 pt-4 pb-3 flex items-baseline gap-3 flex-wrap">
         <h3 className="text-base font-semibold text-text-primary truncate max-w-md">
           {rollup.project}
         </h3>
         {shape && (
-          <span className={`text-[10px] uppercase tracking-wider font-medium ${shape.tone}`}>
-            · {shape.label}
+          <span className={`inline-flex items-baseline gap-1 text-[10px] uppercase tracking-wider font-medium ${shape.tone}`}>
+            <span className="text-[12px]">{shape.icon}</span>
+            {shape.label}
           </span>
         )}
         <span className="ml-auto text-xs text-text-muted">
@@ -215,7 +266,7 @@ function ProjectCard({ rollup, expanded, toggleExpanded, busy, onRegenerate }: C
         </span>
       </header>
 
-      {/* Narrative — front and center */}
+      {/* Narrative — front and center, primary text color */}
       <div className="px-5 pb-4">
         {hasNarrative ? (
           <NarrativeBlock text={rollup.narrative} />
@@ -228,10 +279,15 @@ function ProjectCard({ rollup, expanded, toggleExpanded, busy, onRegenerate }: C
         )}
       </div>
 
-      {/* Metrics row — always visible */}
-      <div className="px-5 py-3 border-t border-border bg-surface-tertiary/20 flex items-baseline gap-5 flex-wrap text-xs">
-        <Metric label="Active" value={fmtMinutes(rollup.active_minutes_total)}
-                hint={ratio !== null ? `${ratio}% of wall-clock` : undefined} />
+      {/* Metrics row — Active hours is the hero stat. Others are
+          compact tabular-nums next to it so the eye lands on Active
+          first when scanning a long sorted list. */}
+      <div className="px-5 py-3 border-t border-border bg-surface-tertiary/20 flex items-baseline gap-6 flex-wrap">
+        <HeroMetric
+          label="Active"
+          value={fmtMinutes(rollup.active_minutes_total)}
+          hint={ratio !== null ? `${ratio}% of wall-clock` : undefined}
+        />
         <Metric label="Sessions" value={rollup.session_count.toLocaleString()} />
         <Metric label="Median active/sess"
                 value={fmtMinutes(rollup.median_active_minutes_per_session)} />
@@ -239,7 +295,6 @@ function ProjectCard({ rollup, expanded, toggleExpanded, busy, onRegenerate }: C
                 value={fmtCost(rollup.cost_usd_estimate, !!rollup.cost_known_complete)}
                 hint={rollup.cost_known_complete ? undefined : 'lower bound — unpriced model in mix'} />
         <Metric label="Days active (90d)" value={`${rollup.days_active_90}`} />
-        {/* Spacer to push the toggle right */}
         <button
           onClick={toggleExpanded}
           className="ml-auto text-[11px] uppercase tracking-wider text-text-muted hover:text-text-primary cursor-pointer transition-colors"
@@ -248,9 +303,11 @@ function ProjectCard({ rollup, expanded, toggleExpanded, busy, onRegenerate }: C
         </button>
       </div>
 
-      {/* Secondary panel — collapsed by default */}
+      {/* Secondary panel — collapsed by default, grouped into
+          Timeline (the "shape over time" cluster) + Compute (tokens,
+          tool-use, model mix). Trimmed to the actionable fields. */}
       {expanded && (
-        <div className="px-5 py-4 border-t border-border bg-surface/40 space-y-4">
+        <div className="px-5 py-4 border-t border-border bg-surface/40 space-y-5">
           {rollup.top_files.length > 0 && (
             <Section title="Top files">
               <ul className="space-y-1">
@@ -270,25 +327,29 @@ function ProjectCard({ rollup, expanded, toggleExpanded, busy, onRegenerate }: C
             </Section>
           )}
 
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-3 text-xs">
-            <Mini label="Lifespan" value={`${rollup.days_active_lifespan} days`} />
-            <Mini label="First active"
-                  value={rollup.first_active_at ? fmtRelativeDays(rollup.first_active_at) : '—'} />
-            <Mini label="Days active (30d)" value={`${rollup.days_active_30}`} />
-            <Mini label="Wall-clock total" value={fmtMinutes(rollup.total_minutes)} />
-            <Mini label="Median wall/sess" value={fmtMinutes(rollup.median_minutes_per_session)} />
-            <Mini label="Tool-use messages" value={rollup.tool_use_message_count.toLocaleString()} />
-            <Mini label="Tokens in"
-                  value={rollup.total_tokens_input.toLocaleString()} />
-            <Mini label="Tokens out"
-                  value={rollup.total_tokens_output.toLocaleString()} />
-            <Mini label="Cache reads"
-                  value={rollup.total_tokens_cache_read.toLocaleString()} />
-          </div>
+          <Section title="Timeline">
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-2 text-xs">
+              <Mini label="Lifespan"
+                    value={`${rollup.days_active_lifespan} days`} />
+              <Mini label="First active"
+                    value={rollup.first_active_at
+                      ? fmtRelativeDays(rollup.first_active_at) : '—'} />
+              <Mini label="Days active (30d)" value={`${rollup.days_active_30}`} />
+              <Mini label="Wall-clock total" value={fmtMinutes(rollup.total_minutes)} />
+            </div>
+          </Section>
 
-          {Object.keys(rollup.models_used).length > 0 && (
-            <Section title="Models used">
-              <div className="flex flex-wrap gap-2">
+          <Section title="Compute">
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-2 text-xs">
+              <Mini label="Tool-use messages"
+                    value={rollup.tool_use_message_count.toLocaleString()} />
+              <Mini label="Cache reads"
+                    value={rollup.total_tokens_cache_read.toLocaleString()} />
+              <Mini label="Cache writes"
+                    value={rollup.total_tokens_cache_creation.toLocaleString()} />
+            </div>
+            {Object.keys(rollup.models_used).length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
                 {Object.entries(rollup.models_used)
                   .sort((a, b) => b[1] - a[1])
                   .map(([model, count]) => (
@@ -298,8 +359,8 @@ function ProjectCard({ rollup, expanded, toggleExpanded, busy, onRegenerate }: C
                     </span>
                   ))}
               </div>
-            </Section>
-          )}
+            )}
+          </Section>
 
           {rollup.narrative_updated_at && (
             <p className="text-[10px] text-text-muted/70">
@@ -346,6 +407,29 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
   )
 }
 
+// Hero Active metric — visually dominant in the row so the eye lands
+// on it first when scanning a long sorted list. text-2xl bold;
+// optional ratio chip rendered as muted small-caps next to the value.
+function HeroMetric({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <div className="flex flex-col" title={hint}>
+      <span className="text-[10px] uppercase tracking-wider text-accent-hover/80 font-medium">
+        {label}
+      </span>
+      <span className="flex items-baseline gap-2">
+        <span className="text-2xl font-bold text-text-primary tabular-nums leading-none">
+          {value}
+        </span>
+        {hint && (
+          <span className="text-[10px] uppercase tracking-wider text-text-muted">
+            {hint}
+          </span>
+        )}
+      </span>
+    </div>
+  )
+}
+
 function Mini({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col">
@@ -369,33 +453,52 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 // Renders the narrative paragraphs + the trailing "## Open questions
-// still live" header (if present) as a styled block. The narrative
-// is plain text, but we lightly format the markdown header so it
-// reads as a real section.
+// still live" header (if present). text-primary because the
+// narrative is the hero content, not a caption.
+//
+// Default (collapsed): shows only the FIRST paragraph + a "Read
+// full ▾" toggle. With 47 cards × 3 paragraphs each, full-expanded
+// would be a 15K-pixel scroll wall. The expand toggle keeps the
+// list readable while letting the user dig in.
 function NarrativeBlock({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false)
   const QUESTION_HEADER = /\n## Open questions still live\n/
-  const m = text.match(QUESTION_HEADER)
-  if (!m) {
-    return (
-      <div className="text-sm text-text-secondary leading-relaxed whitespace-pre-wrap">
-        {text}
-      </div>
-    )
-  }
-  const split = text.split(QUESTION_HEADER)
+  const splitOnHeader = text.split(QUESTION_HEADER)
+  const body = splitOnHeader[0].trim()
+  const questions = splitOnHeader.length > 1
+    ? splitOnHeader[1].trim() : ""
+
+  // First paragraph = text up to first double-newline. If the
+  // narrative has no paragraph breaks (rare but possible), the whole
+  // body is the "preview" and there's nothing more to expand.
+  const paragraphs = body.split(/\n\n+/).map((p) => p.trim()).filter(Boolean)
+  const hasMore = paragraphs.length > 1
+  const visiblePreview = paragraphs[0] || body
+  const visibleBody = expanded ? body : visiblePreview
+
   return (
     <>
-      <div className="text-sm text-text-secondary leading-relaxed whitespace-pre-wrap">
-        {split[0].trim()}
+      <div className="text-sm text-text-primary leading-relaxed whitespace-pre-wrap">
+        {visibleBody}
       </div>
-      <div className="mt-3 pl-3 border-l-2 border-accent/40">
-        <h4 className="text-[10px] uppercase tracking-wider text-accent-hover/70 mb-1">
-          Open questions still live
-        </h4>
-        <div className="text-xs text-text-secondary leading-relaxed whitespace-pre-wrap">
-          {split[1].trim()}
+      {hasMore && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1 text-[11px] uppercase tracking-wider text-accent-hover hover:text-accent cursor-pointer"
+        >
+          {expanded ? 'Show less ▴' : 'Read full ▾'}
+        </button>
+      )}
+      {questions && (
+        <div className="mt-3 pl-3 border-l-2 border-accent/40">
+          <h4 className="text-[10px] uppercase tracking-wider text-accent-hover/70 mb-1">
+            Open questions still live
+          </h4>
+          <div className="text-xs text-text-secondary leading-relaxed whitespace-pre-wrap">
+            {questions}
+          </div>
         </div>
-      </div>
+      )}
     </>
   )
 }
@@ -410,6 +513,10 @@ export function ProjectsTab() {
   const [sortKey, setSortKey] = useState<SortKey>('active_minutes_total')
   const [descending, setDescending] = useState(true)
   const [expandedSet, setExpandedSet] = useState<Set<string>>(new Set())
+  // Active-only filter: hides cards whose activityShape is dormant
+  // or dormant-spike. Useful when the user just wants to see what
+  // they're currently working on.
+  const [activeOnly, setActiveOnly] = useState(false)
 
   const refresh = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true)
@@ -456,15 +563,22 @@ export function ProjectsTab() {
   // Client-side sort fallback for keys the server doesn't whitelist.
   const sortedRollups = useMemo(() => {
     if (!rollups) return []
-    if (SERVER_SORTABLE.has(sortKey)) return rollups
-    const out = [...rollups]
-    out.sort((a, b) => {
-      const av = (a as any)[sortKey] ?? 0
-      const bv = (b as any)[sortKey] ?? 0
-      return descending ? bv - av : av - bv
-    })
+    let out = SERVER_SORTABLE.has(sortKey)
+      ? [...rollups]
+      : [...rollups].sort((a, b) => {
+          const av = (a as any)[sortKey] ?? 0
+          const bv = (b as any)[sortKey] ?? 0
+          return descending ? bv - av : av - bv
+        })
+    if (activeOnly) {
+      out = out.filter((p) => !isDormantShape(activityShape(p)))
+    }
     return out
-  }, [rollups, sortKey, descending])
+  }, [rollups, sortKey, descending, activeOnly])
+
+  const totalCount = rollups?.length ?? 0
+  const visibleCount = sortedRollups.length
+  const hiddenByFilter = totalCount - visibleCount
 
   const handleRebuildStats = async () => {
     setBusy('Rebuilding stats…')
@@ -534,11 +648,37 @@ export function ProjectsTab() {
           Projects
         </h2>
         <span className="text-xs text-text-muted">
-          {rollups?.length ?? 0} project{rollups?.length === 1 ? '' : 's'} ·{' '}
-          rolled up from imported_sessions
+          {activeOnly && hiddenByFilter > 0
+            ? `${visibleCount} active (${hiddenByFilter} dormant hidden)`
+            : `${totalCount} project${totalCount === 1 ? '' : 's'}`}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <label className="text-[10px] uppercase tracking-wider text-text-muted">
+          {/* Active-only / All toggle. Pill-style segmented control —
+              small enough to live next to the sort selector without
+              competing for attention. */}
+          <div className="flex bg-surface-tertiary rounded-md p-0.5 border border-border">
+            <button
+              onClick={() => setActiveOnly(true)}
+              className={`px-2.5 py-0.5 rounded text-[11px] font-medium cursor-pointer transition-colors ${
+                activeOnly
+                  ? 'bg-accent/30 text-accent-hover'
+                  : 'text-text-muted hover:text-text-primary'
+              }`}
+            >
+              Active only
+            </button>
+            <button
+              onClick={() => setActiveOnly(false)}
+              className={`px-2.5 py-0.5 rounded text-[11px] font-medium cursor-pointer transition-colors ${
+                !activeOnly
+                  ? 'bg-accent/30 text-accent-hover'
+                  : 'text-text-muted hover:text-text-primary'
+              }`}
+            >
+              All
+            </button>
+          </div>
+          <label className="text-[10px] uppercase tracking-wider text-text-muted ml-1">
             Sort
           </label>
           <select
