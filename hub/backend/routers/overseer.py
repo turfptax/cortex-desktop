@@ -232,10 +232,19 @@ async def chat_clear():
 
 
 @router.get("/notifications")
-async def notifications(include_dismissed: int = 0, limit: int = 100):
+async def notifications(
+    include_dismissed: int = 0,
+    include_archived: int = 0,
+    include_snoozed: int = 0,
+    limit: int = 100,
+):
     return await pi_client.plugin_call(
-        "overseer", "GET", "/notifications",
-        {"include_dismissed": include_dismissed, "limit": limit})
+        "overseer", "GET", "/notifications", {
+            "include_dismissed": include_dismissed,
+            "include_archived": include_archived,
+            "include_snoozed": include_snoozed,
+            "limit": limit,
+        })
 
 
 class DismissNotificationRequest(BaseModel):
@@ -252,6 +261,20 @@ async def dismiss_notification(req: DismissNotificationRequest):
         body["all"] = True
     return await pi_client.plugin_call(
         "overseer", "POST", "/notifications/dismiss", body)
+
+
+class NotificationActionRequest(BaseModel):
+    id: int
+    action: str               # archive | snooze | touch
+    snooze_days: int | None = None
+
+
+@router.post("/notifications/action")
+async def notification_action(req: NotificationActionRequest):
+    """3i CP1: Archive / Snooze / Touch a notification."""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/notifications/action",
+        req.dict(exclude_none=True))
 
 
 @router.get("/budget")

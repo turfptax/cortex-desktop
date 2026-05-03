@@ -253,6 +253,9 @@ interface NotificationRow {
   related_id: string
   created_at: string
   dismissed_at: string | null
+  // 3i CP1: per-rule action state
+  snoozed_until: string | null
+  archived_at: string | null
 }
 
 interface NotificationsResp {
@@ -396,6 +399,27 @@ interface InsightScansResp {
   scans?: InsightScanRow[]
 }
 
+// 3i CP1: project classification table
+interface ProjectClassRow {
+  project: string
+  session_count: number
+  avg_duration_minutes: number
+  avg_messages: number
+  total_messages: number
+  last_seen: string | null
+  treat_as: 'auto' | 'human' | 'automation' | 'ignore'
+  manual_override: boolean
+  classified_at: string | null
+  classified_reason: string | null
+  rollup_count: number
+}
+
+interface ProjectsListResp {
+  ok: boolean
+  projects?: ProjectClassRow[]
+  total?: number
+}
+
 interface InsightPendingResp {
   ok: boolean
   interpretations?: PendingInterpretation[]
@@ -445,7 +469,7 @@ function fmtRelative(iso?: string | null): string {
 
 // ── Page ──────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'chat' | 'dialectic' | 'journal' | 'insights' | 'notifications'
+type Tab = 'overview' | 'chat' | 'dialectic' | 'journal' | 'insights' | 'projects' | 'notifications'
 
 export function OverseerPage() {
   const [tab, setTab] = useState<Tab>('overview')
@@ -478,6 +502,8 @@ export function OverseerPage() {
   const [editTitle, setEditTitle] = useState<string>('')
   const [editBody, setEditBody] = useState<string>('')
   const [insightScansHistory, setInsightScansHistory] = useState<InsightScanRow[]>([])
+  const [projects, setProjects] = useState<ProjectClassRow[]>([])
+  const [projectFilter, setProjectFilter] = useState<string>('')
   const [busy, setBusy] = useState<string>('')
   const [lastAction, setLastAction] = useState<string>('')
   const [error, setError] = useState<string>('')
@@ -639,6 +665,7 @@ export function OverseerPage() {
     if (tab === 'chat') refreshChat()
     if (tab === 'journal') refreshJournal()
     if (tab === 'insights') refreshInsights(insightStatusFilter)
+    if (tab === 'projects') refreshProjects()
   }, [tab])
 
   const handleSendChat = async () => {
@@ -704,6 +731,80 @@ export function OverseerPage() {
       await refreshAll()
     } catch (e: any) {
       setError(`Dismiss-all failed: ${e?.message || e}`)
+    }
+  }
+
+  const refreshProjects = async () => {
+    try {
+      const r = await apiFetch<ProjectsListResp>('/overseer/projects')
+      setProjects(r.projects || [])
+    } catch (e: any) {
+      setError(`Projects refresh failed: ${e?.message || e}`)
+    }
+  }
+
+  const handleSetProjectClass = async (
+    project: string,
+    treat_as: 'auto' | 'human' | 'automation' | 'ignore',
+  ) => {
+    try {
+      await apiFetch<any>('/overseer/projects/setting', {
+        method: 'POST',
+        body: JSON.stringify({ project, treat_as }),
+      })
+      await refreshProjects()
+      setLastAction(
+        `Set ${project} → ${treat_as}` +
+        (treat_as === 'auto' ? ' (cleared override)' : ''),
+      )
+    } catch (e: any) {
+      setError(`Project update failed: ${e?.message || e}`)
+    }
+  }
+
+  const handleClassifyNow = async () => {
+    setBusy('Classifying…')
+    try {
+      const r = await apiFetch<{ ok: boolean; changes?: any }>(
+        '/overseer/projects/classify',
+        { method: 'POST' },
+      )
+      if (r.ok) {
+        const changed = (r.changes && r.changes.changed) || 0
+        setLastAction(`Classifier ran. ${changed} project(s) changed.`)
+      }
+      await refreshProjects()
+    } catch (e: any) {
+      setError(`Classify-now failed: ${e?.message || e}`)
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const handleNotificationAction = async (
+    id: number,
+    action: 'archive' | 'snooze' | 'touch',
+    snooze_days: number = 30,
+  ) => {
+    try {
+      const body: { id: number; action: string; snooze_days?: number } = {
+        id, action,
+      }
+      if (action === 'snooze') body.snooze_days = snooze_days
+      await apiFetch<any>('/overseer/notifications/action', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      })
+      await refreshAll()
+      if (action === 'snooze') {
+        setLastAction(`Snoozed #${id} for ${snooze_days}d`)
+      } else if (action === 'archive') {
+        setLastAction(`Archived #${id}`)
+      } else {
+        setLastAction(`Brought #${id} back to top`)
+      }
+    } catch (e: any) {
+      setError(`Notification ${action} failed: ${e?.message || e}`)
     }
   }
 
@@ -888,6 +989,7 @@ export function OverseerPage() {
                 ['dialectic', `Dialectic${dialecticCounts && dialecticCounts.open > 0 ? ` (${dialecticCounts.open})` : ''}`],
                 ['journal', 'Journal'],
                 ['insights', `Insights${insightCounts && insightCounts.pending > 0 ? ` (${insightCounts.pending})` : ''}`],
+                ['projects', 'Projects'],
                 ['notifications', `Bell${notificationsUnread > 0 ? ` (${notificationsUnread})` : ''}`],
               ] as const).map(([id, label]) => (
                 <button
@@ -945,6 +1047,18 @@ export function OverseerPage() {
           onDismiss={handleDismissNotification}
           onDismissAll={handleDismissAllNotifications}
           onOpenInChat={handleOpenNotificationInChat}
+          onAction={handleNotificationAction}
+        />
+      )}
+      {tab === 'projects' && (
+        <ProjectsPanel
+          projects={projects}
+          filter={projectFilter}
+          setFilter={setProjectFilter}
+          onSetClass={handleSetProjectClass}
+          onClassifyNow={handleClassifyNow}
+          onRefresh={refreshProjects}
+          busy={busy}
         />
       )}
       {tab === 'dialectic' && (
@@ -1296,13 +1410,21 @@ function NotificationsPanel({
   onDismiss,
   onDismissAll,
   onOpenInChat,
+  onAction,
 }: {
   notifications: NotificationRow[]
   onDismiss: (id: number) => void
   onDismissAll: () => void
   onOpenInChat: (n: NotificationRow) => void
+  onAction: (
+    id: number,
+    action: 'archive' | 'snooze' | 'touch',
+    snooze_days?: number,
+  ) => void
 }) {
-  const unread = notifications.filter((n) => !n.dismissed_at)
+  const unread = notifications.filter(
+    (n) => !n.dismissed_at && !n.archived_at,
+  )
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <div className="max-w-3xl mx-auto">
@@ -1360,7 +1482,7 @@ function NotificationsPanel({
                   <div className="text-[10px] text-text-muted mt-1.5 font-mono">
                     rule={n.rule_name} · key={n.rule_key}
                   </div>
-                  <div className="mt-2">
+                  <div className="mt-2 flex items-center gap-2 flex-wrap">
                     <button
                       onClick={() => onOpenInChat(n)}
                       className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent/15 hover:bg-accent/25 text-accent-hover cursor-pointer"
@@ -1368,12 +1490,33 @@ function NotificationsPanel({
                     >
                       Open in chat
                     </button>
+                    <button
+                      onClick={() => onAction(n.id, 'archive')}
+                      className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-secondary cursor-pointer"
+                      title="Acknowledge and hide permanently — different intent than dismiss; archived notifications survive rule re-firing"
+                    >
+                      Archive
+                    </button>
+                    <button
+                      onClick={() => onAction(n.id, 'snooze', 30)}
+                      className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-secondary cursor-pointer"
+                      title="Hide for 30 days; reappears automatically when the snooze expires"
+                    >
+                      Snooze 30d
+                    </button>
+                    <button
+                      onClick={() => onAction(n.id, 'touch')}
+                      className="px-2.5 py-1 rounded-md text-[11px] font-medium text-text-muted hover:text-text-primary cursor-pointer"
+                      title="Pull a previously-handled notification back to the actionable queue"
+                    >
+                      Touch
+                    </button>
                   </div>
                 </div>
                 <button
                   onClick={() => onDismiss(n.id)}
                   className="text-text-muted hover:text-text-primary text-lg leading-none cursor-pointer self-start"
-                  title="Dismiss"
+                  title="Dismiss (light: 'noted, move on')"
                 >
                   ✕
                 </button>
@@ -1510,6 +1653,194 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
       <h3 className="text-sm font-semibold text-text-primary mb-3">{title}</h3>
       {children}
     </section>
+  )
+}
+
+// ── Slice 3i CP1: Projects classification table ─────────────
+
+function ProjectsPanel({
+  projects,
+  filter,
+  setFilter,
+  onSetClass,
+  onClassifyNow,
+  onRefresh,
+  busy,
+}: {
+  projects: ProjectClassRow[]
+  filter: string
+  setFilter: (f: string) => void
+  onSetClass: (
+    project: string,
+    treat_as: 'auto' | 'human' | 'automation' | 'ignore',
+  ) => void
+  onClassifyNow: () => void
+  onRefresh: () => void
+  busy: string
+}) {
+  const norm = filter.trim().toLowerCase()
+  const filtered = norm
+    ? projects.filter((p) =>
+        (p.project || '(unclassified)').toLowerCase().includes(norm))
+    : projects
+
+  // Counts per classification — useful overview.
+  const counts = projects.reduce<Record<string, number>>((acc, p) => {
+    const k = p.treat_as || 'auto'
+    acc[k] = (acc[k] || 0) + 1
+    return acc
+  }, {})
+
+  const classBadge = (treat_as: string) => {
+    if (treat_as === 'human') return 'bg-success/20 text-success'
+    if (treat_as === 'automation') return 'bg-amber-500/20 text-amber-400'
+    if (treat_as === 'ignore') return 'bg-text-muted/20 text-text-muted'
+    return 'bg-accent/20 text-accent-hover'   // auto
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto p-6">
+      <div className="max-w-6xl mx-auto space-y-4">
+        <div className="flex items-baseline justify-between">
+          <div>
+            <h3 className="text-base font-semibold text-text-primary">
+              Project classification
+            </h3>
+            <p className="text-xs text-text-muted mt-1">
+              The auto-classifier tags each project as <em>human</em>,{' '}
+              <em>automation</em>, or <em>auto</em> (unclassified) based on
+              session count + median duration. Insight scans, rollups, and
+              other loops respect this. Manual overrides are sticky — the
+              auto-classifier won't touch them.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onRefresh}
+              disabled={!!busy}
+              className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer disabled:opacity-50"
+            >
+              Refresh
+            </button>
+            <button
+              onClick={onClassifyNow}
+              disabled={!!busy}
+              className="px-3 py-1.5 rounded-md text-xs font-medium bg-accent hover:bg-accent-hover text-white cursor-pointer disabled:opacity-50"
+            >
+              {busy ? busy : 'Re-classify all'}
+            </button>
+          </div>
+        </div>
+
+        {/* Class summary pills */}
+        <div className="flex items-center gap-2 text-xs text-text-secondary">
+          <span className="text-text-muted uppercase tracking-wide text-[10px]">
+            Distribution:
+          </span>
+          {(['human', 'automation', 'auto', 'ignore'] as const).map((c) => (
+            <span
+              key={c}
+              className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase ${classBadge(c)}`}
+            >
+              {c} ({counts[c] || 0})
+            </span>
+          ))}
+        </div>
+
+        {/* Filter */}
+        <input
+          type="text"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Filter projects…"
+          className="w-full px-3 py-1.5 bg-surface-tertiary text-text-primary text-xs rounded border border-border focus:outline-none focus:border-accent"
+        />
+
+        {/* Table */}
+        {filtered.length === 0 ? (
+          <div className="text-sm text-text-muted italic py-6 text-center">
+            {projects.length === 0
+              ? 'No projects yet — import some Claude sessions on the Overview tab.'
+              : 'No projects match that filter.'}
+          </div>
+        ) : (
+          <div className="border border-border rounded-lg overflow-hidden">
+            <table className="w-full text-xs">
+              <thead className="bg-surface-secondary text-text-muted uppercase text-[10px]">
+                <tr>
+                  <th className="text-left px-3 py-2">Project</th>
+                  <th className="text-right px-3 py-2">Sessions</th>
+                  <th className="text-right px-3 py-2">Median min</th>
+                  <th className="text-left px-3 py-2">Last seen</th>
+                  <th className="text-left px-3 py-2">Class</th>
+                  <th className="text-left px-3 py-2">Override → set</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((p, idx) => {
+                  const display = p.project || '(unclassified)'
+                  return (
+                    <tr
+                      key={p.project || `__unclassified_${idx}`}
+                      className="border-t border-border hover:bg-surface-secondary/40"
+                    >
+                      <td className="px-3 py-2 text-text-primary font-medium truncate max-w-xs">
+                        {display}
+                      </td>
+                      <td className="px-3 py-2 text-text-secondary text-right">
+                        {p.session_count}
+                      </td>
+                      <td className="px-3 py-2 text-text-muted text-right">
+                        {p.avg_duration_minutes?.toFixed(1) ?? '—'}
+                      </td>
+                      <td className="px-3 py-2 text-text-muted">
+                        {p.last_seen?.slice(0, 10) || '—'}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase ${classBadge(p.treat_as)}`}
+                        >
+                          {p.treat_as}
+                        </span>
+                        {p.manual_override && (
+                          <span
+                            className="ml-1 text-[10px] text-text-muted"
+                            title={`Set ${p.classified_at?.slice(0, 16) || ''} (${p.classified_reason || 'manual'})`}
+                          >
+                            🔒
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-1 flex-wrap">
+                          {(['human', 'automation', 'ignore', 'auto'] as const).map((c) => (
+                            <button
+                              key={c}
+                              disabled={!!busy || p.treat_as === c}
+                              onClick={() => onSetClass(p.project, c)}
+                              className={`px-1.5 py-0.5 rounded text-[10px] uppercase font-medium cursor-pointer disabled:opacity-40 disabled:cursor-default ${
+                                p.treat_as === c
+                                  ? classBadge(c)
+                                  : 'bg-surface-tertiary text-text-muted hover:text-text-primary'
+                              }`}
+                              title={c === 'auto'
+                                ? 'Clear manual override; let the classifier decide'
+                                : `Force this project to ${c}`}
+                            >
+                              {c}
+                            </button>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 
