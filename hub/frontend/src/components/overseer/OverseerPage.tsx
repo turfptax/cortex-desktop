@@ -1469,33 +1469,6 @@ export function OverseerPage() {
             )
           })()}
 
-          {/* Legacy flat-table render kept below — wrapping it in
-              `false &&` would leave dead code; instead the JSX below
-              would have been the old version, now superseded by the
-              per-project grouping above. The original closing tags
-              still need to land for the existing JSX to balance. */}
-          {scan && scan.found && false && (
-            <div>
-              <table>
-                <tbody>
-                  {scan.found.map((f) => {
-                    return (
-                      <tr key={f.path}>
-                        <td>
-                          <input type="checkbox" />
-                        </td>
-                        <td>{f.project_folder}</td>
-                        <td>{f.session_id.slice(0, 8)}</td>
-                        <td>{fmtBytes(f.size_bytes)}</td>
-                        <td>{fmtRelative(f.mtime_iso)}</td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-
           {imports.length > 0 && (
             <div className="border border-border rounded-md max-h-72 overflow-y-auto">
               <table className="w-full text-xs">
