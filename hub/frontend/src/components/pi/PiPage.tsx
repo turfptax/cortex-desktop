@@ -6,6 +6,8 @@ import { NotesPanel } from './NotesPanel'
 import { PetCareTab } from './PetCareTab'
 import { HeartbeatTab } from './HeartbeatTab'
 import { FirmwareUpdate } from './FirmwareUpdate'
+import { TrainingPage } from '../training/TrainingPage'
+import { GamesPage } from '../games/GamesPage'
 import { type StatusInfo } from '../../App'
 
 interface Props {
@@ -15,7 +17,7 @@ interface Props {
 export function PiPage({ status }: Props) {
   const pi = usePi()
   const [activeTab, setActiveTab] = useState<
-    'status' | 'pet' | 'care' | 'thoughts' | 'notes' | 'firmware'
+    'status' | 'pet' | 'care' | 'thoughts' | 'notes' | 'firmware' | 'training' | 'games'
   >('status')
 
   useEffect(() => {
@@ -43,7 +45,7 @@ export function PiPage({ status }: Props) {
             </span>
           </div>
           <div className="flex gap-1 bg-surface-tertiary rounded-lg p-0.5">
-            {(['status', 'pet', 'care', 'thoughts', 'notes', 'firmware'] as const).map((tab) => (
+            {(['status', 'pet', 'care', 'thoughts', 'notes', 'firmware', 'training', 'games'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -101,6 +103,8 @@ export function PiPage({ status }: Props) {
         {activeTab === 'firmware' && (
           <FirmwareUpdate isOnline={status.piOnline} />
         )}
+        {activeTab === 'training' && <TrainingPage />}
+        {activeTab === 'games' && <GamesPage />}
       </div>
     </div>
   )
