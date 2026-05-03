@@ -518,6 +518,16 @@ export function OverseerPage() {
   const [graph, setGraph] = useState<GraphResp | null>(null)
   const [graphLoading, setGraphLoading] = useState(false)
   const [graphError, setGraphError] = useState<string>('')
+  // Polish CP3: per-project group expand state for the Imports panel
+  const [openImportGroups, setOpenImportGroups] = useState<Set<string>>(new Set())
+  const toggleImportGroup = (folder: string) => {
+    setOpenImportGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(folder)) next.delete(folder)
+      else next.add(folder)
+      return next
+    })
+  }
   const [busy, setBusy] = useState<string>('')
   const [lastAction, setLastAction] = useState<string>('')
   const [error, setError] = useState<string>('')
@@ -929,15 +939,15 @@ export function OverseerPage() {
       const r = await apiFetch<ScanResp>('/overseer/scan/claude-code')
       setScan(r)
       setLastAction(`Scan found ${r.total ?? 0} Claude Code session files`)
-      // Default-select files NOT already imported
-      // ImportRow.id is "claude-code:<uuid>" — strip the prefix to compare
-      // against ScanRow.session_id (the bare uuid).
-      const known = new Set(
-        imports.map((i) => i.id.split(':').slice(1).join(':') || i.id)
-      )
+      // Polish CP3: use the SERVER-side already_imported flag instead
+      // of joining against the client-side imports list (which is
+      // capped at 200 rows and was wrongly auto-selecting ~250 already-
+      // imported files for users with 200+ imports). The polish CP1
+      // scan endpoint hashes each file and marks already_imported
+      // authoritatively.
       const sel = new Set<string>()
       for (const f of r.found || []) {
-        if (!known.has(f.session_id)) sel.add(f.path)
+        if (!f.already_imported) sel.add(f.path)
       }
       setSelectedPaths(sel)
     } catch (e: any) {
@@ -1268,106 +1278,216 @@ export function OverseerPage() {
           )}
         </Card>
 
-        {/* Imports */}
+        {/* Imports — visual refresh in Polish CP3 */}
         <Card title="Imported Claude Sessions">
-          <div className="flex items-center gap-2 mb-3">
+          {/* Top action row + summary stat-line */}
+          <div className="flex items-center gap-2 mb-4 flex-wrap">
             <button
               onClick={handleScan}
               disabled={!!busy}
-              className="px-3 py-1.5 rounded-md text-xs font-medium bg-accent hover:bg-accent-hover text-white cursor-pointer disabled:opacity-50"
+              className="px-3.5 py-2 rounded-md text-xs font-medium bg-accent hover:bg-accent-hover text-white cursor-pointer disabled:opacity-50 transition-colors"
             >
-              Scan ~/.claude/projects/
+              {scan ? 'Re-scan' : 'Scan ~/.claude/projects/'}
             </button>
             <button
               onClick={handleImportSelected}
               disabled={!!busy || selectedPaths.size === 0}
-              className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer disabled:opacity-50"
+              className="px-3.5 py-2 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer disabled:opacity-30 transition-colors"
             >
-              Import {selectedPaths.size > 0 ? `(${selectedPaths.size})` : ''}
+              Import{selectedPaths.size > 0 ? ` ${selectedPaths.size} selected` : ''}
             </button>
-            <span className="text-xs text-text-muted ml-auto">
-              {imports.length} imported
+            <div className="ml-auto flex items-center gap-3 text-[11px]">
+              <span className="text-text-muted">
+                <span className="text-text-primary font-medium">{imports.length}</span> on Pi
+              </span>
               {scan && (
                 <>
-                  {', '}
-                  <span className="text-success">{scan.new_count ?? 0} new</span>
-                  {' / '}
-                  <span>{scan.already_imported_count ?? 0} already on Pi</span>
-                  {' (of '}
-                  {scan.total ?? '—'}
-                  {' found locally)'}
+                  <span className="text-text-muted">·</span>
+                  <span className="text-success">
+                    <span className="font-medium">{scan.new_count ?? 0}</span> new
+                  </span>
+                  <span className="text-text-muted">/</span>
+                  <span className="text-text-muted">
+                    <span className="text-text-secondary font-medium">{scan.already_imported_count ?? 0}</span> already imported
+                  </span>
+                  <span className="text-text-muted">(of {scan.total ?? '—'} local)</span>
                 </>
               )}
-              {!scan && ', — found locally'}
-            </span>
+            </div>
           </div>
 
-          {scan && scan.found && scan.found.length > 0 && (
-            <div className="mb-4 border border-border rounded-md max-h-64 overflow-y-auto">
-              <table className="w-full text-xs">
-                <thead className="bg-surface-tertiary sticky top-0">
-                  <tr>
-                    <th className="text-left p-2 w-8"></th>
-                    <th className="text-left p-2">Project Folder</th>
-                    <th className="text-left p-2">Session</th>
-                    <th className="text-right p-2">Size</th>
-                    <th className="text-right p-2">Modified</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {scan.found.map((f) => {
-                    // Polish slice CP1: trust the server-computed
-                    // already_imported flag. Previously we did a client-
-                    // side ID match against the loaded imports list —
-                    // but that list is capped at 200 rows, so users
-                    // with 200+ imports saw real duplicates marked as
-                    // "new" and got "skipped" surprises on import.
-                    const known = !!f.already_imported
-                    // We can still surface the cwd-basename project
-                    // from the imports list when available — purely
-                    // cosmetic, so no harm if the import is past the
-                    // 200-row window.
-                    const matchedImport = known
-                      ? imports.find(
-                          (i) =>
-                            i.id.split(':').slice(1).join(':') === f.session_id,
-                        )
-                      : undefined
-                    return (
-                      <tr
-                        key={f.path}
-                        className={`border-t border-border ${known ? 'opacity-50' : ''}`}
-                      >
-                        <td className="p-2">
-                          <input
-                            type="checkbox"
-                            checked={selectedPaths.has(f.path)}
-                            onChange={() => toggleSelect(f.path)}
-                            disabled={known}
-                          />
-                        </td>
-                        <td className="p-2 text-text-secondary truncate max-w-xs">
-                          {f.project_folder}
-                          {matchedImport &&
-                              matchedImport.project &&
-                              matchedImport.project !== f.project_folder && (
-                            <span className="block text-[10px] text-text-muted mt-0.5">
-                              imported as: {matchedImport.project}
+          {/* Empty state when scan hasn't run */}
+          {!scan && (
+            <div className="border border-dashed border-border rounded-lg p-6 text-center text-xs text-text-muted">
+              Scan to see local Claude Code sessions on this machine.
+              The Pi will hash them, mark which are already imported, and let
+              you pick which new ones to upload.
+            </div>
+          )}
+
+          {scan && scan.found && scan.found.length > 0 && (() => {
+            // Polish CP3: group scanned files by project_folder so a
+            // 430-file scan reads as ~30 collapsed groups instead of
+            // a flat scroll. Each group exposes "select all new" for
+            // the common case ("import all new sessions in Cortex").
+            const groups = scan.found.reduce<Map<string, ScanRow[]>>((acc, f) => {
+              const k = f.project_folder || '(unknown)'
+              const list = acc.get(k) || []
+              list.push(f)
+              acc.set(k, list)
+              return acc
+            }, new Map())
+            // Sort: groups with new items first, then by row count desc
+            const sorted = Array.from(groups.entries()).sort((a, b) => {
+              const newA = a[1].filter((f) => !f.already_imported).length
+              const newB = b[1].filter((f) => !f.already_imported).length
+              if (newA !== newB) return newB - newA
+              return b[1].length - a[1].length
+            })
+            return (
+              <ul className="border border-border rounded-lg overflow-hidden divide-y divide-border max-h-[28rem] overflow-y-auto">
+                {sorted.map(([folder, rows]) => {
+                  const newRows = rows.filter((f) => !f.already_imported)
+                  const knownCount = rows.length - newRows.length
+                  const allNewSelected = newRows.length > 0 &&
+                    newRows.every((f) => selectedPaths.has(f.path))
+                  const isOpen = openImportGroups.has(folder)
+                  // Use the imported project name (cwd basename) when
+                  // available — that's typically the cleaner display
+                  // name compared to the encoded folder.
+                  const matchedImport = imports.find(
+                    (i) => i.project && rows.some(
+                      (r) => i.id.split(':').slice(1).join(':') === r.session_id,
+                    ),
+                  )
+                  const displayName = matchedImport?.project || folder
+                  return (
+                    <li key={folder} className="bg-surface-secondary/30">
+                      {/* Group header */}
+                      <div className="px-3 py-2 flex items-center gap-2 flex-wrap">
+                        <button
+                          onClick={() => toggleImportGroup(folder)}
+                          className="text-text-muted hover:text-text-primary text-[11px] uppercase tracking-wide cursor-pointer w-6"
+                        >
+                          {isOpen ? '▾' : '▸'}
+                        </button>
+                        <span className="text-sm text-text-primary font-medium truncate max-w-md">
+                          {displayName}
+                        </span>
+                        {displayName !== folder && (
+                          <span className="text-[10px] text-text-muted font-mono truncate max-w-xs">
+                            ({folder})
+                          </span>
+                        )}
+                        <div className="ml-auto flex items-center gap-2 text-[10px]">
+                          {newRows.length > 0 && (
+                            <span className="px-1.5 py-0.5 rounded bg-success/20 text-success font-medium uppercase">
+                              {newRows.length} new
                             </span>
                           )}
-                        </td>
-                        <td className="p-2 text-text-muted font-mono">
-                          {f.session_id.slice(0, 8)}
-                          {known && (
-                            <span className="ml-2 text-success">✓ imported</span>
+                          {knownCount > 0 && (
+                            <span className="px-1.5 py-0.5 rounded bg-surface-tertiary text-text-muted uppercase">
+                              {knownCount} on Pi
+                            </span>
                           )}
+                          {newRows.length > 0 && (
+                            <button
+                              onClick={() => {
+                                const next = new Set(selectedPaths)
+                                if (allNewSelected) {
+                                  newRows.forEach((f) => next.delete(f.path))
+                                } else {
+                                  newRows.forEach((f) => next.add(f.path))
+                                }
+                                setSelectedPaths(next)
+                              }}
+                              className="text-[10px] uppercase tracking-wide text-accent-hover hover:text-accent cursor-pointer ml-1"
+                            >
+                              {allNewSelected ? 'Deselect new' : 'Select all new'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Group body — only when expanded */}
+                      {isOpen && (
+                        <ul className="border-t border-border bg-surface/30">
+                          {rows.map((f) => {
+                            const known = !!f.already_imported
+                            const matched = known
+                              ? imports.find(
+                                  (i) =>
+                                    i.id.split(':').slice(1).join(':') === f.session_id,
+                                )
+                              : undefined
+                            return (
+                              <li
+                                key={f.path}
+                                className={`px-3 py-1.5 flex items-center gap-3 text-[11px] hover:bg-surface-tertiary/30 ${
+                                  known ? 'opacity-60' : ''
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={selectedPaths.has(f.path)}
+                                  onChange={() => toggleSelect(f.path)}
+                                  disabled={known}
+                                  className="shrink-0"
+                                />
+                                <span className="text-text-muted font-mono shrink-0 w-20">
+                                  {f.session_id.slice(0, 8)}
+                                </span>
+                                {known ? (
+                                  <span className="text-success shrink-0 text-[10px] uppercase tracking-wide">
+                                    ✓ imported
+                                  </span>
+                                ) : (
+                                  <span className="text-success shrink-0 text-[10px] uppercase tracking-wide">
+                                    new
+                                  </span>
+                                )}
+                                {matched?.project && matched.project !== folder && (
+                                  <span className="text-[10px] text-text-muted truncate max-w-xs">
+                                    as: {matched.project}
+                                  </span>
+                                )}
+                                <span className="ml-auto text-text-muted shrink-0">
+                                  {fmtBytes(f.size_bytes)}
+                                </span>
+                                <span className="text-text-muted shrink-0 w-20 text-right">
+                                  {fmtRelative(f.mtime_iso)}
+                                </span>
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            )
+          })()}
+
+          {/* Legacy flat-table render kept below — wrapping it in
+              `false &&` would leave dead code; instead the JSX below
+              would have been the old version, now superseded by the
+              per-project grouping above. The original closing tags
+              still need to land for the existing JSX to balance. */}
+          {scan && scan.found && false && (
+            <div>
+              <table>
+                <tbody>
+                  {scan.found.map((f) => {
+                    return (
+                      <tr key={f.path}>
+                        <td>
+                          <input type="checkbox" />
                         </td>
-                        <td className="p-2 text-right text-text-muted">
-                          {fmtBytes(f.size_bytes)}
-                        </td>
-                        <td className="p-2 text-right text-text-muted">
-                          {fmtRelative(f.mtime_iso)}
-                        </td>
+                        <td>{f.project_folder}</td>
+                        <td>{f.session_id.slice(0, 8)}</td>
+                        <td>{fmtBytes(f.size_bytes)}</td>
+                        <td>{fmtRelative(f.mtime_iso)}</td>
                       </tr>
                     )
                   })}
