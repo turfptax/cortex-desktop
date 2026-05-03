@@ -48,6 +48,40 @@ interface WMUnfiledGist {
   created_at?: string
 }
 
+// Slice 3g: depth signals
+interface WMPattern {
+  id: number
+  name: string
+  body: string
+  confidence?: string
+  occurrences?: number
+  last_observed_at?: string
+}
+
+interface WMDrift {
+  id: number
+  body: string
+  direction?: string
+  confidence?: string
+  observed_at?: string
+}
+
+interface WMFutureNote {
+  id: number
+  instance_id: string
+  written_at?: string
+  body: string
+}
+
+interface WMRollup {
+  project: string
+  rollup_date: string
+  session_count?: number
+  total_minutes?: number
+  median_minutes?: number
+  summary: string
+}
+
 interface WorkingMemory {
   built_at?: string
   schema_version?: number
@@ -73,6 +107,11 @@ interface WorkingMemory {
   future_overseer_notes_count?: number
   journal_entry_count?: number
   blindspots?: BlindspotRow[]
+  // Slice 3g: depth signals
+  recent_patterns?: WMPattern[]
+  recent_drift?: WMDrift[]
+  recent_future_notes?: WMFutureNote[]
+  recent_rollups?: WMRollup[]
 }
 
 interface WorkingMemoryResp {
@@ -1412,6 +1451,136 @@ function WorkingMemoryView({ wm }: { wm: WorkingMemory }) {
           <p className="text-text-secondary leading-relaxed">
             {wm.last_week_digest}
           </p>
+        </div>
+      )}
+
+      {/* Slice 3g: depth — patterns / drift / institutional notes / rollups */}
+
+      {wm.recent_patterns && wm.recent_patterns.length > 0 && (
+        <div>
+          <div className="text-text-muted uppercase tracking-wide mb-1">
+            Recent Patterns ({wm.recent_patterns.length})
+          </div>
+          <ul className="space-y-1.5">
+            {wm.recent_patterns.map((p) => (
+              <li key={p.id} className="border-l-2 border-border pl-3">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-text-muted text-[10px] uppercase">
+                    [{p.confidence || '?'} · {p.occurrences ?? 1}×]
+                  </span>
+                  <span className="text-text-primary font-medium">
+                    {p.name}
+                  </span>
+                </div>
+                {p.body && (
+                  <p className="text-[11px] text-text-secondary mt-0.5">
+                    {p.body}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {wm.recent_drift && wm.recent_drift.length > 0 && (
+        <div>
+          <div className="text-text-muted uppercase tracking-wide mb-1">
+            Recent Drift ({wm.recent_drift.length})
+            <span className="ml-2 normal-case text-[10px] italic">
+              (started / stopped / shifted — what's changing)
+            </span>
+          </div>
+          <ul className="space-y-1">
+            {wm.recent_drift.map((d) => {
+              const dirColor =
+                d.direction === 'started'
+                  ? 'text-success'
+                  : d.direction === 'stopped'
+                    ? 'text-amber-400'
+                    : d.direction === 'shifted'
+                      ? 'text-accent-hover'
+                      : 'text-text-muted'
+              return (
+                <li
+                  key={d.id}
+                  className="text-[11px] text-text-secondary flex items-baseline gap-2"
+                >
+                  <span className={`text-[10px] uppercase ${dirColor}`}>
+                    {d.direction || '—'}
+                  </span>
+                  <span>{d.body}</span>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+
+      {wm.recent_future_notes && wm.recent_future_notes.length > 0 && (
+        <div>
+          <div className="text-text-muted uppercase tracking-wide mb-1">
+            Notes to Future Overseer ({wm.recent_future_notes.length}
+            {wm.future_overseer_notes_count &&
+              wm.future_overseer_notes_count > wm.recent_future_notes.length &&
+              ` of ${wm.future_overseer_notes_count}`}
+            )
+            <span className="ml-2 normal-case text-[10px] italic">
+              (institutional memory — what prior instances laid down)
+            </span>
+          </div>
+          <ul className="space-y-1.5">
+            {wm.recent_future_notes.map((n) => (
+              <li key={n.id} className="border-l-2 border-border pl-3">
+                <div className="text-[10px] text-text-muted uppercase">
+                  {n.instance_id}
+                  {n.written_at && (
+                    <span className="ml-2 normal-case">
+                      {n.written_at.slice(0, 16).replace('T', ' ')}
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-text-secondary mt-0.5">
+                  {n.body}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {wm.recent_rollups && wm.recent_rollups.length > 0 && (
+        <div>
+          <div className="text-text-muted uppercase tracking-wide mb-1">
+            Recent Rollups ({wm.recent_rollups.length})
+            <span className="ml-2 normal-case text-[10px] italic">
+              (per-project per-day automation digest)
+            </span>
+          </div>
+          <ul className="space-y-1.5">
+            {wm.recent_rollups.map((r) => (
+              <li
+                key={`${r.project}-${r.rollup_date}`}
+                className="border-l-2 border-border pl-3"
+              >
+                <div className="flex items-baseline gap-2 text-[10px] text-text-muted uppercase">
+                  <span className="text-text-primary normal-case font-medium">
+                    {r.project}
+                  </span>
+                  <span>{r.rollup_date}</span>
+                  {r.session_count != null && (
+                    <span>· {r.session_count} sess</span>
+                  )}
+                  {r.median_minutes != null && (
+                    <span>· {r.median_minutes}min median</span>
+                  )}
+                </div>
+                <p className="text-[11px] text-text-secondary mt-0.5">
+                  {r.summary}
+                </p>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </div>
