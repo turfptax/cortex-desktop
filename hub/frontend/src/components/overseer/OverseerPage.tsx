@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { apiFetch } from '../../lib/api'
+import { ExplorerPanel, type GraphResp } from './ExplorerPanel'
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -478,7 +479,7 @@ function fmtRelative(iso?: string | null): string {
 
 // ── Page ──────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'chat' | 'dialectic' | 'journal' | 'insights' | 'projects' | 'notifications'
+type Tab = 'overview' | 'chat' | 'dialectic' | 'journal' | 'insights' | 'projects' | 'notifications' | 'explorer'
 
 export function OverseerPage() {
   const [tab, setTab] = useState<Tab>('overview')
@@ -513,6 +514,10 @@ export function OverseerPage() {
   const [insightScansHistory, setInsightScansHistory] = useState<InsightScanRow[]>([])
   const [projects, setProjects] = useState<ProjectClassRow[]>([])
   const [projectFilter, setProjectFilter] = useState<string>('')
+  // Polish CP1: Explorer tab state
+  const [graph, setGraph] = useState<GraphResp | null>(null)
+  const [graphLoading, setGraphLoading] = useState(false)
+  const [graphError, setGraphError] = useState<string>('')
   const [busy, setBusy] = useState<string>('')
   const [lastAction, setLastAction] = useState<string>('')
   const [error, setError] = useState<string>('')
@@ -714,6 +719,7 @@ export function OverseerPage() {
     if (tab === 'journal') refreshJournal()
     if (tab === 'insights') refreshInsights(insightStatusFilter)
     if (tab === 'projects') refreshProjects()
+    if (tab === 'explorer' && !graph) refreshGraph()
   }, [tab])
 
   const handleSendChat = async () => {
@@ -788,6 +794,23 @@ export function OverseerPage() {
       setProjects(r.projects || [])
     } catch (e: any) {
       setError(`Projects refresh failed: ${e?.message || e}`)
+    }
+  }
+
+  const refreshGraph = async () => {
+    setGraphLoading(true)
+    setGraphError('')
+    try {
+      const r = await apiFetch<GraphResp>('/overseer/explorer/graph')
+      if (!r.ok) {
+        setGraphError(r.error || 'graph fetch failed')
+      } else {
+        setGraph(r)
+      }
+    } catch (e: any) {
+      setGraphError(e?.message || String(e))
+    } finally {
+      setGraphLoading(false)
     }
   }
 
@@ -1038,6 +1061,7 @@ export function OverseerPage() {
                 ['journal', 'Journal'],
                 ['insights', `Insights${insightCounts && insightCounts.pending > 0 ? ` (${insightCounts.pending})` : ''}`],
                 ['projects', 'Projects'],
+                ['explorer', 'Explorer'],
                 ['notifications', `Bell${notificationsUnread > 0 ? ` (${notificationsUnread})` : ''}`],
               ] as const).map(([id, label]) => (
                 <button
@@ -1096,6 +1120,19 @@ export function OverseerPage() {
           onDismissAll={handleDismissAllNotifications}
           onOpenInChat={handleOpenNotificationInChat}
           onAction={handleNotificationAction}
+        />
+      )}
+      {tab === 'explorer' && (
+        <ExplorerPanel
+          graph={graph}
+          loading={graphLoading}
+          error={graphError}
+          onRefresh={refreshGraph}
+          onTokenClick={(t) => {
+            // Same UX as Insights: jump to Overview, open DetailCard.
+            setTab('overview')
+            setExpandedToken(t)
+          }}
         />
       )}
       {tab === 'projects' && (

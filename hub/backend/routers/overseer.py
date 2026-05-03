@@ -769,3 +769,15 @@ async def insight_distill_corrections():
         "overseer", "POST", "/insight/distill-corrections", {},
         timeout=60.0,
     )
+
+
+# ── Polish slice: Data Explorer graph ───────────────────────────
+
+
+@router.get("/explorer/graph")
+async def explorer_graph():
+    """Return the Explorer graph data: nodes (questions, projects,
+    patterns, drift, themes, filed gists, episodes) + edges
+    (evidence, derived_from, in_project)."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/explorer/graph", {})
