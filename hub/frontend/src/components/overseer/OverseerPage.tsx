@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { apiFetch } from '../../lib/api'
 import { ExplorerPanel, type GraphResp } from './ExplorerPanel'
+import { ProjectsTab } from './ProjectsTab'
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -479,7 +480,7 @@ function fmtRelative(iso?: string | null): string {
 
 // ── Page ──────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'chat' | 'dialectic' | 'journal' | 'insights' | 'projects' | 'notifications' | 'explorer'
+type Tab = 'overview' | 'chat' | 'dialectic' | 'journal' | 'insights' | 'projects' | 'classify' | 'notifications' | 'explorer'
 
 export function OverseerPage() {
   const [tab, setTab] = useState<Tab>('overview')
@@ -1071,6 +1072,7 @@ export function OverseerPage() {
                 ['journal', 'Journal'],
                 ['insights', `Insights${insightCounts && insightCounts.pending > 0 ? ` (${insightCounts.pending})` : ''}`],
                 ['projects', 'Projects'],
+                ['classify', 'Classify'],
                 ['explorer', 'Explorer'],
                 ['notifications', `Bell${notificationsUnread > 0 ? ` (${notificationsUnread})` : ''}`],
               ] as const).map(([id, label]) => (
@@ -1146,6 +1148,9 @@ export function OverseerPage() {
         />
       )}
       {tab === 'projects' && (
+        <ProjectsTab />
+      )}
+      {tab === 'classify' && (
         <ProjectsPanel
           projects={projects}
           filter={projectFilter}
