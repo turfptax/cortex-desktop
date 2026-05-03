@@ -192,7 +192,7 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
   return (
     <div
       ref={containerRef}
-      className="flex-1 relative"
+      className="h-full w-full relative"
       style={{ background: bgColor }}
     >
       <ReactFlow
