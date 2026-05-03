@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { apiFetch } from '../../lib/api'
 import { ExplorerPanel, type GraphResp } from './ExplorerPanel'
 import { ProjectsTab } from './ProjectsTab'
+import { JournalTab } from './JournalTab'
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -1172,9 +1173,9 @@ export function OverseerPage() {
         />
       )}
       {tab === 'journal' && (
-        <JournalPanel
-          entries={journal}
-          onRefresh={refreshJournal}
+        <JournalTab
+          overseerEntries={journal}
+          onRefreshOverseerJournal={refreshJournal}
         />
       )}
       {tab === 'insights' && (
@@ -3449,82 +3450,6 @@ function DialecticRowView({
   )
 }
 
-// ── Slice 3f.5 #1: Journal viewer ───────────────────────────
-
-function JournalPanel({
-  entries,
-  onRefresh,
-}: {
-  entries: JournalEntry[]
-  onRefresh: () => void
-}) {
-  const reversed = [...entries].reverse() // newest first
-  return (
-    <div className="flex-1 overflow-y-auto p-6">
-      <div className="max-w-3xl mx-auto space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-base font-semibold text-text-primary">
-              Overseer journal
-            </h3>
-            <p className="text-xs text-text-muted mt-1">
-              The overseer's first-person reflections at the end of each
-              notable tick. Append-only — these aren't for you, they're
-              for future instances of the overseer to read at boot. You
-              get to read along.
-            </p>
-          </div>
-          <button
-            onClick={onRefresh}
-            className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer"
-          >
-            Refresh
-          </button>
-        </div>
-        {reversed.length === 0 ? (
-          <div className="text-sm text-text-muted py-12 text-center">
-            No journal entries yet. They appear after the loop runs ticks
-            with notable work (typically every 5 minutes when there's new
-            data to chew on).
-          </div>
-        ) : (
-          <ul className="space-y-3">
-            {reversed.map((j) => (
-              <JournalEntryView key={j.id} j={j} />
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function JournalEntryView({ j }: { j: JournalEntry }) {
-  const provColor =
-    j.provisionality === 'high'
-      ? 'bg-success/15 text-success'
-      : j.provisionality === 'low'
-        ? 'bg-red-500/15 text-red-400'
-        : 'bg-text-muted/15 text-text-muted'
-  return (
-    <li className="rounded-lg border border-border bg-surface-secondary p-4">
-      <div className="flex items-center gap-2 mb-2">
-        <span
-          className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase ${provColor}`}
-          title="Overseer's self-reported confidence in this entry"
-        >
-          prov: {j.provisionality}
-        </span>
-        <span className="text-xs text-text-muted">
-          {j.written_at?.slice(0, 19)}
-        </span>
-        <span className="text-[11px] text-text-muted ml-auto truncate max-w-xs font-mono">
-          {j.triggered_by} · {j.model}
-        </span>
-      </div>
-      <p className="text-sm text-text-primary leading-relaxed whitespace-pre-wrap">
-        {j.body}
-      </p>
-    </li>
-  )
-}
+// JournalPanel + JournalEntryView were moved to JournalTab.tsx in
+// Slice 5 CP3+CP4 (overseer reflections are now the bottom section
+// of the Journal tab; human entries + temporal narratives sit above).
