@@ -53,6 +53,9 @@ export interface GraphNode {
   label: string
   confidence: 'low' | 'med' | 'high'
   size_hint: number
+  // CP2: filter-supporting fields
+  last_seen?: string | null  // ISO-ish timestamp
+  tags?: string[]
   metadata?: Record<string, any>
 }
 
@@ -98,10 +101,14 @@ const TYPE_LABEL: Record<GraphNode['type'], string> = {
   episode:  'Episode',
 }
 
+// CP2: bumped evidence alpha — it's the load-bearing edge for the
+// "what feeds what question" reading. Derived_from stays mid; in_
+// project stays ambient (otherwise the perimeter project edges
+// dominate visually).
 const EDGE_COLOR: Record<GraphEdge['kind'], string> = {
-  evidence:     '#7c5cff66',  // purple, alpha
-  derived_from: '#f59e0b55',  // amber, alpha
-  in_project:   '#94a3b833',  // slate, very faint (ambient)
+  evidence:     '#7c5cffcc',  // purple, ~80% alpha (was 66 / 40%)
+  derived_from: '#f59e0b99',  // amber, ~60% alpha (was 55 / 33%)
+  in_project:   '#94a3b833',  // slate, very faint (unchanged)
 }
 
 const CONF_OPACITY: Record<GraphNode['confidence'], number> = {
@@ -266,6 +273,234 @@ function CircleNode({ data }: NodeProps) {
 
 const nodeTypes = { circle: CircleNode }
 
+// ── Filter state + predicate ─────────────────────────────────
+
+interface ExplorerFilters {
+  search: string
+  confidence: Set<GraphNode['confidence']>
+  recencyDays: number | null   // null = no recency filter
+  questionFocus: string | null // q:N — same effect as click-focus
+  hideDisconnected: boolean    // hides nodes with degree 0
+}
+
+const DEFAULT_FILTERS: ExplorerFilters = {
+  search: '',
+  confidence: new Set(['low', 'med', 'high']),
+  recencyDays: null,
+  questionFocus: null,
+  hideDisconnected: true,  // most useful default — Tory had 47 floaters
+}
+
+function nodeMatchesFilters(
+  n: GraphNode,
+  f: ExplorerFilters,
+  degree: Map<string, number>,
+): boolean {
+  // Disconnected gate
+  if (f.hideDisconnected && (degree.get(n.id) || 0) === 0) {
+    return false
+  }
+  // Confidence
+  if (!f.confidence.has(n.confidence)) {
+    return false
+  }
+  // Recency — only filters nodes that HAVE a last_seen. Nodes with
+  // no timestamp are kept regardless (better than hiding them).
+  if (f.recencyDays != null && n.last_seen) {
+    const ts = Date.parse(n.last_seen)
+    if (!Number.isNaN(ts)) {
+      const cutoff = Date.now() - f.recencyDays * 24 * 60 * 60 * 1000
+      if (ts < cutoff) return false
+    }
+  }
+  // Search — matches across label + tags + id token
+  if (f.search.trim()) {
+    const needle = f.search.trim().toLowerCase()
+    const haystack = [
+      n.label.toLowerCase(),
+      n.id.toLowerCase(),
+      ...(n.tags || []).map((t) => t.toLowerCase()),
+    ].join(' ')
+    if (!haystack.includes(needle)) return false
+  }
+  return true
+}
+
+// ── Sidebar ──────────────────────────────────────────────────
+
+function ExplorerSidebar({
+  graph,
+  filters,
+  setFilters,
+}: {
+  graph: GraphResp | null
+  filters: ExplorerFilters
+  setFilters: (f: ExplorerFilters) => void
+}) {
+  const questions = (graph?.nodes || []).filter((n) => n.type === 'question')
+
+  const toggleConfidence = (c: GraphNode['confidence']) => {
+    const next = new Set(filters.confidence)
+    if (next.has(c)) next.delete(c)
+    else next.add(c)
+    // Don't allow empty set — at least one must be on. Re-add if
+    // user emptied it.
+    if (next.size === 0) next.add(c)
+    setFilters({ ...filters, confidence: next })
+  }
+
+  return (
+    <aside
+      className="w-56 shrink-0 flex flex-col gap-4 p-4 border-r border-border overflow-y-auto"
+      style={{ background: '#0a0e16' }}
+    >
+      {/* Search */}
+      <div>
+        <label className="text-[10px] uppercase tracking-wide text-text-muted block mb-1">
+          Search
+        </label>
+        <input
+          type="text"
+          value={filters.search}
+          onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+          placeholder="label, tag, or id…"
+          className="w-full px-2 py-1.5 bg-surface-tertiary text-text-primary text-xs rounded border border-border focus:outline-none focus:border-accent"
+        />
+      </div>
+
+      {/* Confidence */}
+      <div>
+        <label className="text-[10px] uppercase tracking-wide text-text-muted block mb-1">
+          Confidence
+        </label>
+        <div className="flex gap-1">
+          {(['high', 'med', 'low'] as const).map((c) => {
+            const on = filters.confidence.has(c)
+            return (
+              <button
+                key={c}
+                onClick={() => toggleConfidence(c)}
+                className={`px-2 py-1 rounded text-[10px] uppercase font-medium cursor-pointer transition-opacity ${
+                  on
+                    ? 'bg-accent/30 text-accent-hover'
+                    : 'bg-surface-tertiary text-text-muted opacity-60'
+                }`}
+              >
+                {c}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Recency */}
+      <div>
+        <label className="text-[10px] uppercase tracking-wide text-text-muted block mb-1">
+          Recency
+        </label>
+        <div className="flex gap-1 flex-wrap">
+          {[
+            { label: 'all', days: null },
+            { label: '90d', days: 90 },
+            { label: '30d', days: 30 },
+            { label: '7d', days: 7 },
+          ].map((opt) => {
+            const on = filters.recencyDays === opt.days
+            return (
+              <button
+                key={opt.label}
+                onClick={() => setFilters({ ...filters, recencyDays: opt.days })}
+                className={`px-2 py-1 rounded text-[10px] uppercase font-medium cursor-pointer ${
+                  on
+                    ? 'bg-accent/30 text-accent-hover'
+                    : 'bg-surface-tertiary text-text-muted'
+                }`}
+              >
+                {opt.label}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Question focus */}
+      {questions.length > 0 && (
+        <div>
+          <label className="text-[10px] uppercase tracking-wide text-text-muted block mb-1">
+            Focus on question
+          </label>
+          <select
+            value={filters.questionFocus || ''}
+            onChange={(e) =>
+              setFilters({
+                ...filters,
+                questionFocus: e.target.value || null,
+              })
+            }
+            className="w-full px-2 py-1.5 bg-surface-tertiary text-text-primary text-xs rounded border border-border focus:outline-none focus:border-accent"
+          >
+            <option value="">— none —</option>
+            {questions.map((q) => (
+              <option key={q.id} value={q.id}>
+                {q.id}: {q.label.length > 32 ? q.label.slice(0, 32) + '…' : q.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {/* Hide disconnected */}
+      <div>
+        <label className="flex items-center gap-2 text-[11px] text-text-secondary cursor-pointer">
+          <input
+            type="checkbox"
+            checked={filters.hideDisconnected}
+            onChange={(e) =>
+              setFilters({ ...filters, hideDisconnected: e.target.checked })
+            }
+          />
+          Hide disconnected nodes
+        </label>
+      </div>
+
+      {/* Reset */}
+      <button
+        onClick={() => setFilters({ ...DEFAULT_FILTERS })}
+        className="text-[10px] uppercase text-text-muted hover:text-text-primary cursor-pointer self-start"
+      >
+        Reset filters
+      </button>
+
+      {/* Legend (moved from topbar) */}
+      <div className="mt-auto pt-4 border-t border-border">
+        <div className="text-[10px] uppercase tracking-wide text-text-muted mb-2">
+          Legend
+        </div>
+        <ul className="space-y-1 text-[11px] text-text-secondary">
+          {(['question', 'pattern', 'drift', 'theme', 'episode', 'gist', 'project'] as const).map((t) => (
+            <li key={t} className="flex items-center gap-2">
+              <span
+                style={{
+                  background: TYPE_FILL[t],
+                  width: 10,
+                  height: 10,
+                  borderRadius: 999,
+                  display: 'inline-block',
+                }}
+              />
+              {TYPE_LABEL[t]}
+            </li>
+          ))}
+        </ul>
+        <div className="mt-3 text-[10px] text-text-muted leading-relaxed">
+          single-click to focus<br />
+          double-click to drill in
+        </div>
+      </div>
+    </aside>
+  )
+}
+
 // ── Main panel ───────────────────────────────────────────────
 
 export function ExplorerPanel({
@@ -284,6 +519,9 @@ export function ExplorerPanel({
   const containerRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 1200, h: 800 })
   const [focusId, setFocusId] = useState<string | null>(null)
+  const [filters, setFilters] = useState<ExplorerFilters>({
+    ...DEFAULT_FILTERS,
+  })
 
   // Track container size for layout. ResizeObserver on the wrapper.
   useEffect(() => {
@@ -297,15 +535,51 @@ export function ExplorerPanel({
     return () => ro.disconnect()
   }, [])
 
-  // Compute positions from graph data + size.
+  // Effective focus = filters.questionFocus takes precedence over click
+  // focus, so the user can pin a question and still single-click to
+  // explore other nodes ad hoc. Clicking a node OVERRIDES the pinned
+  // focus only until they clear-click.
+  const effectiveFocus = focusId || filters.questionFocus
+
+  // Degree map (for hide-disconnected). Recomputed when graph changes.
+  const degree = useMemo<Map<string, number>>(() => {
+    const m = new Map<string, number>()
+    if (!graph) return m
+    for (const e of graph.edges || []) {
+      m.set(e.source, (m.get(e.source) || 0) + 1)
+      m.set(e.target, (m.get(e.target) || 0) + 1)
+    }
+    return m
+  }, [graph])
+
+  // Filter predicate result per node id. Used for both layout (we
+  // skip filtered-out nodes from the simulation) and rendering (we
+  // hide them entirely via display:none — preserves layout for
+  // nodes that ARE visible if user toggles a filter).
+  const visibleSet = useMemo<Set<string>>(() => {
+    if (!graph) return new Set()
+    const out = new Set<string>()
+    for (const n of graph.nodes || []) {
+      if (nodeMatchesFilters(n, filters, degree)) out.add(n.id)
+    }
+    return out
+  }, [graph, filters, degree])
+
+  // Compute positions from graph data + size, ONLY for visible nodes
+  // (so hide-disconnected actually removes the visual mass instead of
+  // just dimming, AND so the layout uses screen real estate well).
   const positioned = useMemo<PositionedNode[]>(() => {
     if (!graph?.nodes) return []
-    return runLayout(graph.nodes, graph.edges || [], size.w, size.h)
-  }, [graph, size.w, size.h])
+    const visibleNodes = graph.nodes.filter((n) => visibleSet.has(n.id))
+    const visibleEdges = (graph.edges || []).filter(
+      (e) => visibleSet.has(e.source) && visibleSet.has(e.target),
+    )
+    return runLayout(visibleNodes, visibleEdges, size.w, size.h)
+  }, [graph, visibleSet, size.w, size.h])
 
   // Focus-mode dim set: nodes within 2 hops of focus stay bright.
   const dimSet = useMemo<Set<string>>(() => {
-    if (!focusId || !graph) return new Set()
+    if (!effectiveFocus || !graph) return new Set()
     const adj = new Map<string, Set<string>>()
     for (const e of graph.edges || []) {
       if (!adj.has(e.source)) adj.set(e.source, new Set())
@@ -313,8 +587,8 @@ export function ExplorerPanel({
       adj.get(e.source)!.add(e.target)
       adj.get(e.target)!.add(e.source)
     }
-    const keep = new Set<string>([focusId])
-    const queue = [focusId]
+    const keep = new Set<string>([effectiveFocus])
+    const queue = [effectiveFocus]
     let depth = 0
     while (queue.length && depth < 2) {
       const next: string[] = []
@@ -329,11 +603,11 @@ export function ExplorerPanel({
       queue.splice(0, queue.length, ...next)
       depth += 1
     }
-    // Dim = NOT in keep
+    // Dim = visible AND NOT in keep
     const dim = new Set<string>()
-    for (const n of graph.nodes || []) if (!keep.has(n.id)) dim.add(n.id)
+    for (const id of visibleSet) if (!keep.has(id)) dim.add(id)
     return dim
-  }, [focusId, graph])
+  }, [effectiveFocus, graph, visibleSet])
 
   // React-flow nodes/edges, derived from positioned + focus state.
   const rfNodes = useMemo<RFNode[]>(() => {
@@ -343,91 +617,89 @@ export function ExplorerPanel({
       position: { x: p.x - nodeRadius(p), y: p.y - nodeRadius(p) },
       data: {
         graph: p,
-        active: focusId === p.id,
+        active: effectiveFocus === p.id,
         dimmed: dimSet.has(p.id),
       },
       draggable: false,
       selectable: false,
     }))
-  }, [positioned, focusId, dimSet])
+  }, [positioned, effectiveFocus, dimSet])
 
   const rfEdges = useMemo<RFEdge[]>(() => {
     if (!graph?.edges) return []
-    return graph.edges.map((e, i) => {
-      const isAdjacent =
-        focusId && (e.source === focusId || e.target === focusId)
-      const dimmed = focusId && !isAdjacent
-      return {
-        id: `e-${i}`,
-        source: e.source,
-        target: e.target,
-        type: 'straight',
-        animated: false,
-        style: {
-          stroke: EDGE_COLOR[e.kind],
-          strokeWidth: isAdjacent ? 2 : 1,
-          opacity: dimmed ? 0.15 : 1,
-          transition: 'opacity 200ms ease, stroke-width 200ms ease',
-        },
-      }
-    })
-  }, [graph, focusId])
+    // Only render edges between currently-visible nodes.
+    return graph.edges
+      .filter((e) => visibleSet.has(e.source) && visibleSet.has(e.target))
+      .map((e, i) => {
+        const isAdjacent = effectiveFocus &&
+          (e.source === effectiveFocus || e.target === effectiveFocus)
+        const dimmed = effectiveFocus && !isAdjacent
+        return {
+          id: `e-${i}`,
+          source: e.source,
+          target: e.target,
+          type: 'straight',
+          animated: false,
+          style: {
+            stroke: EDGE_COLOR[e.kind],
+            strokeWidth: isAdjacent ? 2 : 1,
+            opacity: dimmed ? 0.15 : 1,
+            transition: 'opacity 200ms ease, stroke-width 200ms ease',
+          },
+        }
+      })
+  }, [graph, effectiveFocus, visibleSet])
+
+  // Visible/total node count for the topbar — gives a sense of how
+  // much the filters are hiding without us screaming "X HIDDEN" at
+  // the user.
+  const visibleCount = visibleSet.size
+  const totalCount = graph?.nodes?.length || 0
 
   return (
-    <div className="flex-1 flex flex-col" style={{ background: '#0b1018' }}>
-      {/* Top bar */}
-      <div className="flex items-center gap-3 px-6 py-3 border-b border-border">
-        <h3 className="text-base font-semibold text-text-primary">
-          Explorer
-        </h3>
-        <span className="text-xs text-text-muted whitespace-nowrap">
-          {graph?.stats
-            ? `${graph.stats.nodes_total} nodes · ${graph.stats.edges_total} edges`
-            : loading
-              ? 'loading…'
-              : ''}
-        </span>
-        <span className="text-[10px] text-text-muted italic">
-          single-click to focus · double-click to drill in
-        </span>
-        {focusId && (
-          <button
-            onClick={() => setFocusId(null)}
-            className="ml-2 px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-secondary cursor-pointer"
-          >
-            Clear focus ({focusId})
-          </button>
-        )}
-        <div className="ml-auto flex items-center gap-3">
-          {/* Legend */}
-          <div className="flex items-center gap-2 text-[10px] text-text-muted">
-            {(['question', 'project', 'pattern', 'drift', 'theme', 'gist', 'episode'] as const).map((t) => (
-              <span key={t} className="flex items-center gap-1">
-                <span
-                  style={{
-                    background: TYPE_FILL[t],
-                    width: 8,
-                    height: 8,
-                    borderRadius: 999,
-                    display: 'inline-block',
-                  }}
-                />
-                {TYPE_LABEL[t].toLowerCase()}
-              </span>
-            ))}
-          </div>
+    <div className="flex-1 flex" style={{ background: '#0b1018' }}>
+      <ExplorerSidebar
+        graph={graph}
+        filters={filters}
+        setFilters={setFilters}
+      />
+      <div className="flex-1 flex flex-col">
+        {/* Top bar — tightened, only essential info */}
+        <div className="flex items-center gap-3 px-4 py-2 border-b border-border min-w-0">
+          <h3 className="text-sm font-semibold text-text-primary whitespace-nowrap">
+            Explorer
+          </h3>
+          <span className="text-xs text-text-muted whitespace-nowrap truncate">
+            {graph?.stats
+              ? visibleCount === totalCount
+                ? `${totalCount} nodes · ${graph.stats.edges_total} edges`
+                : `${visibleCount} of ${totalCount} nodes shown`
+              : loading
+                ? 'loading…'
+                : ''}
+          </span>
+          {effectiveFocus && (
+            <button
+              onClick={() => {
+                setFocusId(null)
+                setFilters({ ...filters, questionFocus: null })
+              }}
+              className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-secondary cursor-pointer whitespace-nowrap"
+            >
+              Clear focus ({effectiveFocus})
+            </button>
+          )}
           <button
             onClick={onRefresh}
             disabled={loading}
-            className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer disabled:opacity-50"
+            className="ml-auto px-3 py-1 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer disabled:opacity-50"
           >
             {loading ? 'Loading…' : 'Refresh'}
           </button>
         </div>
-      </div>
 
-      {/* Canvas */}
-      <div ref={containerRef} className="flex-1 relative">
+        {/* Canvas */}
+        <div ref={containerRef} className="flex-1 relative">
         {error && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-red-400 z-10">
             Error: {error}
@@ -484,6 +756,7 @@ export function ExplorerPanel({
             />
           </ReactFlow>
         </ReactFlowProvider>
+        </div>
       </div>
     </div>
   )
