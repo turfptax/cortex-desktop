@@ -4,13 +4,17 @@ This file provides context for AI agents working in the cortex-desktop repositor
 
 ## What This Repo Is
 
-Cortex Desktop is the PC-side control hub for the Cortex wearable AI companion system. It packages three main components:
+Cortex Desktop is the PC-side control hub for the Cortex wearable AI companion system. It packages five main components:
 
 1. **Desktop App** (`cortex_desktop/`) — System tray app that launches the Hub
 2. **Hub Backend** (`hub/backend/`) — FastAPI REST API serving the frontend and proxying to the Pi
 3. **Hub Frontend** (`hub/frontend/`) — React + Vite + Tailwind SPA
 4. **MCP Server** (`cortex_mcp/`) — MCP bridge for Claude Code / Claude Desktop
 5. **Training Package** (`cortex_train/`) — Unified training pipeline (Python API + CLI)
+
+The Hub now ships a sixth surface that lives on the Pi but is consumed end-to-end through this app:
+
+6. **Overseer** (Pi-side plugin in [cortex-core](https://github.com/turfptax/cortex-core)) — A memory-upkeep agent that reads the user's notes, sessions, and imported Claude Code conversations and produces interpretive layers (gists, themes, episodes, open questions, patterns, drift, project narratives). Its dedicated Hub tab includes Overview / Chat / Dialectic / Journal / Insights / Projects / Classify / Bell / Explorer sub-tabs.
 
 ## Architecture
 
@@ -25,6 +29,7 @@ FastAPI Backend (hub/backend/)
     |--- /api/settings/* -> Config, updates, MCP setup
     |--- /api/data/*     -> Pi database browser
     |--- /api/learning/* -> LM Studio synthesis
+    |--- /api/overseer/* -> Pi /plugins/overseer/* (proxied — see hub/backend/routers/overseer.py)
     |--- static files   -> React SPA (frontend_dist/)
 
 System Tray (cortex_desktop/app.py)
@@ -73,6 +78,10 @@ cortex-desktop/
         data.py         # Pi database CRUD
         learning.py     # LM Studio synthesis management
         games.py        # Pong game endpoints
+        overseer.py     # Proxy to Pi's /plugins/overseer/* — Slice 3+4 routes
+                        #   working_memory, journal, dialectic, insights, blindspots,
+                        #   notifications, explorer/graph, projects/summary,
+                        #   narrative/generate, etc. (~30 routes total)
       services/
         pi_client.py    # Async HTTP client to Pi
         lmstudio.py     # Async LM Studio streaming client
@@ -82,17 +91,30 @@ cortex-desktop/
     frontend/
       src/
         App.tsx         # Root, Pi status polling, routing
+                        # Top-level sidebar: Chat / Pi / Data / Overseer / Settings
+                        # (5 tabs as of v0.16; Training + Games are now Pi inner tabs)
         components/
           chat/         # Chat page with prompt templates + presets
-          training/     # Training pipeline UI (6 tabs)
-          pi/           # Pi page: PetCareTab, HeartbeatTab, NotesTab
-          games/        # Pong game
+          pi/           # Pi page with inner tabs: System (status + firmware) /
+                        # Pet Chat / Pet Care / Thoughts (heartbeat) / Notes /
+                        # Training / Games
+          data/         # Pi database browser
           settings/     # Settings page with UpdateCard
-          data/         # Data browser
+          overseer/     # Overseer page (Slice 3-4)
+            OverseerPage.tsx   # Tab dispatch + most panels
+            ProjectsTab.tsx    # Slice 4 CP2: per-project narrative + stats cards
+            ExplorerPanel.tsx  # Force-directed graph view
+          training/     # Training pipeline UI (6 tabs) — mounted inside Pi tab
+          games/        # Pong game — mounted inside Pi tab
+        lib/
+          api.ts            # apiFetch() wrapper
+          graphengine/      # Generic force-directed graph engine
+            GraphCanvas.tsx     # react-flow + d3-force canvas + floating edges
+            useForceLayout.ts   # d3-force tick loop with prev-position carry
+            types.ts            # EngineNode/EngineEdge interfaces
         hooks/
           useChat.ts    # Chat state, template resolution, memory compaction
           usePi.ts      # Pi communication helpers
-        lib/api.ts      # apiFetch() wrapper
   .github/workflows/
     build-release.yml   # CI: build exe + installer, create GitHub release
   build.py              # Build orchestrator (frontend + PyInstaller)
@@ -104,8 +126,9 @@ cortex-desktop/
 ## Versioning & Releases
 
 - **Version**: Defined in TWO places (keep in sync):
-  - `cortex_desktop/__init__.py` → `__version__ = "0.10.0"`
-  - `pyproject.toml` → `version = "0.10.0"`
+  - `cortex_desktop/__init__.py` → `__version__ = "0.16.0"`
+  - `pyproject.toml` → `version = "0.16.0"`
+- **Note** — `pyproject.toml` uses PEP 440 form (`0.16.0.dev13` for dev releases), `__init__.py` uses semver form (`0.16.0-dev.13`). Keep both in sync at each bump.
 - **Sub-package versions**: `cortex_mcp/__init__.py` (0.3.0), `cortex_train/__init__.py` (0.1.0)
 - **Git tags**: `v{semver}` for stable, `v{semver}-dev.{n}` for pre-releases
 - **Bloom**: Training cycle counter in GGUF filenames (e.g. bloom-18)
@@ -113,18 +136,22 @@ cortex-desktop/
 ### Release process
 ```bash
 # Update versions in cortex_desktop/__init__.py AND pyproject.toml
-git commit -m "Bump to v0.11.0 — description"
-git tag v0.11.0
-git push origin master v0.11.0
+git commit -m "Bump to v0.17.0 — description"
+git tag v0.17.0
+git push origin master v0.17.0
 # GitHub Actions builds exe + installer, creates release
 ```
 
 ### Dev/pre-release
 ```bash
-git tag v0.11.0-dev.1
-git push origin v0.11.0-dev.1
+git tag v0.17.0-dev.1
+git push origin v0.17.0-dev.1
 # Creates pre-release on GitHub, visible via Dev channel in Hub
 ```
+
+### Recent stable releases
+- **v0.16.0** (May 2026) — Slice 3 Overseer (full) + Slice 4 Project-Centric (rollups, narratives, Projects tab) + sidebar reorg (7→5 tabs) + Polish slice (Data Explorer, Bell digestibility, scan UI). See `RELEASE_NOTES_0.16.md`.
+- **v0.15.0** (Apr 2026) — Polish CP1 closeout: project name canonicalization + skipped-imports fix.
 
 ## Update System
 
@@ -167,6 +194,52 @@ Triggered by tuck-in: runs sync -> synthesize -> prepare -> train -> eval -> dep
 
 ### Configuration
 Training config lives in `cortex-pet-training/config/settings.json` (sibling repo). The `cortex_train.paths` module auto-detects this via `CORTEX_TRAINING_DIR` env var or sibling directory search.
+
+## Overseer (Slice 3 + 4 — added in v0.13–0.16)
+
+The Overseer is a memory-upkeep agent that LIVES on the Pi (in `cortex-core/plugins/overseer/`) but is consumed end-to-end through this Hub.
+
+### What it does
+- Reads the user's notes, sessions, and imported Claude Code conversations
+- Runs a background loop on the Pi that produces interpretive layers via OpenRouter (Opus 4.7 + Sonnet 4.6 dialectic):
+  - **Gists** — per-session summaries
+  - **Themes / Episodes** — cross-session patterns
+  - **Open questions** — standing concerns the user is working through, with evidence trails
+  - **Patterns / Drift** — observations across time
+  - **Working memory** — boot-read context for chat
+  - **Journal** — first-person reflection by the overseer instance
+  - **Dialectic** — paired Opus + Gemma generation; the diff is the data (slice 3f)
+  - **Project summaries** — Slice 4: per-project rollups (stats + Sonnet narrative)
+  - **Blindspots** — meta-honesty layer (slice 3f.5)
+  - **Notifications** — the Hub bell
+- Backfilled / refreshed via `cortex-core/scripts/backfill_session_stats.py` (one-shot)
+
+### Hub-side surface
+The Overseer page (top-level sidebar tab) has these inner tabs:
+- **Overview** — Stats grid + Working Memory view + Imported Claude Sessions panel + Background Loop status + LLM Cost (last 7 days)
+- **Chat** — Direct chat with the overseer (Opus 4.7 default, blindspot-aware)
+- **Dialectic** — Resolve Opus-vs-Gemma diffs (slice 3f)
+- **Journal** — Append-only first-person reflections by the overseer
+- **Insights** — Pending interpretation queue (gists, themes, episodes, blindspots) with accept/reject
+- **Projects** — *Slice 4 CP2:* per-project cards with narrative + active hours + cost + top files (sorted by Active hours desc by default; Active-only / All toggle)
+- **Classify** — Per-project treat-as: human / automation / ignore (slice 3e)
+- **Explorer** — Force-directed graph of nodes (questions / projects / patterns / drift / themes / gists / episodes) and edges (evidence / derived_from / in_project)
+- **Bell** — Notifications grouped by rule_name (60d auto-archive)
+
+### Slice 4 (Project-Centric) — v0.16
+- Per-session token/cost/file extraction added to `claude_jsonl.py` (`extract_extended_stats`)
+- `project_summaries` table on Pi: stats + LLM narrative + active_minutes_total
+- `pricing.py`: hardcoded Anthropic price table (`as_of: 2026-05-02`)
+- `project_summary.py`: deterministic stats aggregator (no LLM)
+- `project_narrative.py`: Sonnet narrative generator (3 paragraphs + open questions section)
+- Loop step 8 (`_run_project_narrative_refresh`): 24h cadence + ≥3 new sessions trigger, 3 projects per tick
+- Manual route `POST /plugins/overseer/narrative/generate`
+- Hub Projects tab consumes everything via `GET /api/overseer/projects/summary`
+
+### When to update what
+- **Add a new overseer route** → modify `cortex-core/plugins/overseer/__init__.py` (Pi-side) AND `cortex-desktop/hub/backend/routers/overseer.py` (Hub proxy)
+- **New schema column** → add to `OVERSEER_SCHEMA_SQL` in `cortex-core/plugins/overseer/overseer_db.py` AND chain an `_migrate_*` function for existing installs
+- **New Hub tab** → register in `Tab` union + tab strip + dispatch in `OverseerPage.tsx`
 
 ## Build & CI/CD
 
