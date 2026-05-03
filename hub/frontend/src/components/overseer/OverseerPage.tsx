@@ -364,6 +364,7 @@ interface PendingInterpretation {
   source_window_start: string | null
   source_window_end: string | null
   source_pointer_ids: string  // JSON array
+  source_chat_message_id: number | null
   status: 'pending' | 'confirmed' | 'rejected' | 'edited' | 'superseded'
   reviewed_at: string | null
   reviewed_by: string
@@ -372,6 +373,27 @@ interface PendingInterpretation {
   edit_body: string
   applied_table: string
   applied_id: number | null
+}
+
+interface InsightScanRow {
+  id: number
+  scan_kind: string
+  project: string
+  window_start: string | null
+  window_end: string | null
+  gists_seen: number
+  candidates_proposed: number
+  candidates_deduped: number
+  cost_usd: number
+  triggered_by: string
+  ok: number
+  error: string
+  scanned_at: string
+}
+
+interface InsightScansResp {
+  ok: boolean
+  scans?: InsightScanRow[]
 }
 
 interface InsightPendingResp {
@@ -455,6 +477,7 @@ export function OverseerPage() {
   const [editingInsightId, setEditingInsightId] = useState<number | null>(null)
   const [editTitle, setEditTitle] = useState<string>('')
   const [editBody, setEditBody] = useState<string>('')
+  const [insightScansHistory, setInsightScansHistory] = useState<InsightScanRow[]>([])
   const [busy, setBusy] = useState<string>('')
   const [lastAction, setLastAction] = useState<string>('')
   const [error, setError] = useState<string>('')
@@ -512,9 +535,13 @@ export function OverseerPage() {
   const refreshInsights = async (status: string = insightStatusFilter) => {
     try {
       const q = status ? `?status=${encodeURIComponent(status)}` : ''
-      const r = await apiFetch<InsightPendingResp>(`/overseer/insight/pending${q}`)
-      setInsights(r.interpretations || [])
-      setInsightCounts(r.counts)
+      const [pending, scans] = await Promise.all([
+        apiFetch<InsightPendingResp>(`/overseer/insight/pending${q}`),
+        apiFetch<InsightScansResp>(`/overseer/insight/scans?limit=15`),
+      ])
+      setInsights(pending.interpretations || [])
+      setInsightCounts(pending.counts)
+      setInsightScansHistory(scans.scans || [])
     } catch (e: any) {
       setError(`Insights refresh failed: ${e?.message || e}`)
     }
@@ -940,6 +967,7 @@ export function OverseerPage() {
         <InsightsPanel
           interpretations={insights}
           counts={insightCounts}
+          scans={insightScansHistory}
           statusFilter={insightStatusFilter}
           setStatusFilter={(s) => {
             setInsightStatusFilter(s)
@@ -1490,6 +1518,7 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 function InsightsPanel({
   interpretations,
   counts,
+  scans,
   statusFilter,
   setStatusFilter,
   scanProject,
@@ -1509,6 +1538,7 @@ function InsightsPanel({
 }: {
   interpretations: PendingInterpretation[]
   counts?: InsightPendingResp['counts']
+  scans: InsightScanRow[]
   statusFilter: string
   setStatusFilter: (s: string) => void
   scanProject: string
@@ -1584,9 +1614,56 @@ function InsightsPanel({
           </div>
           <p className="text-[10px] text-text-muted mt-2 italic">
             Single Sonnet call; cost capped at $0.05/scan. Cheap projects
-            run for fractions of a cent.
+            run for fractions of a cent. The auto-loop also scans up to
+            2 active+human projects per tick (24h cadence per project).
           </p>
         </div>
+
+        {/* Recent scans (auto-loop visibility) */}
+        {scans.length > 0 && (
+          <details className="bg-surface-secondary border border-border rounded-lg p-4">
+            <summary className="cursor-pointer text-xs uppercase tracking-wide text-text-muted">
+              Recent scans ({scans.length})
+            </summary>
+            <ul className="mt-3 space-y-1 text-[11px]">
+              {scans.map((s) => {
+                const okColor = s.ok
+                  ? (s.candidates_proposed > 0
+                      ? 'text-success'
+                      : 'text-text-muted')
+                  : 'text-red-400'
+                return (
+                  <li
+                    key={s.id}
+                    className="grid grid-cols-[max-content_max-content_1fr_max-content_max-content] gap-x-3 items-baseline"
+                  >
+                    <span className="text-text-muted text-[10px]">
+                      {fmtRelative(s.scanned_at)}
+                    </span>
+                    <span className="text-[9px] uppercase tracking-wide text-text-muted">
+                      {s.triggered_by}
+                    </span>
+                    <span className="text-text-secondary truncate">
+                      {s.project || s.scan_kind}
+                    </span>
+                    <span className={okColor}>
+                      {s.ok
+                        ? `${s.candidates_proposed} new` +
+                          (s.candidates_deduped > 0
+                            ? ` (+${s.candidates_deduped} dup)`
+                            : '')
+                        : `error: ${(s.error || '').slice(0, 40)}`}
+                    </span>
+                    <span className="text-text-muted text-[10px]">
+                      {s.cost_usd > 0 ? `$${s.cost_usd.toFixed(4)}` : '$0'}
+                      {s.error && s.error.includes('insufficient') && ' · skipped'}
+                    </span>
+                  </li>
+                )
+              })}
+            </ul>
+          </details>
+        )}
 
         {/* Status filter pills */}
         <div className="flex items-center gap-1 bg-surface-secondary border border-border rounded-lg p-1 w-fit">
@@ -1633,6 +1710,22 @@ function InsightsPanel({
                   )}
                   <span className="text-[10px] uppercase text-text-muted">
                     [{it.confidence}]
+                  </span>
+                  {/* 3h CP2: source-kind badge so chat-sourced
+                      candidates are visually distinct from loop scans */}
+                  <span
+                    className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded font-mono ${
+                      it.source_kind === 'chat-snippet'
+                        ? 'bg-accent-hover/20 text-accent-hover'
+                        : 'bg-surface-tertiary text-text-muted'
+                    }`}
+                    title={
+                      it.source_kind === 'chat-snippet'
+                        ? `From overseer chat reply (msg #${(it as any).source_chat_message_id ?? '?'})`
+                        : `From a periodic ${it.source_kind} scan`
+                    }
+                  >
+                    {it.source_kind}
                   </span>
                   {it.source_project && (
                     <span className="text-[10px] uppercase text-text-secondary">
