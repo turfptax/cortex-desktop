@@ -135,7 +135,15 @@ function CircleNode({
 }) {
   const r = nodeRadius(graph)
   const fill = TYPE_FILL[graph.type]
-  const opacity = (dimmed ? 0.18 : 1) * CONF_OPACITY[graph.confidence]
+  // Dormant projects (tag set by the backend when last_active >60d)
+  // render at 60% confidence so they recede compared to active
+  // peers on the same canvas. Doesn't apply to other node types.
+  const isDormantProject = graph.type === 'project'
+                           && (graph.tags || []).includes('dormant')
+  const baseOpacity = isDormantProject
+    ? CONF_OPACITY.low
+    : CONF_OPACITY[graph.confidence]
+  const opacity = (dimmed ? 0.18 : 1) * baseOpacity
   const ring = active ? 3 : 0
   const size = r * 2
   return (
@@ -226,17 +234,29 @@ function nodeMatchesFilters(
   n: GraphNode,
   f: ExplorerFilters,
   degree: Map<string, number>,
+  focusKeepSet: Set<string> | null,
 ): boolean {
-  // Disconnected gate
-  if (f.hideDisconnected && (degree.get(n.id) || 0) === 0) {
+  // Focus-question filter — when a question is pinned, ONLY show
+  // nodes within 2 hops of it. Previously this was a dim-only
+  // hint; now it's a real filter (matches user mental model of
+  // "focus on this question").
+  if (focusKeepSet && !focusKeepSet.has(n.id)) {
+    return false
+  }
+  // Disconnected gate — but ALWAYS show projects, even when alone.
+  // Slice 4 made projects the user's primary anchor; many of them
+  // legitimately have no question-evidence edges yet.
+  if (f.hideDisconnected
+      && n.type !== 'project'
+      && (degree.get(n.id) || 0) === 0) {
     return false
   }
   // Confidence
   if (!f.confidence.has(n.confidence)) {
     return false
   }
-  // Recency — only filters nodes that HAVE a last_seen. Nodes with
-  // no timestamp are kept regardless (better than hiding them).
+  // Recency — when active, hide nodes older than the cutoff. Nodes
+  // without last_seen are treated as "unknown age" and kept.
   if (f.recencyDays != null && n.last_seen) {
     const ts = Date.parse(n.last_seen)
     if (!Number.isNaN(ts)) {
@@ -424,11 +444,11 @@ function ExplorerSidebar({
         </div>
       </div>
 
-      {/* Question focus */}
+      {/* Question focus — filters to 2-hop neighborhood */}
       {questions.length > 0 && (
         <div>
           <label className="text-[10px] uppercase tracking-wide text-text-muted block mb-1">
-            Focus on question
+            Filter to question
           </label>
           <select
             value={filters.questionFocus || ''}
@@ -539,14 +559,55 @@ export function ExplorerPanel({
     return m
   }, [graph])
 
+  // Adjacency — used by both the focus-question filter (2-hop keep
+  // set) and the click-focus dim set below.
+  const adjacency = useMemo<Map<string, Set<string>>>(() => {
+    const adj = new Map<string, Set<string>>()
+    if (!graph) return adj
+    for (const e of graph.edges || []) {
+      if (!adj.has(e.source)) adj.set(e.source, new Set())
+      if (!adj.has(e.target)) adj.set(e.target, new Set())
+      adj.get(e.source)!.add(e.target)
+      adj.get(e.target)!.add(e.source)
+    }
+    return adj
+  }, [graph])
+
+  // Focus-question keep set: when the user has PINNED a question via
+  // the dropdown, only nodes within 2 hops survive the visibility
+  // filter. Click-focus (focusId) is a separate UX — that one only
+  // dims, it doesn't filter, since it's meant for ad-hoc poking.
+  const focusKeepSet = useMemo<Set<string> | null>(() => {
+    if (!filters.questionFocus || !graph) return null
+    const start = filters.questionFocus
+    if (!graph.nodes?.some((n) => n.id === start)) return null
+    const keep = new Set<string>([start])
+    let frontier: string[] = [start]
+    for (let depth = 0; depth < 2 && frontier.length; depth++) {
+      const next: string[] = []
+      for (const id of frontier) {
+        for (const n of adjacency.get(id) || []) {
+          if (!keep.has(n)) {
+            keep.add(n)
+            next.push(n)
+          }
+        }
+      }
+      frontier = next
+    }
+    return keep
+  }, [filters.questionFocus, graph, adjacency])
+
   const visibleSet = useMemo<Set<string>>(() => {
     if (!graph) return new Set()
     const out = new Set<string>()
     for (const n of graph.nodes || []) {
-      if (nodeMatchesFilters(n, filters, degree)) out.add(n.id)
+      if (nodeMatchesFilters(n, filters, degree, focusKeepSet)) {
+        out.add(n.id)
+      }
     }
     return out
-  }, [graph, filters, degree])
+  }, [graph, filters, degree, focusKeepSet])
 
   const visibleNodes = useMemo(
     () => (graph?.nodes || []).filter((n) => visibleSet.has(n.id)),
@@ -560,37 +621,31 @@ export function ExplorerPanel({
     [graph, visibleSet],
   )
 
-  // Focus-mode dim set: nodes within 2 hops of focus stay bright.
+  // Click-focus dim set: ad-hoc single-click on a node dims everything
+  // outside 2 hops (so the user can quickly trace a node's
+  // neighborhood without losing context). Only fires for click-focus
+  // (focusId) — the dropdown-pinned questionFocus filters instead,
+  // computed in focusKeepSet above.
   const dimSet = useMemo<Set<string>>(() => {
-    if (!effectiveFocus || !graph) return new Set()
-    const adj = new Map<string, Set<string>>()
-    for (const e of graph.edges || []) {
-      if (!adj.has(e.source)) adj.set(e.source, new Set())
-      if (!adj.has(e.target)) adj.set(e.target, new Set())
-      adj.get(e.source)!.add(e.target)
-      adj.get(e.target)!.add(e.source)
-    }
-    const keep = new Set<string>([effectiveFocus])
-    const queue = [effectiveFocus]
-    let depth = 0
-    while (queue.length && depth < 2) {
+    if (!focusId || !graph) return new Set()
+    const keep = new Set<string>([focusId])
+    let frontier: string[] = [focusId]
+    for (let depth = 0; depth < 2 && frontier.length; depth++) {
       const next: string[] = []
-      for (const id of queue) {
-        for (const n of adj.get(id) || []) {
+      for (const id of frontier) {
+        for (const n of adjacency.get(id) || []) {
           if (!keep.has(n)) {
             keep.add(n)
             next.push(n)
           }
         }
       }
-      queue.splice(0, queue.length, ...next)
-      depth += 1
+      frontier = next
     }
-    // Dim = visible AND NOT in keep
     const dim = new Set<string>()
     for (const id of visibleSet) if (!keep.has(id)) dim.add(id)
     return dim
-  }, [effectiveFocus, graph, visibleSet])
+  }, [focusId, graph, visibleSet, adjacency])
 
   // ── Adapt to engine shape ────────────────────────────────────
   const engineNodes = useMemo<EngineNode<GraphNode>[]>(
