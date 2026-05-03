@@ -348,6 +348,51 @@ interface BlindspotRow {
   last_applied_at: string | null
 }
 
+// ── Slice 3h: insight queue ─────────────────────────────────
+interface PendingInterpretation {
+  id: number
+  kind: 'theme' | 'pattern' | 'drift'
+  title: string
+  body: string
+  confidence: string
+  direction: string
+  rationale: string
+  proposed_by: string
+  proposed_at: string
+  source_kind: string
+  source_project: string
+  source_window_start: string | null
+  source_window_end: string | null
+  source_pointer_ids: string  // JSON array
+  status: 'pending' | 'confirmed' | 'rejected' | 'edited' | 'superseded'
+  reviewed_at: string | null
+  reviewed_by: string
+  review_note: string
+  edit_title: string
+  edit_body: string
+  applied_table: string
+  applied_id: number | null
+}
+
+interface InsightPendingResp {
+  ok: boolean
+  interpretations?: PendingInterpretation[]
+  counts?: { pending: number; confirmed: number; rejected: number; edited: number }
+  error?: string
+}
+
+interface InsightScanResp {
+  ok: boolean
+  project?: string
+  gists_seen?: number
+  candidates_proposed?: number
+  candidates_deduped?: number
+  cost_usd?: number
+  scan_id?: number
+  note?: string
+  error?: string
+}
+
 // ── Helpers ───────────────────────────────────────────────────
 
 function fmtBytes(n?: number): string {
@@ -378,7 +423,7 @@ function fmtRelative(iso?: string | null): string {
 
 // ── Page ──────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'chat' | 'dialectic' | 'journal' | 'notifications'
+type Tab = 'overview' | 'chat' | 'dialectic' | 'journal' | 'insights' | 'notifications'
 
 export function OverseerPage() {
   const [tab, setTab] = useState<Tab>('overview')
@@ -401,6 +446,15 @@ export function OverseerPage() {
   const [blindspots, setBlindspots] = useState<BlindspotRow[]>([])
   const [expandedDialecticId, setExpandedDialecticId] = useState<number | null>(null)
   const [expandedToken, setExpandedToken] = useState<string | null>(null)
+  // Slice 3h: insight queue state
+  const [insights, setInsights] = useState<PendingInterpretation[]>([])
+  const [insightCounts, setInsightCounts] = useState<InsightPendingResp['counts']>(undefined)
+  const [insightScanProject, setInsightScanProject] = useState<string>('')
+  const [insightScanDays, setInsightScanDays] = useState<number>(7)
+  const [insightStatusFilter, setInsightStatusFilter] = useState<string>('pending')
+  const [editingInsightId, setEditingInsightId] = useState<number | null>(null)
+  const [editTitle, setEditTitle] = useState<string>('')
+  const [editBody, setEditBody] = useState<string>('')
   const [busy, setBusy] = useState<string>('')
   const [lastAction, setLastAction] = useState<string>('')
   const [error, setError] = useState<string>('')
@@ -455,6 +509,99 @@ export function OverseerPage() {
     }
   }
 
+  const refreshInsights = async (status: string = insightStatusFilter) => {
+    try {
+      const q = status ? `?status=${encodeURIComponent(status)}` : ''
+      const r = await apiFetch<InsightPendingResp>(`/overseer/insight/pending${q}`)
+      setInsights(r.interpretations || [])
+      setInsightCounts(r.counts)
+    } catch (e: any) {
+      setError(`Insights refresh failed: ${e?.message || e}`)
+    }
+  }
+
+  const handleInsightScanNow = async () => {
+    if (!insightScanProject.trim()) {
+      setError('Pick a project tag to scan (e.g. UFOSINT)')
+      return
+    }
+    setBusy(`Scanning ${insightScanProject}…`)
+    setError('')
+    setLastAction('')
+    try {
+      const r = await apiFetch<InsightScanResp>('/overseer/insight/scan-now', {
+        method: 'POST',
+        body: JSON.stringify({
+          project: insightScanProject.trim(),
+          days: insightScanDays,
+        }),
+      })
+      if (!r.ok) {
+        setError(`Scan failed: ${r.error || 'unknown'}`)
+      } else if ((r.candidates_proposed || 0) === 0) {
+        setLastAction(
+          `Scan complete: ${r.gists_seen} gists seen, no new candidates ` +
+          `(deduped: ${r.candidates_deduped ?? 0}, cost $${(r.cost_usd ?? 0).toFixed(4)}).` +
+          (r.note ? ` ${r.note}` : ''),
+        )
+      } else {
+        setLastAction(
+          `Scan proposed ${r.candidates_proposed} candidates ` +
+          `(${r.gists_seen} gists, $${(r.cost_usd ?? 0).toFixed(4)}).`,
+        )
+      }
+      await refreshInsights('pending')
+    } catch (e: any) {
+      setError(`Scan failed: ${e?.message || e}`)
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const handleInsightDecide = async (
+    id: number,
+    decision: 'confirm' | 'reject' | 'edit-and-confirm',
+    overrides: { edit_title?: string; edit_body?: string; review_note?: string } = {},
+  ) => {
+    setBusy(`Applying decision…`)
+    setError('')
+    try {
+      const r = await apiFetch<{
+        ok: boolean
+        status?: string
+        applied_table?: string
+        applied_id?: number
+        error?: string
+      }>('/overseer/insight/decide', {
+        method: 'POST',
+        body: JSON.stringify({ id, decision, ...overrides }),
+      })
+      if (!r.ok) {
+        setError(`Decide failed: ${r.error || 'unknown'}`)
+      } else if (decision === 'reject') {
+        setLastAction(`Rejected #${id}.`)
+      } else if (r.applied_table) {
+        setLastAction(
+          `Confirmed #${id} → landed in ${r.applied_table}#${r.applied_id}.`,
+        )
+      } else {
+        setLastAction(`#${id} → ${r.status}`)
+      }
+      setEditingInsightId(null)
+      await refreshInsights(insightStatusFilter)
+      // The working memory now contains a new pattern/drift/theme,
+      // so refresh that too so it shows up in the Overview.
+      try {
+        const wmResp = await apiFetch<WorkingMemoryResp>('/overseer/working-memory')
+        setWm(wmResp)
+      } catch {}
+    } catch (e: any) {
+      setError(`Decide failed: ${e?.message || e}`)
+    } finally {
+      setBusy('')
+    }
+  }
+
   useEffect(() => {
     refreshAll()
     const t = setInterval(refreshAll, 30000)
@@ -464,6 +611,7 @@ export function OverseerPage() {
   useEffect(() => {
     if (tab === 'chat') refreshChat()
     if (tab === 'journal') refreshJournal()
+    if (tab === 'insights') refreshInsights(insightStatusFilter)
   }, [tab])
 
   const handleSendChat = async () => {
@@ -712,6 +860,7 @@ export function OverseerPage() {
                 ['chat', 'Chat'],
                 ['dialectic', `Dialectic${dialecticCounts && dialecticCounts.open > 0 ? ` (${dialecticCounts.open})` : ''}`],
                 ['journal', 'Journal'],
+                ['insights', `Insights${insightCounts && insightCounts.pending > 0 ? ` (${insightCounts.pending})` : ''}`],
                 ['notifications', `Bell${notificationsUnread > 0 ? ` (${notificationsUnread})` : ''}`],
               ] as const).map(([id, label]) => (
                 <button
@@ -785,6 +934,38 @@ export function OverseerPage() {
         <JournalPanel
           entries={journal}
           onRefresh={refreshJournal}
+        />
+      )}
+      {tab === 'insights' && (
+        <InsightsPanel
+          interpretations={insights}
+          counts={insightCounts}
+          statusFilter={insightStatusFilter}
+          setStatusFilter={(s) => {
+            setInsightStatusFilter(s)
+            refreshInsights(s)
+          }}
+          scanProject={insightScanProject}
+          setScanProject={setInsightScanProject}
+          scanDays={insightScanDays}
+          setScanDays={setInsightScanDays}
+          onScanNow={handleInsightScanNow}
+          onDecide={handleInsightDecide}
+          editingId={editingInsightId}
+          setEditing={(id, title, body) => {
+            setEditingInsightId(id)
+            setEditTitle(title)
+            setEditBody(body)
+          }}
+          editTitle={editTitle}
+          editBody={editBody}
+          setEditTitle={setEditTitle}
+          setEditBody={setEditBody}
+          onTokenClick={(t) => {
+            setTab('overview')
+            setExpandedToken(t)
+          }}
+          busy={busy}
         />
       )}
       {tab === 'overview' && (
@@ -1301,6 +1482,297 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
       <h3 className="text-sm font-semibold text-text-primary mb-3">{title}</h3>
       {children}
     </section>
+  )
+}
+
+// ── Slice 3h: Insights review queue ─────────────────────────
+
+function InsightsPanel({
+  interpretations,
+  counts,
+  statusFilter,
+  setStatusFilter,
+  scanProject,
+  setScanProject,
+  scanDays,
+  setScanDays,
+  onScanNow,
+  onDecide,
+  editingId,
+  setEditing,
+  editTitle,
+  editBody,
+  setEditTitle,
+  setEditBody,
+  onTokenClick,
+  busy,
+}: {
+  interpretations: PendingInterpretation[]
+  counts?: InsightPendingResp['counts']
+  statusFilter: string
+  setStatusFilter: (s: string) => void
+  scanProject: string
+  setScanProject: (p: string) => void
+  scanDays: number
+  setScanDays: (d: number) => void
+  onScanNow: () => void
+  onDecide: (
+    id: number,
+    decision: 'confirm' | 'reject' | 'edit-and-confirm',
+    overrides?: { edit_title?: string; edit_body?: string; review_note?: string },
+  ) => void
+  editingId: number | null
+  setEditing: (id: number | null, title: string, body: string) => void
+  editTitle: string
+  editBody: string
+  setEditTitle: (t: string) => void
+  setEditBody: (b: string) => void
+  onTokenClick: (token: string) => void
+  busy: string
+}) {
+  const kindBadgeClass = (kind: string) => {
+    if (kind === 'theme') return 'bg-accent/20 text-accent-hover'
+    if (kind === 'pattern') return 'bg-amber-500/20 text-amber-400'
+    if (kind === 'drift') return 'bg-success/20 text-success'
+    return 'bg-surface-tertiary text-text-muted'
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto p-6">
+      <div className="max-w-5xl mx-auto space-y-6">
+        <div>
+          <h3 className="text-base font-semibold text-text-primary">
+            Proposed insights (Sonnet → human review)
+          </h3>
+          <p className="text-xs text-text-muted mt-1">
+            The overseer scans recent gist arcs per project and proposes
+            new themes / patterns / drift it sees emerging. Nothing
+            applies until you confirm. Reject the noise. Edit the title
+            or body if a candidate is real but the framing is off.
+          </p>
+        </div>
+
+        {/* Scan trigger */}
+        <div className="bg-surface-secondary border border-border rounded-lg p-4">
+          <div className="text-xs uppercase tracking-wide text-text-muted mb-2">
+            Trigger a scan
+          </div>
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <input
+              type="text"
+              value={scanProject}
+              onChange={(e) => setScanProject(e.target.value)}
+              placeholder="project tag (e.g. UFOSINT)"
+              className="px-3 py-1.5 bg-surface-tertiary text-text-primary text-xs rounded-md border border-border focus:outline-none focus:border-accent w-56"
+            />
+            <input
+              type="number"
+              value={scanDays}
+              onChange={(e) => setScanDays(parseInt(e.target.value) || 7)}
+              min={1}
+              max={90}
+              className="px-3 py-1.5 bg-surface-tertiary text-text-primary text-xs rounded-md border border-border focus:outline-none focus:border-accent w-16"
+            />
+            <span className="text-xs text-text-muted">days</span>
+            <button
+              onClick={onScanNow}
+              disabled={!!busy || !scanProject.trim()}
+              className="ml-2 px-3 py-1.5 rounded-md text-xs font-medium bg-accent hover:bg-accent-hover text-white cursor-pointer disabled:opacity-50"
+            >
+              {busy ? busy : 'Scan now'}
+            </button>
+          </div>
+          <p className="text-[10px] text-text-muted mt-2 italic">
+            Single Sonnet call; cost capped at $0.05/scan. Cheap projects
+            run for fractions of a cent.
+          </p>
+        </div>
+
+        {/* Status filter pills */}
+        <div className="flex items-center gap-1 bg-surface-secondary border border-border rounded-lg p-1 w-fit">
+          {(['pending', 'confirmed', 'edited', 'rejected'] as const).map((s) => {
+            const n = counts?.[s] ?? 0
+            return (
+              <button
+                key={s}
+                onClick={() => setStatusFilter(s)}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                  statusFilter === s
+                    ? 'bg-accent text-white'
+                    : 'text-text-secondary hover:text-text-primary'
+                }`}
+              >
+                {s} {n > 0 && <span className="text-[10px] opacity-80">({n})</span>}
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Candidate list */}
+        {interpretations.length === 0 ? (
+          <div className="text-sm text-text-muted italic">
+            {statusFilter === 'pending'
+              ? 'No pending candidates. Run a scan above to propose some.'
+              : `No ${statusFilter} candidates.`}
+          </div>
+        ) : (
+          <ul className="space-y-3">
+            {interpretations.map((it) => (
+              <li
+                key={it.id}
+                className="bg-surface-secondary border border-border rounded-lg p-4 space-y-2"
+              >
+                <div className="flex items-baseline gap-2 flex-wrap">
+                  <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${kindBadgeClass(it.kind)}`}>
+                    {it.kind}
+                  </span>
+                  {it.direction && (
+                    <span className="text-[10px] uppercase text-text-muted">
+                      {it.direction}
+                    </span>
+                  )}
+                  <span className="text-[10px] uppercase text-text-muted">
+                    [{it.confidence}]
+                  </span>
+                  {it.source_project && (
+                    <span className="text-[10px] uppercase text-text-secondary">
+                      project: {it.source_project}
+                    </span>
+                  )}
+                  <span className="text-[10px] text-text-muted ml-auto">
+                    proposed {fmtRelative(it.proposed_at)}
+                  </span>
+                </div>
+
+                {editingId === it.id ? (
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                      className="w-full px-3 py-2 bg-surface-tertiary text-text-primary text-sm rounded border border-accent/40 focus:outline-none focus:border-accent"
+                    />
+                    <textarea
+                      value={editBody}
+                      onChange={(e) => setEditBody(e.target.value)}
+                      rows={4}
+                      className="w-full px-3 py-2 bg-surface-tertiary text-text-secondary text-xs rounded border border-accent/40 focus:outline-none focus:border-accent leading-relaxed"
+                    />
+                  </div>
+                ) : (
+                  <div>
+                    <div className="text-sm text-text-primary font-medium">
+                      {it.title}
+                    </div>
+                    <p className="text-xs text-text-secondary mt-1 leading-relaxed">
+                      {it.body}
+                    </p>
+                  </div>
+                )}
+
+                {it.rationale && (
+                  <details className="text-[11px] text-text-muted">
+                    <summary className="cursor-pointer uppercase tracking-wide">
+                      Rationale
+                    </summary>
+                    <p className="mt-1 leading-relaxed">{it.rationale}</p>
+                  </details>
+                )}
+
+                {/* Source gist tokens — clickable */}
+                {(() => {
+                  let ids: number[] = []
+                  try {
+                    ids = JSON.parse(it.source_pointer_ids || '[]')
+                  } catch {}
+                  if (ids.length === 0) return null
+                  return (
+                    <div className="flex items-baseline gap-1.5 flex-wrap text-[10px]">
+                      <span className="uppercase tracking-wide text-text-muted">
+                        Source:
+                      </span>
+                      {ids.slice(0, 12).map((gid) => (
+                        <TokenChip
+                          key={gid}
+                          token={`g:${gid}`}
+                          onClick={onTokenClick}
+                        />
+                      ))}
+                      {ids.length > 12 && (
+                        <span className="text-text-muted">
+                          +{ids.length - 12} more
+                        </span>
+                      )}
+                    </div>
+                  )
+                })()}
+
+                {/* Action row */}
+                {it.status === 'pending' ? (
+                  <div className="flex items-center gap-2 pt-2 border-t border-border">
+                    {editingId === it.id ? (
+                      <>
+                        <button
+                          onClick={() =>
+                            onDecide(it.id, 'edit-and-confirm', {
+                              edit_title: editTitle,
+                              edit_body: editBody,
+                            })
+                          }
+                          disabled={!!busy}
+                          className="px-3 py-1.5 rounded-md text-xs font-medium bg-success/80 hover:bg-success text-white cursor-pointer disabled:opacity-50"
+                        >
+                          Confirm edited
+                        </button>
+                        <button
+                          onClick={() => setEditing(null, '', '')}
+                          disabled={!!busy}
+                          className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => onDecide(it.id, 'confirm')}
+                          disabled={!!busy}
+                          className="px-3 py-1.5 rounded-md text-xs font-medium bg-accent hover:bg-accent-hover text-white cursor-pointer disabled:opacity-50"
+                        >
+                          Confirm
+                        </button>
+                        <button
+                          onClick={() => setEditing(it.id, it.title, it.body)}
+                          disabled={!!busy}
+                          className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer disabled:opacity-50"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => onDecide(it.id, 'reject')}
+                          disabled={!!busy}
+                          className="px-3 py-1.5 rounded-md text-xs font-medium text-text-muted hover:text-red-400 cursor-pointer disabled:opacity-50"
+                        >
+                          Reject
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-[10px] text-text-muted pt-2 border-t border-border">
+                    {it.status} {it.reviewed_by && `by ${it.reviewed_by}`}
+                    {it.applied_table && (
+                      <> → landed in <span className="font-mono">{it.applied_table}#{it.applied_id}</span></>
+                    )}
+                    {it.review_note && <> · "{it.review_note}"</>}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
   )
 }
 

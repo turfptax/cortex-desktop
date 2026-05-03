@@ -653,3 +653,63 @@ async def overseer_detail(token: str):
     row + tags + type-specific context + suggested next-step tokens."""
     return await pi_client.plugin_call(
         "overseer", "GET", "/detail", {"token": token})
+
+
+# ── Slice 3h: insight generation queue ─────────────────────────
+
+
+class InsightScanRequest(BaseModel):
+    project: str
+    days: int = 7
+
+
+@router.post("/insight/scan-now")
+async def insight_scan_now(req: InsightScanRequest):
+    """Trigger a Sonnet scan of one project's recent gist arc.
+    Proposes theme/pattern/drift candidates to the pending queue."""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/insight/scan-now", req.dict(),
+        timeout=60.0,
+    )
+
+
+@router.get("/insight/pending")
+async def insight_pending(
+    status: str | None = None,
+    kind: str | None = None,
+    project: str | None = None,
+    limit: int = 200,
+):
+    payload: dict = {"limit": limit}
+    if status:
+        payload["status"] = status
+    if kind:
+        payload["kind"] = kind
+    if project:
+        payload["project"] = project
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/insight/pending", payload)
+
+
+class InsightDecideRequest(BaseModel):
+    id: int
+    decision: str               # confirm | reject | edit-and-confirm
+    edit_title: str | None = None
+    edit_body: str | None = None
+    review_note: str | None = None
+    reviewed_by: str = "user"
+
+
+@router.post("/insight/decide")
+async def insight_decide(req: InsightDecideRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/insight/decide", req.dict(exclude_none=True))
+
+
+@router.get("/insight/scans")
+async def insight_scans(project: str | None = None, limit: int = 20):
+    payload: dict = {"limit": limit}
+    if project is not None:
+        payload["project"] = project
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/insight/scans", payload)
