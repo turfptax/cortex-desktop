@@ -19,7 +19,7 @@
  * filter + focus state. The engine owns the camera, force layout,
  * interaction wiring, and the react-flow plumbing.
  */
-import { useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import {
   GraphCanvas,
   type EngineEdge,
@@ -103,6 +103,15 @@ const CONF_OPACITY: Record<GraphNode['confidence'], number> = {
   high: 1.0,
   med:  0.7,
   low:  0.45,
+}
+
+// Hoisted to module scope so their identity is stable across renders —
+// otherwise GraphCanvas's rfNodes useMemo re-runs on every parent render
+// and react-flow re-processes all node data each time.
+const FORCE_LAYOUT = { kind: 'force' as const }
+const BACKGROUND_CONFIG = {
+  color: '#0b1018',
+  dots: { gap: 24, size: 1, color: '#1e293b' },
 }
 
 // Size in px — soft minimum so single-evidence nodes don't disappear,
@@ -522,18 +531,47 @@ export function ExplorerPanel({
     [visibleEdges],
   )
 
-  // Stable callbacks so the engine's useForceLayout doesn't see fresh
-  // function identity on every parent render. (useForceLayout already
-  // ref-stashes these but stable refs are still the right hygiene.)
-  const renderNodeRef = useRef<
+  // Stable engine callbacks. Inline closures here would change identity
+  // every parent render, forcing GraphCanvas to re-memo rfNodes and
+  // react-flow to re-process every node — visible as a long lag and
+  // mass DOM mutation on every click/filter change.
+  const renderNode = useCallback(
     (
       node: EngineNode<GraphNode>,
-      state: { active: boolean; dimmed: boolean },
-    ) => React.ReactNode
-  >(null!)
-  renderNodeRef.current = (node, { active, dimmed }) => (
-    <CircleNode graph={node.data} active={active} dimmed={dimmed} />
+      { active, dimmed }: { active: boolean; dimmed: boolean },
+    ) => <CircleNode graph={node.data} active={active} dimmed={dimmed} />,
+    [],
   )
+  const edgeStyle = useCallback(
+    (
+      edge: EngineEdge<GraphEdge>,
+      { highlighted, dimmed }: { highlighted: boolean; dimmed: boolean },
+    ) => ({
+      stroke: EDGE_COLOR[edge.data!.kind],
+      strokeWidth: highlighted ? 2 : 1,
+      opacity: dimmed ? 0.15 : 1,
+      transition: 'opacity 200ms ease, stroke-width 200ms ease',
+    }),
+    [],
+  )
+  const nodeSize = useCallback((node: EngineNode<GraphNode>) => {
+    const r = nodeRadius(node.data)
+    return { w: r * 2, h: r * 2 }
+  }, [])
+  const nodeRadiusForCollision = useCallback(
+    (node: EngineNode<GraphNode>) => nodeRadius(node.data),
+    [],
+  )
+  const handleNodeClick = useCallback((id: string) => {
+    setFocusId((cur) => (cur === id ? null : id))
+  }, [])
+  const handleNodeDoubleClick = useCallback(
+    (id: string) => {
+      onTokenClick(id)
+    },
+    [onTokenClick],
+  )
+  const handlePaneClick = useCallback(() => setFocusId(null), [])
 
   // Visible/total node count for the topbar.
   const visibleCount = visibleSet.size
@@ -547,8 +585,11 @@ export function ExplorerPanel({
         setFilters={setFilters}
       />
       <div className="flex-1 flex flex-col">
-        {/* Top bar — tightened, only essential info */}
-        <div className="flex items-center gap-3 px-4 py-2 border-b border-border min-w-0">
+        {/* Top bar — fixed height so the optional "Clear focus" button
+            appearing on click doesn't reflow the canvas (which would
+            trigger ResizeObserver → useForceLayout restart → sim reboot
+            and a visible "everything disappears" jank on every click). */}
+        <div className="flex items-center gap-3 px-4 py-2 border-b border-border min-w-0 h-11 shrink-0">
           <h3 className="text-sm font-semibold text-text-primary whitespace-nowrap">
             Explorer
           </h3>
@@ -598,19 +639,11 @@ export function ExplorerPanel({
             edges={engineEdges}
             activeNodeId={effectiveFocus}
             dimmedNodeIds={dimSet}
-            renderNode={(node, state) => renderNodeRef.current(node, state)}
-            edgeStyle={(edge, { highlighted, dimmed }) => ({
-              stroke: EDGE_COLOR[edge.data!.kind],
-              strokeWidth: highlighted ? 2 : 1,
-              opacity: dimmed ? 0.15 : 1,
-              transition: 'opacity 200ms ease, stroke-width 200ms ease',
-            })}
-            nodeSize={(node) => {
-              const r = nodeRadius(node.data)
-              return { w: r * 2, h: r * 2 }
-            }}
-            nodeRadiusForCollision={(node) => nodeRadius(node.data)}
-            layout={{ kind: 'force' }}
+            renderNode={renderNode}
+            edgeStyle={edgeStyle}
+            nodeSize={nodeSize}
+            nodeRadiusForCollision={nodeRadiusForCollision}
+            layout={FORCE_LAYOUT}
             minZoom={0.2}
             maxZoom={2.5}
             // CP2 Tory feedback: wheel = zoom (Obsidian-feel).
@@ -620,22 +653,10 @@ export function ExplorerPanel({
             panOnDrag
             zoomOnScroll
             zoomOnPinch
-            background={{
-              color: '#0b1018',
-              dots: { gap: 24, size: 1, color: '#1e293b' },
-            }}
-            onNodeClick={(id) => {
-              // Single click: focus only. Stays on Explorer; dims
-              // everything not within 2 hops of the clicked node.
-              // Click again to clear, or click a different node to
-              // shift focus.
-              setFocusId((cur) => (cur === id ? null : id))
-            }}
-            onNodeDoubleClick={(id) => {
-              // Double click: navigate to Overview + open DetailCard.
-              onTokenClick(id)
-            }}
-            onPaneClick={() => setFocusId(null)}
+            background={BACKGROUND_CONFIG}
+            onNodeClick={handleNodeClick}
+            onNodeDoubleClick={handleNodeDoubleClick}
+            onPaneClick={handlePaneClick}
           />
         </div>
       </div>
