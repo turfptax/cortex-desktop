@@ -1492,12 +1492,56 @@ function NotificationsPanel({
   const unread = notifications.filter(
     (n) => !n.dismissed_at && !n.archived_at,
   )
+
+  // Polish CP2: group by rule_name. Single-row groups (e.g. one
+  // import_backlog notification) render flat; multi-row groups
+  // collapse into a summary header you can expand.
+  const groups = unread.reduce<Map<string, NotificationRow[]>>(
+    (acc, n) => {
+      const k = n.rule_name || 'unknown'
+      const list = acc.get(k) || []
+      list.push(n)
+      acc.set(k, list)
+      return acc
+    },
+    new Map(),
+  )
+  // Sort groups: most-severe-then-largest first, so 'important' rules
+  // and big stale clusters surface above noise.
+  const sortedGroups = Array.from(groups.entries()).sort((a, b) => {
+    const sevRank = (g: NotificationRow[]) => {
+      if (g.some((n) => n.severity === 'important')) return 2
+      if (g.some((n) => n.severity === 'warn')) return 1
+      return 0
+    }
+    return sevRank(b[1]) - sevRank(a[1]) || b[1].length - a[1].length
+  })
+
+  // Per-group expanded state.
+  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set())
+  const toggle = (k: string) => {
+    setOpenGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(k)) next.delete(k)
+      else next.add(k)
+      return next
+    })
+  }
+
+  const handleArchiveGroup = (rows: NotificationRow[]) => {
+    rows.forEach((n) => onAction(n.id, 'archive'))
+  }
+  const handleSnoozeGroup = (rows: NotificationRow[]) => {
+    rows.forEach((n) => onAction(n.id, 'snooze', 30))
+  }
+
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <div className="max-w-3xl mx-auto">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-base font-semibold text-text-primary">
-            Notifications ({unread.length} unread)
+            Notifications ({unread.length} unread, {groups.size} rule
+            {groups.size === 1 ? '' : 's'})
           </h3>
           {unread.length > 0 && (
             <button
@@ -1516,79 +1560,138 @@ function NotificationsPanel({
           </div>
         ) : (
           <ul className="space-y-2">
-            {unread.map((n) => (
-              <li
-                key={n.id}
-                className="rounded-lg border border-border bg-surface-secondary p-3 flex justify-between gap-3"
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase ${
-                        n.severity === 'important'
-                          ? 'bg-red-500/20 text-red-400'
-                          : n.severity === 'warn'
-                            ? 'bg-amber-500/20 text-amber-400'
-                            : 'bg-text-muted/20 text-text-muted'
-                      }`}
-                    >
-                      {n.severity}
-                    </span>
-                    <span className="text-sm text-text-primary font-medium">
-                      {n.title}
-                    </span>
-                    <span className="text-xs text-text-muted ml-auto whitespace-nowrap">
-                      {n.created_at?.slice(0, 16)}
-                    </span>
-                  </div>
-                  {n.body && (
-                    <p className="text-xs text-text-secondary mt-1.5 leading-relaxed">
-                      {n.body}
-                    </p>
-                  )}
-                  <div className="text-[10px] text-text-muted mt-1.5 font-mono">
-                    rule={n.rule_name} · key={n.rule_key}
-                  </div>
-                  <div className="mt-2 flex items-center gap-2 flex-wrap">
-                    <button
-                      onClick={() => onOpenInChat(n)}
-                      className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent/15 hover:bg-accent/25 text-accent-hover cursor-pointer"
-                      title="Pre-fills the Chat tab with this notification's context so you can ask the overseer what to do"
-                    >
-                      Open in chat
-                    </button>
-                    <button
-                      onClick={() => onAction(n.id, 'archive')}
-                      className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-secondary cursor-pointer"
-                      title="Acknowledge and hide permanently — different intent than dismiss; archived notifications survive rule re-firing"
-                    >
-                      Archive
-                    </button>
-                    <button
-                      onClick={() => onAction(n.id, 'snooze', 30)}
-                      className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-secondary cursor-pointer"
-                      title="Hide for 30 days; reappears automatically when the snooze expires"
-                    >
-                      Snooze 30d
-                    </button>
-                    <button
-                      onClick={() => onAction(n.id, 'touch')}
-                      className="px-2.5 py-1 rounded-md text-[11px] font-medium text-text-muted hover:text-text-primary cursor-pointer"
-                      title="Pull a previously-handled notification back to the actionable queue"
-                    >
-                      Touch
-                    </button>
-                  </div>
-                </div>
-                <button
-                  onClick={() => onDismiss(n.id)}
-                  className="text-text-muted hover:text-text-primary text-lg leading-none cursor-pointer self-start"
-                  title="Dismiss (light: 'noted, move on')"
+            {sortedGroups.map(([rule_name, rows]) => {
+              const isOpen = openGroups.has(rule_name)
+              const isSingle = rows.length === 1
+              // Severity for the group = highest severity of any row.
+              const sev = rows.some((n) => n.severity === 'important')
+                ? 'important'
+                : rows.some((n) => n.severity === 'warn')
+                  ? 'warn'
+                  : 'info'
+              const sevClass =
+                sev === 'important'
+                  ? 'bg-red-500/20 text-red-400'
+                  : sev === 'warn'
+                    ? 'bg-amber-500/20 text-amber-400'
+                    : 'bg-text-muted/20 text-text-muted'
+              return (
+                <li
+                  key={rule_name}
+                  className="rounded-lg border border-border bg-surface-secondary"
                 >
-                  ✕
-                </button>
-              </li>
-            ))}
+                  {/* Group header — always shown */}
+                  <div className="p-3 flex items-baseline gap-2 flex-wrap">
+                    <span
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase ${sevClass}`}
+                    >
+                      {sev}
+                    </span>
+                    <span className="text-sm text-text-primary font-medium font-mono">
+                      {rule_name}
+                    </span>
+                    <span className="text-xs text-text-muted">
+                      ({rows.length} {rows.length === 1 ? 'row' : 'rows'})
+                    </span>
+                    {!isSingle && (
+                      <button
+                        onClick={() => toggle(rule_name)}
+                        className="text-[10px] uppercase tracking-wide text-text-muted hover:text-text-primary cursor-pointer ml-1"
+                      >
+                        {isOpen ? '▾ collapse' : '▸ expand'}
+                      </button>
+                    )}
+                    <div className="ml-auto flex items-center gap-1 flex-wrap">
+                      {!isSingle && (
+                        <>
+                          <button
+                            onClick={() => handleArchiveGroup(rows)}
+                            className="px-2 py-0.5 rounded text-[10px] font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-secondary cursor-pointer"
+                            title={`Archive all ${rows.length} ${rule_name} notifications`}
+                          >
+                            Archive all
+                          </button>
+                          <button
+                            onClick={() => handleSnoozeGroup(rows)}
+                            className="px-2 py-0.5 rounded text-[10px] font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-secondary cursor-pointer"
+                            title={`Snooze all ${rows.length} for 30 days`}
+                          >
+                            Snooze all 30d
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* For single-row groups, render the single notification
+                      inline (no separate expand-to-see). For multi-row,
+                      show body when expanded. */}
+                  {(isSingle || isOpen) && (
+                    <ul className="border-t border-border divide-y divide-border">
+                      {rows.map((n) => (
+                        <li key={n.id} className="p-3 flex justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-baseline gap-2">
+                              <span className="text-sm text-text-primary font-medium">
+                                {n.title}
+                              </span>
+                              <span className="text-xs text-text-muted ml-auto whitespace-nowrap">
+                                {n.created_at?.slice(0, 16)}
+                              </span>
+                            </div>
+                            {n.body && (
+                              <p className="text-xs text-text-secondary mt-1.5 leading-relaxed">
+                                {n.body}
+                              </p>
+                            )}
+                            <div className="text-[10px] text-text-muted mt-1.5 font-mono">
+                              key={n.rule_key}
+                            </div>
+                            <div className="mt-2 flex items-center gap-2 flex-wrap">
+                              <button
+                                onClick={() => onOpenInChat(n)}
+                                className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent/15 hover:bg-accent/25 text-accent-hover cursor-pointer"
+                                title="Pre-fills the Chat tab with this notification's context"
+                              >
+                                Open in chat
+                              </button>
+                              <button
+                                onClick={() => onAction(n.id, 'archive')}
+                                className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-secondary cursor-pointer"
+                                title="Acknowledge and hide permanently"
+                              >
+                                Archive
+                              </button>
+                              <button
+                                onClick={() => onAction(n.id, 'snooze', 30)}
+                                className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-secondary cursor-pointer"
+                                title="Hide for 30 days"
+                              >
+                                Snooze 30d
+                              </button>
+                              <button
+                                onClick={() => onAction(n.id, 'touch')}
+                                className="px-2.5 py-1 rounded-md text-[11px] font-medium text-text-muted hover:text-text-primary cursor-pointer"
+                                title="Pull back to actionable queue"
+                              >
+                                Touch
+                              </button>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => onDismiss(n.id)}
+                            className="text-text-muted hover:text-text-primary text-lg leading-none cursor-pointer self-start"
+                            title="Dismiss (light: 'noted, move on')"
+                          >
+                            ✕
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         )}
       </div>
@@ -1831,8 +1934,8 @@ function ProjectsPanel({
               : 'No projects match that filter.'}
           </div>
         ) : (
-          <div className="border border-border rounded-lg overflow-hidden">
-            <table className="w-full text-xs">
+          <div className="border border-border rounded-lg overflow-x-auto">
+            <table className="w-full text-xs min-w-[720px]">
               <thead className="bg-surface-secondary text-text-muted uppercase text-[10px]">
                 <tr>
                   <th className="text-left px-3 py-2">Project</th>
