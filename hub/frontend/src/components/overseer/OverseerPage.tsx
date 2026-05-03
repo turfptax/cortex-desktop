@@ -1362,37 +1362,45 @@ export function OverseerPage() {
                   )
                   const displayName = matchedImport?.project || folder
                   return (
-                    <li key={folder} className="bg-surface-secondary/30">
-                      {/* Group header */}
-                      <div className="px-3 py-2 flex items-center gap-2 flex-wrap">
-                        <button
-                          onClick={() => toggleImportGroup(folder)}
-                          className="text-text-muted hover:text-text-primary text-[11px] uppercase tracking-wide cursor-pointer w-6"
+                    <li key={folder} className="bg-surface-secondary/30 transition-colors hover:bg-surface-secondary/60">
+                      {/* Group header — entire row toggles the group.
+                          The "Select all new" button stops propagation
+                          so it doesn't accidentally collapse the group
+                          when the user means to bulk-select. */}
+                      <div
+                        onClick={() => toggleImportGroup(folder)}
+                        className="px-3 py-2.5 flex items-center gap-2 flex-wrap cursor-pointer select-none"
+                      >
+                        <span
+                          className={`text-text-muted text-[11px] tracking-wide w-5 inline-block transition-transform ${
+                            isOpen ? 'rotate-90' : ''
+                          }`}
                         >
-                          {isOpen ? '▾' : '▸'}
-                        </button>
+                          ▸
+                        </span>
                         <span className="text-sm text-text-primary font-medium truncate max-w-md">
                           {displayName}
                         </span>
                         {displayName !== folder && (
-                          <span className="text-[10px] text-text-muted font-mono truncate max-w-xs">
-                            ({folder})
+                          <span className="text-[10px] text-text-muted/60 font-mono truncate max-w-xs">
+                            {folder}
                           </span>
                         )}
-                        <div className="ml-auto flex items-center gap-2 text-[10px]">
+                        <div className="ml-auto flex items-center gap-1.5 text-[10px]">
                           {newRows.length > 0 && (
-                            <span className="px-1.5 py-0.5 rounded bg-success/20 text-success font-medium uppercase">
+                            <span className="px-2 py-0.5 rounded-full bg-success/15 text-success font-semibold uppercase tracking-wide">
                               {newRows.length} new
                             </span>
                           )}
                           {knownCount > 0 && (
-                            <span className="px-1.5 py-0.5 rounded bg-surface-tertiary text-text-muted uppercase">
+                            <span className="px-2 py-0.5 rounded-full bg-text-muted/10 text-text-muted/80 uppercase tracking-wide">
                               {knownCount} on Pi
                             </span>
                           )}
                           {newRows.length > 0 && (
                             <button
-                              onClick={() => {
+                              onClick={(e) => {
+                                e.stopPropagation()
                                 const next = new Set(selectedPaths)
                                 if (allNewSelected) {
                                   newRows.forEach((f) => next.delete(f.path))
@@ -1401,7 +1409,7 @@ export function OverseerPage() {
                                 }
                                 setSelectedPaths(next)
                               }}
-                              className="text-[10px] uppercase tracking-wide text-accent-hover hover:text-accent cursor-pointer ml-1"
+                              className="text-[10px] uppercase tracking-wide text-accent-hover hover:text-accent cursor-pointer ml-1.5 px-2 py-0.5 rounded hover:bg-accent/10 transition-colors"
                             >
                               {allNewSelected ? 'Deselect new' : 'Select all new'}
                             </button>
@@ -1423,8 +1431,10 @@ export function OverseerPage() {
                             return (
                               <li
                                 key={f.path}
-                                className={`px-3 py-1.5 flex items-center gap-3 text-[11px] hover:bg-surface-tertiary/30 ${
-                                  known ? 'opacity-60' : ''
+                                className={`pl-9 pr-3 py-1.5 flex items-center gap-3 text-[11px] transition-colors ${
+                                  known
+                                    ? 'opacity-50 hover:bg-surface-tertiary/20'
+                                    : 'hover:bg-accent/5'
                                 }`}
                               >
                                 <input
@@ -1432,29 +1442,29 @@ export function OverseerPage() {
                                   checked={selectedPaths.has(f.path)}
                                   onChange={() => toggleSelect(f.path)}
                                   disabled={known}
-                                  className="shrink-0"
+                                  className="shrink-0 accent-accent cursor-pointer disabled:cursor-not-allowed"
                                 />
-                                <span className="text-text-muted font-mono shrink-0 w-20">
+                                <span className="text-text-muted/70 font-mono shrink-0 w-20">
                                   {f.session_id.slice(0, 8)}
                                 </span>
                                 {known ? (
-                                  <span className="text-success shrink-0 text-[10px] uppercase tracking-wide">
-                                    ✓ imported
+                                  <span className="shrink-0 text-[9px] uppercase tracking-wider text-text-muted/70">
+                                    on Pi
                                   </span>
                                 ) : (
-                                  <span className="text-success shrink-0 text-[10px] uppercase tracking-wide">
+                                  <span className="shrink-0 text-[9px] uppercase tracking-wider text-success font-semibold">
                                     new
                                   </span>
                                 )}
                                 {matched?.project && matched.project !== folder && (
-                                  <span className="text-[10px] text-text-muted truncate max-w-xs">
-                                    as: {matched.project}
+                                  <span className="text-[10px] text-text-muted truncate max-w-xs italic">
+                                    → {matched.project}
                                   </span>
                                 )}
-                                <span className="ml-auto text-text-muted shrink-0">
+                                <span className="ml-auto text-text-muted/70 shrink-0">
                                   {fmtBytes(f.size_bytes)}
                                 </span>
-                                <span className="text-text-muted shrink-0 w-20 text-right">
+                                <span className="text-text-muted/70 shrink-0 w-20 text-right">
                                   {fmtRelative(f.mtime_iso)}
                                 </span>
                               </li>
