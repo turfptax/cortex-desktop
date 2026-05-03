@@ -24,10 +24,16 @@ Cortex Desktop gives you a browser-based dashboard to interact with your Pi from
 - **System tray icon** with Pi connection status (green = connected, red = offline)
 - **Auto-launches browser** to the Hub UI on startup
 - **Chat** with your Cortex pet via local LLM
-- **Training** management for fine-tuning
+- **Training** management for fine-tuning (LoRA → GGUF deploy pipeline)
 - **Data browser** for the Pi's SQLite database (full CRUD)
 - **Games** and interactive features
-- **Pi status** monitoring and control
+- **Pi status, system + firmware** monitoring and control
+- **Overseer** (added in v0.13–v0.16) — a memory-upkeep agent running on the Pi that produces interpretive layers from your work:
+  - Per-session gists, themes, episodes, open questions, patterns, drift
+  - Per-project rollups: stats (active hours, cost, top files, models used) + Sonnet-written narratives
+  - Force-directed graph view of the interpretive graph (questions ↔ evidence ↔ projects)
+  - Direct chat with the overseer (Opus 4.7 default, blindspot-aware)
+  - Background "dialectic" — paired Opus/Gemma generation; the diff is the data
 
 ## Quick Start (Development)
 
