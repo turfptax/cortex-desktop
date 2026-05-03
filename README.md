@@ -28,9 +28,11 @@ Cortex Desktop gives you a browser-based dashboard to interact with your Pi from
 - **Data browser** for the Pi's SQLite database (full CRUD)
 - **Games** and interactive features
 - **Pi status, system + firmware** monitoring and control
-- **Overseer** (added in v0.13–v0.16) — a memory-upkeep agent running on the Pi that produces interpretive layers from your work:
+- **Overseer** (added in v0.13–v0.17) — a memory-upkeep agent running on the Pi that produces interpretive layers from your work:
   - Per-session gists, themes, episodes, open questions, patterns, drift
   - Per-project rollups: stats (active hours, cost, top files, models used) + Sonnet-written narratives
+  - Daily / weekly / monthly Sonnet rollups on a 22:00-local schedule (Slice 5)
+  - Free-form human journal — write what's on your mind; auto-included in temporal narrative prompts
   - Force-directed graph view of the interpretive graph (questions ↔ evidence ↔ projects)
   - Direct chat with the overseer (Opus 4.7 default, blindspot-aware)
   - Background "dialectic" — paired Opus/Gemma generation; the diff is the data

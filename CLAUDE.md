@@ -78,10 +78,11 @@ cortex-desktop/
         data.py         # Pi database CRUD
         learning.py     # LM Studio synthesis management
         games.py        # Pong game endpoints
-        overseer.py     # Proxy to Pi's /plugins/overseer/* — Slice 3+4 routes
+        overseer.py     # Proxy to Pi's /plugins/overseer/* — Slice 3+4+5 routes
                         #   working_memory, journal, dialectic, insights, blindspots,
                         #   notifications, explorer/graph, projects/summary,
-                        #   narrative/generate, etc. (~30 routes total)
+                        #   narrative/generate, temporal/*, human-journal/*
+                        #   (~30 routes total)
       services/
         pi_client.py    # Async HTTP client to Pi
         lmstudio.py     # Async LM Studio streaming client
@@ -100,9 +101,12 @@ cortex-desktop/
                         # Training / Games
           data/         # Pi database browser
           settings/     # Settings page with UpdateCard
-          overseer/     # Overseer page (Slice 3-4)
+          overseer/     # Overseer page (Slice 3-5)
             OverseerPage.tsx   # Tab dispatch + most panels
             ProjectsTab.tsx    # Slice 4 CP2: per-project narrative + stats cards
+            JournalTab.tsx     # Slice 5 CP3+CP4: 3 sections — Your journal /
+                               #   Temporal narratives (D/W/M) / Overseer
+                               #   reflections (the original tick journal)
             ExplorerPanel.tsx  # Force-directed graph view
           training/     # Training pipeline UI (6 tabs) — mounted inside Pi tab
           games/        # Pong game — mounted inside Pi tab
@@ -153,6 +157,12 @@ git push origin v0.17.0-dev.1
 - **v0.16.0** (May 2026) — Slice 3 Overseer (full) + Slice 4 Project-Centric (rollups, narratives, Projects tab) + sidebar reorg (7→5 tabs) + Polish slice (Data Explorer, Bell digestibility, scan UI). See `RELEASE_NOTES_0.16.md`.
 - **v0.15.0** (Apr 2026) — Polish CP1 closeout: project name canonicalization + skipped-imports fix.
 
+### v0.17.0 cycle in flight (post-0.16.0)
+- **v0.17.0-dev.1** — Slice 5 CP1+CP2 backend (cadence + human journal — backend only, no UI)
+- **v0.17.0-dev.2** — Slice 5 CP3+CP4 (Journal tab UI restructure)
+- **CP6 (deferred)** — minor polish: "Today's context" line on Daily, hover-for-exact-time on human entries, search/filter on entries
+- **Slice 4 CP3 (still queued)** — per-project rename/archive/set-focus/merge/inline-classify; absorbs the standalone Classify tab
+
 ## Update System
 
 - **Production**: Downloads Inno Setup installer from GitHub releases
@@ -195,9 +205,11 @@ Triggered by tuck-in: runs sync -> synthesize -> prepare -> train -> eval -> dep
 ### Configuration
 Training config lives in `cortex-pet-training/config/settings.json` (sibling repo). The `cortex_train.paths` module auto-detects this via `CORTEX_TRAINING_DIR` env var or sibling directory search.
 
-## Overseer (Slice 3 + 4 — added in v0.13–0.16)
+## Overseer (Slice 3 + 4 + 5 — added in v0.13–0.17)
 
 The Overseer is a memory-upkeep agent that LIVES on the Pi (in `cortex-core/plugins/overseer/`) but is consumed end-to-end through this Hub.
+
+**LOCKED PRINCIPLE (Slice 5)** — restated as `SHARED_PRINCIPLE` at the top of every temporal-narrative prompt: *the Overseer is a quiet, lightweight memory layer that captures, surfaces, and connects. It is NOT a journaling app or life coach.* If a feature proposal would push it toward streaks, nag-notifications, suggested-actions, or "today's goal" surfaces, that proposal violates the principle and should be declined.
 
 ### What it does
 - Reads the user's notes, sessions, and imported Claude Code conversations
@@ -219,11 +231,11 @@ The Overseer page (top-level sidebar tab) has these inner tabs:
 - **Overview** — Stats grid + Working Memory view + Imported Claude Sessions panel + Background Loop status + LLM Cost (last 7 days)
 - **Chat** — Direct chat with the overseer (Opus 4.7 default, blindspot-aware)
 - **Dialectic** — Resolve Opus-vs-Gemma diffs (slice 3f)
-- **Journal** — Append-only first-person reflections by the overseer
+- **Journal** — *Slice 5 CP3+CP4:* three stacked sections — "Your journal" (free-form textarea + recent entries) / "Temporal narratives" (Daily/Weekly/Monthly Sonnet rollups, latest of each shown by default, "Generate now" per-card) / "Overseer reflections" (the original tick-based first-person journal)
 - **Insights** — Pending interpretation queue (gists, themes, episodes, blindspots) with accept/reject
 - **Projects** — *Slice 4 CP2:* per-project cards with narrative + active hours + cost + top files (sorted by Active hours desc by default; Active-only / All toggle)
-- **Classify** — Per-project treat-as: human / automation / ignore (slice 3e)
-- **Explorer** — Force-directed graph of nodes (questions / projects / patterns / drift / themes / gists / episodes) and edges (evidence / derived_from / in_project)
+- **Classify** — Per-project treat-as: human / automation / ignore (slice 3e). Slice 4 CP3 will absorb this into per-card menus on Projects.
+- **Explorer** — Force-directed graph of nodes (questions / projects / patterns / drift / themes / gists / episodes) and edges (evidence / derived_from / in_project). Project nodes sized by active hours; dormants fade.
 - **Bell** — Notifications grouped by rule_name (60d auto-archive)
 
 ### Slice 4 (Project-Centric) — v0.16
@@ -235,6 +247,15 @@ The Overseer page (top-level sidebar tab) has these inner tabs:
 - Loop step 8 (`_run_project_narrative_refresh`): 24h cadence + ≥3 new sessions trigger, 3 projects per tick
 - Manual route `POST /plugins/overseer/narrative/generate`
 - Hub Projects tab consumes everything via `GET /api/overseer/projects/summary`
+
+### Slice 5 (Temporal Cadence + Human Journal) — v0.17.0-dev.1+dev.2
+- `temporal.py`: local-TZ helpers + `should_attempt_daily/weekly/monthly` (22:00 local triggers, hardcoded `TRIGGER_HOUR_LOCAL=22`)
+- `temporal_narrative.py`: 3 prompt templates + gatherers + generators. Daily uses today-slice numbers from `imported_sessions` (NOT lifetime). Weekly synthesizes 7 dailies + cross-project signals. Monthly synthesizes the weeklies + open-question lifecycle (gated: skip if no daily in past 14 days).
+- `temporal_narratives` table — `UNIQUE(kind, period_label)` prevents double-generation
+- `human_journal_entries` table — free-form, multiple per day allowed
+- Loop step 9 (`_run_temporal_cadence`): one kind per tick max
+- Routes: `GET/POST /plugins/overseer/temporal*` and `GET/POST /plugins/overseer/human-journal*`
+- Hub `JournalTab.tsx` consumes everything; the entire Journal tab was restructured into 3 sections (Your journal / Temporal narratives / Overseer reflections)
 
 ### When to update what
 - **Add a new overseer route** → modify `cortex-core/plugins/overseer/__init__.py` (Pi-side) AND `cortex-desktop/hub/backend/routers/overseer.py` (Hub proxy)
