@@ -13,30 +13,18 @@
  *   - Hover: lift the node + brighten its incident edges
  *   - Click: focus mode — dim everything not within 2 hops
  *
- * Layout: d3-force runs once on data load (no animation), positions
- * are baked into the react-flow nodes. Reload triggers re-layout.
+ * Rendering is delegated to the generic graph engine in
+ * `lib/graphengine/`. This file owns the data shape, the aesthetic
+ * mapping (colors / opacity / node shape / edge style), and the
+ * filter + focus state. The engine owns the camera, force layout,
+ * interaction wiring, and the react-flow plumbing.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import {
-  ReactFlow,
-  Background,
-  BackgroundVariant,
-  Controls,
-  ReactFlowProvider,
-  type Edge as RFEdge,
-  type Node as RFNode,
-  type NodeProps,
-  Handle,
-  Position,
-} from '@xyflow/react'
-import {
-  forceSimulation,
-  forceLink,
-  forceManyBody,
-  forceCenter,
-  forceCollide,
-} from 'd3-force'
-import '@xyflow/react/dist/style.css'
+  GraphCanvas,
+  type EngineEdge,
+  type EngineNode,
+} from '../../lib/graphengine'
 
 // ── Types from the Pi /explorer/graph endpoint ───────────────
 
@@ -125,152 +113,42 @@ function nodeRadius(n: GraphNode): number {
   return base + bump
 }
 
-// ── d3-force layout ───────────────────────────────────────────
+// ── Node renderer (passed to the engine via renderNode) ──────
 
-interface PositionedNode extends GraphNode {
-  x: number
-  y: number
-}
-
-/**
- * Live d3-force layout hook.
- *
- * CP2 originally pre-baked positions with `for (let i=0; i<300; i++) sim.tick()`
- * then handed react-flow the static result. Tory's feedback: that's
- * "stiff" — the canvas comes alive only when YOU move; an Obsidian
- * graph settles organically.
- *
- * This hook runs the simulation as a real animation: low alpha decay
- * so settling lasts ~3s, ticks-per-frame via requestAnimationFrame,
- * react-flow re-renders each tick. When data or visible set changes,
- * the sim is rebuilt with the previous positions inherited (so the
- * layout shifts smoothly rather than snapping).
- */
-function useLiveLayout(
-  nodes: GraphNode[] | null,
-  edges: GraphEdge[] | null,
-  width: number,
-  height: number,
-): PositionedNode[] {
-  const [positioned, setPositioned] = useState<PositionedNode[]>([])
-  // Keep a ref to the previous positions so we can carry them across
-  // sim rebuilds (filter toggles) — prevents the visible cluster
-  // from snapping back to center every time.
-  const prevPosRef = useRef<Map<string, { x: number; y: number }>>(new Map())
-
-  useEffect(() => {
-    if (!nodes || nodes.length === 0 || width <= 0 || height <= 0) {
-      setPositioned([])
-      return
-    }
-
-    // Seed positions: use previous if we have one, else center-ish
-    // with a small random nudge so the sim has something to push on.
-    const sNodes = nodes.map((n) => {
-      const prev = prevPosRef.current.get(n.id)
-      return {
-        ...n,
-        x: prev?.x ?? width / 2 + (Math.random() - 0.5) * 80,
-        y: prev?.y ?? height / 2 + (Math.random() - 0.5) * 80,
-      } as PositionedNode
-    })
-    const sLinks = (edges || [])
-      .filter(
-        (e) =>
-          sNodes.some((n) => n.id === e.source) &&
-          sNodes.some((n) => n.id === e.target),
-      )
-      .map((e) => ({ source: e.source, target: e.target }))
-
-    const sim = forceSimulation(sNodes as any)
-      .force(
-        'link',
-        forceLink(sLinks as any)
-          .id((d: any) => d.id)
-          .distance(110)
-          .strength(0.4),
-      )
-      .force('charge', forceManyBody().strength(-280))
-      .force('center', forceCenter(width / 2, height / 2))
-      .force(
-        'collide',
-        forceCollide()
-          .radius((d: any) => nodeRadius(d) + 8)
-          .iterations(2),
-      )
-      // Slower alpha decay = longer organic settling. Default is
-      // ~0.0228 which decays in ~300 ticks (5s). 0.012 stretches
-      // settling to ~10s but the visible motion is still mostly
-      // done in 2-3s — feels alive without dragging.
-      .alphaDecay(0.012)
-      .alpha(0.6)
-
-    sim.on('tick', () => {
-      // Snapshot positions; clone the array reference so React sees
-      // a new value and re-renders.
-      setPositioned(sNodes.map((n) => ({ ...n })))
-    })
-
-    return () => {
-      // Persist final positions so the next sim picks up where this
-      // one left off.
-      for (const n of sNodes) {
-        prevPosRef.current.set(n.id, { x: n.x, y: n.y })
-      }
-      sim.stop()
-    }
-  }, [nodes, edges, width, height])
-
-  return positioned
-}
-
-// ── Custom node renderer ─────────────────────────────────────
-
-interface CustomNodeData {
+function CircleNode({
+  graph,
+  active,
+  dimmed,
+}: {
   graph: GraphNode
   active: boolean
   dimmed: boolean
-}
-
-function CircleNode({ data }: NodeProps) {
-  const { graph, active, dimmed } = data as unknown as CustomNodeData
+}) {
   const r = nodeRadius(graph)
   const fill = TYPE_FILL[graph.type]
   const opacity = (dimmed ? 0.18 : 1) * CONF_OPACITY[graph.confidence]
-  // Slightly larger / glowing if active (focus mode root or hovered)
   const ring = active ? 3 : 0
-  const totalR = r + ring
+  const size = r * 2
   return (
     <div
       style={{
-        width: totalR * 2,
-        height: totalR * 2,
+        width: size,
+        height: size,
         position: 'relative',
         transition: 'opacity 200ms ease',
         opacity,
       }}
       title={`${TYPE_LABEL[graph.type]} ${graph.id}\n${graph.label}\nconfidence: ${graph.confidence}`}
     >
-      {/* invisible handles so react-flow can route edges */}
-      <Handle
-        type="source"
-        position={Position.Top}
-        style={{ opacity: 0, pointerEvents: 'none' }}
-      />
-      <Handle
-        type="target"
-        position={Position.Bottom}
-        style={{ opacity: 0, pointerEvents: 'none' }}
-      />
       <svg
-        width={totalR * 2}
-        height={totalR * 2}
-        style={{ position: 'absolute', inset: 0 }}
+        width={size}
+        height={size}
+        style={{ position: 'absolute', inset: 0, overflow: 'visible' }}
       >
         {ring > 0 && (
           <circle
-            cx={totalR}
-            cy={totalR}
+            cx={r}
+            cy={r}
             r={r + 1.5}
             fill="none"
             stroke={fill}
@@ -278,17 +156,10 @@ function CircleNode({ data }: NodeProps) {
             opacity={0.85}
           />
         )}
-        <circle
-          cx={totalR}
-          cy={totalR}
-          r={r}
-          fill={fill}
-          opacity={0.85}
-        />
-        {/* type letter inset */}
+        <circle cx={r} cy={r} r={r} fill={fill} opacity={0.85} />
         <text
-          x={totalR}
-          y={totalR + 4}
+          x={r}
+          y={r + 4}
           textAnchor="middle"
           fontSize={Math.max(11, r * 0.5)}
           fontWeight="600"
@@ -299,7 +170,6 @@ function CircleNode({ data }: NodeProps) {
           {graph.id.split(':')[0]}
         </text>
       </svg>
-      {/* Label below */}
       <div
         style={{
           position: 'absolute',
@@ -322,8 +192,6 @@ function CircleNode({ data }: NodeProps) {
     </div>
   )
 }
-
-const nodeTypes = { circle: CircleNode }
 
 // ── Filter state + predicate ─────────────────────────────────
 
@@ -568,24 +436,10 @@ export function ExplorerPanel({
   onRefresh: () => void
   onTokenClick: (token: string) => void
 }) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [size, setSize] = useState({ w: 1200, h: 800 })
   const [focusId, setFocusId] = useState<string | null>(null)
   const [filters, setFilters] = useState<ExplorerFilters>({
     ...DEFAULT_FILTERS,
   })
-
-  // Track container size for layout. ResizeObserver on the wrapper.
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => {
-      const r = el.getBoundingClientRect()
-      setSize({ w: r.width, h: r.height })
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
 
   // Effective focus = filters.questionFocus takes precedence over click
   // focus, so the user can pin a question and still single-click to
@@ -604,10 +458,6 @@ export function ExplorerPanel({
     return m
   }, [graph])
 
-  // Filter predicate result per node id. Used for both layout (we
-  // skip filtered-out nodes from the simulation) and rendering (we
-  // hide them entirely via display:none — preserves layout for
-  // nodes that ARE visible if user toggles a filter).
   const visibleSet = useMemo<Set<string>>(() => {
     if (!graph) return new Set()
     const out = new Set<string>()
@@ -617,11 +467,6 @@ export function ExplorerPanel({
     return out
   }, [graph, filters, degree])
 
-  // Compute positions from graph data + size, ONLY for visible nodes
-  // (so hide-disconnected actually removes the visual mass instead of
-  // just dimming, AND so the layout uses screen real estate well).
-  // CP2 Tory feedback: live d3 sim instead of pre-baked positions, so
-  // the canvas settles organically when filters change.
   const visibleNodes = useMemo(
     () => (graph?.nodes || []).filter((n) => visibleSet.has(n.id)),
     [graph, visibleSet],
@@ -633,7 +478,6 @@ export function ExplorerPanel({
       ),
     [graph, visibleSet],
   )
-  const positioned = useLiveLayout(visibleNodes, visibleEdges, size.w, size.h)
 
   // Focus-mode dim set: nodes within 2 hops of focus stay bright.
   const dimSet = useMemo<Set<string>>(() => {
@@ -667,50 +511,31 @@ export function ExplorerPanel({
     return dim
   }, [effectiveFocus, graph, visibleSet])
 
-  // React-flow nodes/edges, derived from positioned + focus state.
-  const rfNodes = useMemo<RFNode[]>(() => {
-    return positioned.map((p) => ({
-      id: p.id,
-      type: 'circle',
-      position: { x: p.x - nodeRadius(p), y: p.y - nodeRadius(p) },
-      data: {
-        graph: p,
-        active: effectiveFocus === p.id,
-        dimmed: dimSet.has(p.id),
-      },
-      draggable: false,
-      selectable: false,
-    }))
-  }, [positioned, effectiveFocus, dimSet])
+  // ── Adapt to engine shape ────────────────────────────────────
+  const engineNodes = useMemo<EngineNode<GraphNode>[]>(
+    () => visibleNodes.map((n) => ({ id: n.id, data: n })),
+    [visibleNodes],
+  )
+  const engineEdges = useMemo<EngineEdge<GraphEdge>[]>(
+    () =>
+      visibleEdges.map((e) => ({ source: e.source, target: e.target, data: e })),
+    [visibleEdges],
+  )
 
-  const rfEdges = useMemo<RFEdge[]>(() => {
-    if (!graph?.edges) return []
-    // Only render edges between currently-visible nodes.
-    return graph.edges
-      .filter((e) => visibleSet.has(e.source) && visibleSet.has(e.target))
-      .map((e, i) => {
-        const isAdjacent = effectiveFocus &&
-          (e.source === effectiveFocus || e.target === effectiveFocus)
-        const dimmed = effectiveFocus && !isAdjacent
-        return {
-          id: `e-${i}`,
-          source: e.source,
-          target: e.target,
-          type: 'straight',
-          animated: false,
-          style: {
-            stroke: EDGE_COLOR[e.kind],
-            strokeWidth: isAdjacent ? 2 : 1,
-            opacity: dimmed ? 0.15 : 1,
-            transition: 'opacity 200ms ease, stroke-width 200ms ease',
-          },
-        }
-      })
-  }, [graph, effectiveFocus, visibleSet])
+  // Stable callbacks so the engine's useForceLayout doesn't see fresh
+  // function identity on every parent render. (useForceLayout already
+  // ref-stashes these but stable refs are still the right hygiene.)
+  const renderNodeRef = useRef<
+    (
+      node: EngineNode<GraphNode>,
+      state: { active: boolean; dimmed: boolean },
+    ) => React.ReactNode
+  >(null!)
+  renderNodeRef.current = (node, { active, dimmed }) => (
+    <CircleNode graph={node.data} active={active} dimmed={dimmed} />
+  )
 
-  // Visible/total node count for the topbar — gives a sense of how
-  // much the filters are hiding without us screaming "X HIDDEN" at
-  // the user.
+  // Visible/total node count for the topbar.
   const visibleCount = visibleSet.size
   const totalCount = graph?.nodes?.length || 0
 
@@ -757,29 +582,37 @@ export function ExplorerPanel({
         </div>
 
         {/* Canvas */}
-        <div ref={containerRef} className="flex-1 relative">
-        {error && (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-red-400 z-10">
-            Error: {error}
-          </div>
-        )}
-        {!loading && !error && positioned.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-text-muted">
-            No graph data yet — click Refresh.
-          </div>
-        )}
-        <ReactFlowProvider>
-          <ReactFlow
-            nodes={rfNodes}
-            edges={rfEdges}
-            nodeTypes={nodeTypes}
-            fitView
+        <div className="flex-1 relative">
+          {error && (
+            <div className="absolute inset-0 flex items-center justify-center text-sm text-red-400 z-10">
+              Error: {error}
+            </div>
+          )}
+          {!loading && !error && engineNodes.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center text-sm text-text-muted">
+              No graph data yet — click Refresh.
+            </div>
+          )}
+          <GraphCanvas<GraphNode, GraphEdge>
+            nodes={engineNodes}
+            edges={engineEdges}
+            activeNodeId={effectiveFocus}
+            dimmedNodeIds={dimSet}
+            renderNode={(node, state) => renderNodeRef.current(node, state)}
+            edgeStyle={(edge, { highlighted, dimmed }) => ({
+              stroke: EDGE_COLOR[edge.data!.kind],
+              strokeWidth: highlighted ? 2 : 1,
+              opacity: dimmed ? 0.15 : 1,
+              transition: 'opacity 200ms ease, stroke-width 200ms ease',
+            })}
+            nodeSize={(node) => {
+              const r = nodeRadius(node.data)
+              return { w: r * 2, h: r * 2 }
+            }}
+            nodeRadiusForCollision={(node) => nodeRadius(node.data)}
+            layout={{ kind: 'force' }}
             minZoom={0.2}
             maxZoom={2.5}
-            proOptions={{ hideAttribution: true }}
-            nodesDraggable={false}
-            nodesConnectable={false}
-            elementsSelectable={false}
             // CP2 Tory feedback: wheel = zoom (Obsidian-feel).
             // panOnScroll=false makes the wheel always zoom rather
             // than pan; click-drag the canvas to pan.
@@ -787,37 +620,23 @@ export function ExplorerPanel({
             panOnDrag
             zoomOnScroll
             zoomOnPinch
-            onNodeClick={(_, n) => {
+            background={{
+              color: '#0b1018',
+              dots: { gap: 24, size: 1, color: '#1e293b' },
+            }}
+            onNodeClick={(id) => {
               // Single click: focus only. Stays on Explorer; dims
               // everything not within 2 hops of the clicked node.
               // Click again to clear, or click a different node to
               // shift focus.
-              setFocusId((cur) => (cur === n.id ? null : n.id))
+              setFocusId((cur) => (cur === id ? null : id))
             }}
-            onNodeDoubleClick={(_, n) => {
+            onNodeDoubleClick={(id) => {
               // Double click: navigate to Overview + open DetailCard.
-              onTokenClick(n.id)
+              onTokenClick(id)
             }}
             onPaneClick={() => setFocusId(null)}
-            colorMode="dark"
-          >
-            <Background
-              variant={BackgroundVariant.Dots}
-              gap={24}
-              size={1}
-              color="#1e293b"
-            />
-            <Controls
-              position="bottom-right"
-              showInteractive={false}
-              style={{
-                background: '#0f172a',
-                border: '1px solid #1e293b',
-                borderRadius: 6,
-              }}
-            />
-          </ReactFlow>
-        </ReactFlowProvider>
+          />
         </div>
       </div>
     </div>
