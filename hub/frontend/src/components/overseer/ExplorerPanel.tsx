@@ -132,44 +132,96 @@ interface PositionedNode extends GraphNode {
   y: number
 }
 
-function runLayout(
-  nodes: GraphNode[],
-  edges: GraphEdge[],
+/**
+ * Live d3-force layout hook.
+ *
+ * CP2 originally pre-baked positions with `for (let i=0; i<300; i++) sim.tick()`
+ * then handed react-flow the static result. Tory's feedback: that's
+ * "stiff" — the canvas comes alive only when YOU move; an Obsidian
+ * graph settles organically.
+ *
+ * This hook runs the simulation as a real animation: low alpha decay
+ * so settling lasts ~3s, ticks-per-frame via requestAnimationFrame,
+ * react-flow re-renders each tick. When data or visible set changes,
+ * the sim is rebuilt with the previous positions inherited (so the
+ * layout shifts smoothly rather than snapping).
+ */
+function useLiveLayout(
+  nodes: GraphNode[] | null,
+  edges: GraphEdge[] | null,
   width: number,
   height: number,
 ): PositionedNode[] {
-  // Clone — d3 mutates.
-  const sNodes = nodes.map((n) => ({ ...n })) as PositionedNode[]
-  const sLinks = edges
-    // d3-force needs source/target by id (resolves to node refs internally)
-    .filter(
-      (e) =>
-        sNodes.some((n) => n.id === e.source) &&
-        sNodes.some((n) => n.id === e.target),
-    )
-    .map((e) => ({ source: e.source, target: e.target }))
+  const [positioned, setPositioned] = useState<PositionedNode[]>([])
+  // Keep a ref to the previous positions so we can carry them across
+  // sim rebuilds (filter toggles) — prevents the visible cluster
+  // from snapping back to center every time.
+  const prevPosRef = useRef<Map<string, { x: number; y: number }>>(new Map())
 
-  const sim = forceSimulation(sNodes as any)
-    .force(
-      'link',
-      forceLink(sLinks as any)
-        .id((d: any) => d.id)
-        .distance(110)
-        .strength(0.4),
-    )
-    .force('charge', forceManyBody().strength(-280))
-    .force('center', forceCenter(width / 2, height / 2))
-    .force(
-      'collide',
-      forceCollide()
-        .radius((d: any) => nodeRadius(d) + 8)
-        .iterations(2),
-    )
-    .stop()
+  useEffect(() => {
+    if (!nodes || nodes.length === 0 || width <= 0 || height <= 0) {
+      setPositioned([])
+      return
+    }
 
-  // 300 ticks gives a stable layout for 50-150 nodes
-  for (let i = 0; i < 300; i++) sim.tick()
-  return sNodes
+    // Seed positions: use previous if we have one, else center-ish
+    // with a small random nudge so the sim has something to push on.
+    const sNodes = nodes.map((n) => {
+      const prev = prevPosRef.current.get(n.id)
+      return {
+        ...n,
+        x: prev?.x ?? width / 2 + (Math.random() - 0.5) * 80,
+        y: prev?.y ?? height / 2 + (Math.random() - 0.5) * 80,
+      } as PositionedNode
+    })
+    const sLinks = (edges || [])
+      .filter(
+        (e) =>
+          sNodes.some((n) => n.id === e.source) &&
+          sNodes.some((n) => n.id === e.target),
+      )
+      .map((e) => ({ source: e.source, target: e.target }))
+
+    const sim = forceSimulation(sNodes as any)
+      .force(
+        'link',
+        forceLink(sLinks as any)
+          .id((d: any) => d.id)
+          .distance(110)
+          .strength(0.4),
+      )
+      .force('charge', forceManyBody().strength(-280))
+      .force('center', forceCenter(width / 2, height / 2))
+      .force(
+        'collide',
+        forceCollide()
+          .radius((d: any) => nodeRadius(d) + 8)
+          .iterations(2),
+      )
+      // Slower alpha decay = longer organic settling. Default is
+      // ~0.0228 which decays in ~300 ticks (5s). 0.012 stretches
+      // settling to ~10s but the visible motion is still mostly
+      // done in 2-3s — feels alive without dragging.
+      .alphaDecay(0.012)
+      .alpha(0.6)
+
+    sim.on('tick', () => {
+      // Snapshot positions; clone the array reference so React sees
+      // a new value and re-renders.
+      setPositioned(sNodes.map((n) => ({ ...n })))
+    })
+
+    return () => {
+      // Persist final positions so the next sim picks up where this
+      // one left off.
+      for (const n of sNodes) {
+        prevPosRef.current.set(n.id, { x: n.x, y: n.y })
+      }
+      sim.stop()
+    }
+  }, [nodes, edges, width, height])
+
+  return positioned
 }
 
 // ── Custom node renderer ─────────────────────────────────────
@@ -568,14 +620,20 @@ export function ExplorerPanel({
   // Compute positions from graph data + size, ONLY for visible nodes
   // (so hide-disconnected actually removes the visual mass instead of
   // just dimming, AND so the layout uses screen real estate well).
-  const positioned = useMemo<PositionedNode[]>(() => {
-    if (!graph?.nodes) return []
-    const visibleNodes = graph.nodes.filter((n) => visibleSet.has(n.id))
-    const visibleEdges = (graph.edges || []).filter(
-      (e) => visibleSet.has(e.source) && visibleSet.has(e.target),
-    )
-    return runLayout(visibleNodes, visibleEdges, size.w, size.h)
-  }, [graph, visibleSet, size.w, size.h])
+  // CP2 Tory feedback: live d3 sim instead of pre-baked positions, so
+  // the canvas settles organically when filters change.
+  const visibleNodes = useMemo(
+    () => (graph?.nodes || []).filter((n) => visibleSet.has(n.id)),
+    [graph, visibleSet],
+  )
+  const visibleEdges = useMemo(
+    () =>
+      (graph?.edges || []).filter(
+        (e) => visibleSet.has(e.source) && visibleSet.has(e.target),
+      ),
+    [graph, visibleSet],
+  )
+  const positioned = useLiveLayout(visibleNodes, visibleEdges, size.w, size.h)
 
   // Focus-mode dim set: nodes within 2 hops of focus stay bright.
   const dimSet = useMemo<Set<string>>(() => {
@@ -722,7 +780,11 @@ export function ExplorerPanel({
             nodesDraggable={false}
             nodesConnectable={false}
             elementsSelectable={false}
-            panOnScroll
+            // CP2 Tory feedback: wheel = zoom (Obsidian-feel).
+            // panOnScroll=false makes the wheel always zoom rather
+            // than pan; click-drag the canvas to pan.
+            panOnScroll={false}
+            panOnDrag
             zoomOnScroll
             zoomOnPinch
             onNodeClick={(_, n) => {
