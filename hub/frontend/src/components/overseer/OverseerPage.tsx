@@ -354,7 +354,7 @@ interface BlindspotRow {
 // ── Slice 3h: insight queue ─────────────────────────────────
 interface PendingInterpretation {
   id: number
-  kind: 'theme' | 'pattern' | 'drift'
+  kind: 'theme' | 'pattern' | 'drift' | 'blindspot'
   title: string
   body: string
   confidence: string
@@ -376,6 +376,10 @@ interface PendingInterpretation {
   edit_body: string
   applied_table: string
   applied_id: number | null
+  // 3i CP2: blindspot-kind specific fields
+  bs_model_pattern?: string
+  bs_topic_pattern?: string
+  bs_confidence_adjustment?: number
 }
 
 interface InsightScanRow {
@@ -606,6 +610,45 @@ export function OverseerPage() {
       await refreshInsights('pending')
     } catch (e: any) {
       setError(`Scan failed: ${e?.message || e}`)
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const handleDistillCorrections = async () => {
+    setBusy('Distilling corrections…')
+    setError('')
+    setLastAction('')
+    try {
+      const r = await apiFetch<{
+        ok: boolean
+        corrections_seen?: number
+        candidates_proposed?: number
+        candidates_deduped?: number
+        cost_usd?: number
+        note?: string
+        error?: string
+      }>('/overseer/insight/distill-corrections', {
+        method: 'POST',
+      })
+      if (!r.ok) {
+        setError(`Distill failed: ${r.error || 'unknown'}`)
+      } else if ((r.candidates_proposed || 0) === 0) {
+        setLastAction(
+          `Distill: ${r.corrections_seen ?? 0} corrections seen, no new ` +
+          `blindspot candidates (deduped: ${r.candidates_deduped ?? 0}, ` +
+          `cost $${(r.cost_usd ?? 0).toFixed(4)})` +
+          (r.note ? `. ${r.note}` : '.'),
+        )
+      } else {
+        setLastAction(
+          `Distill proposed ${r.candidates_proposed} blindspot candidate(s) ` +
+          `from ${r.corrections_seen} corrections ($${(r.cost_usd ?? 0).toFixed(4)}).`,
+        )
+      }
+      await refreshInsights('pending')
+    } catch (e: any) {
+      setError(`Distill failed: ${e?.message || e}`)
     } finally {
       setBusy('')
     }
@@ -1092,6 +1135,7 @@ export function OverseerPage() {
           scanDays={insightScanDays}
           setScanDays={setInsightScanDays}
           onScanNow={handleInsightScanNow}
+          onDistillCorrections={handleDistillCorrections}
           onDecide={handleInsightDecide}
           editingId={editingInsightId}
           setEditing={(id, title, body) => {
@@ -1857,6 +1901,7 @@ function InsightsPanel({
   scanDays,
   setScanDays,
   onScanNow,
+  onDistillCorrections,
   onDecide,
   editingId,
   setEditing,
@@ -1877,6 +1922,7 @@ function InsightsPanel({
   scanDays: number
   setScanDays: (d: number) => void
   onScanNow: () => void
+  onDistillCorrections: () => void
   onDecide: (
     id: number,
     decision: 'confirm' | 'reject' | 'edit-and-confirm',
@@ -1895,6 +1941,7 @@ function InsightsPanel({
     if (kind === 'theme') return 'bg-accent/20 text-accent-hover'
     if (kind === 'pattern') return 'bg-amber-500/20 text-amber-400'
     if (kind === 'drift') return 'bg-success/20 text-success'
+    if (kind === 'blindspot') return 'bg-red-500/20 text-red-400'
     return 'bg-surface-tertiary text-text-muted'
   }
 
@@ -1948,6 +1995,27 @@ function InsightsPanel({
             run for fractions of a cent. The auto-loop also scans up to
             2 active+human projects per tick (24h cadence per project).
           </p>
+        </div>
+
+        {/* 3i CP2: distill corrections → blindspot proposals */}
+        <div className="bg-surface-secondary border border-border rounded-lg p-4">
+          <div className="text-xs uppercase tracking-wide text-text-muted mb-2">
+            Distill corrections → blindspots
+          </div>
+          <p className="text-[11px] text-text-secondary mb-3 leading-relaxed">
+            User corrections (from chat, dialectic resolutions, or manual
+            log) are clustered by Sonnet into blindspot candidates that
+            land in this same review queue with kind=blindspot. The
+            auto-loop runs this once per 24h if there are at least 3
+            uncondidated corrections.
+          </p>
+          <button
+            onClick={onDistillCorrections}
+            disabled={!!busy}
+            className="px-3 py-1.5 rounded-md text-xs font-medium bg-accent hover:bg-accent-hover text-white cursor-pointer disabled:opacity-50"
+          >
+            {busy ? busy : 'Distill now'}
+          </button>
         </div>
 
         {/* Recent scans (auto-loop visibility) */}
@@ -2094,6 +2162,42 @@ function InsightsPanel({
                   </div>
                 )}
 
+                {/* 3i CP2: blindspot-kind structured fields */}
+                {it.kind === 'blindspot' && editingId !== it.id && (
+                  <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-0.5 text-[11px] mt-2 bg-surface-tertiary/30 p-2 rounded">
+                    <dt className="text-text-muted uppercase tracking-wide text-[10px]">
+                      model:
+                    </dt>
+                    <dd className="text-text-primary font-mono">
+                      {it.bs_model_pattern || '*'}
+                    </dd>
+                    <dt className="text-text-muted uppercase tracking-wide text-[10px]">
+                      topic:
+                    </dt>
+                    <dd className="text-text-secondary font-mono">
+                      {it.bs_topic_pattern || '(any)'}
+                    </dd>
+                    <dt className="text-text-muted uppercase tracking-wide text-[10px]">
+                      conf adj:
+                    </dt>
+                    <dd
+                      className={`font-medium ${
+                        (it.bs_confidence_adjustment ?? 0) > 0
+                          ? 'text-amber-400'
+                          : (it.bs_confidence_adjustment ?? 0) < 0
+                            ? 'text-text-muted'
+                            : 'text-text-secondary'
+                      }`}
+                    >
+                      {(it.bs_confidence_adjustment ?? 0) > 0
+                        ? `+${it.bs_confidence_adjustment} (treat reported as too high)`
+                        : (it.bs_confidence_adjustment ?? 0) < 0
+                          ? `${it.bs_confidence_adjustment} (treat reported as too low)`
+                          : '0 (no adjustment)'}
+                    </dd>
+                  </dl>
+                )}
+
                 {it.rationale && (
                   <details className="text-[11px] text-text-muted">
                     <summary className="cursor-pointer uppercase tracking-wide">
@@ -2103,25 +2207,39 @@ function InsightsPanel({
                   </details>
                 )}
 
-                {/* Source gist tokens — clickable */}
+                {/* Source pointer ids — meaning depends on kind:
+                    - blindspot → correction ids (not drillable today)
+                    - everything else → gist ids (clickable token chips) */}
                 {(() => {
                   let ids: number[] = []
                   try {
                     ids = JSON.parse(it.source_pointer_ids || '[]')
                   } catch {}
                   if (ids.length === 0) return null
+                  const isBlindspot = it.kind === 'blindspot'
+                  const label = isBlindspot ? 'Corrections:' : 'Source:'
                   return (
                     <div className="flex items-baseline gap-1.5 flex-wrap text-[10px]">
                       <span className="uppercase tracking-wide text-text-muted">
-                        Source:
+                        {label}
                       </span>
-                      {ids.slice(0, 12).map((gid) => (
-                        <TokenChip
-                          key={gid}
-                          token={`g:${gid}`}
-                          onClick={onTokenClick}
-                        />
-                      ))}
+                      {ids.slice(0, 12).map((sid) =>
+                        isBlindspot ? (
+                          <span
+                            key={sid}
+                            className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-surface-tertiary text-text-muted font-mono"
+                            title="Correction row id (not drillable today)"
+                          >
+                            c:{sid}
+                          </span>
+                        ) : (
+                          <TokenChip
+                            key={sid}
+                            token={`g:${sid}`}
+                            onClick={onTokenClick}
+                          />
+                        ),
+                      )}
                       {ids.length > 12 && (
                         <span className="text-text-muted">
                           +{ids.length - 12} more

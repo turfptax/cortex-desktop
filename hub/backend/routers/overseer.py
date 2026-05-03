@@ -736,3 +736,13 @@ async def insight_scans(project: str | None = None, limit: int = 20):
         payload["project"] = project
     return await pi_client.plugin_call(
         "overseer", "GET", "/insight/scans", payload)
+
+
+@router.post("/insight/distill-corrections")
+async def insight_distill_corrections():
+    """3i CP2: trigger a Sonnet pass over uncondidated corrections,
+    proposing blindspot candidates into pending_interpretations."""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/insight/distill-corrections", {},
+        timeout=60.0,
+    )
