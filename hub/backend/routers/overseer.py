@@ -856,3 +856,78 @@ async def narrative_generate(req: ProjectNarrativeRequest):
         req.dict(exclude_none=True),
         timeout=120.0,
     )
+
+
+# ── Slice 5: temporal cadence + human journal ───────────────────
+
+
+@router.get("/temporal")
+async def list_temporal(kind: str | None = None, limit: int = 50):
+    """Proxy: GET /plugins/overseer/temporal — list daily/weekly/
+    monthly narratives, newest first."""
+    payload: dict = {"limit": limit}
+    if kind:
+        payload["kind"] = kind
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/temporal", payload)
+
+
+@router.get("/temporal/get")
+async def get_temporal(kind: str, period_label: str):
+    """Proxy: GET /plugins/overseer/temporal/get?kind=&period_label="""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/temporal/get",
+        {"kind": kind, "period_label": period_label})
+
+
+class TemporalGenerateRequest(BaseModel):
+    kind: str   # daily | weekly | monthly
+    period_label: str | None = None
+    force: bool | None = False
+
+
+@router.post("/temporal/generate")
+async def temporal_generate(req: TemporalGenerateRequest):
+    """Proxy: POST /plugins/overseer/temporal/generate — manual
+    Sonnet narrative for one temporal period. Bypasses the loop's
+    22:00-local trigger; honors UNIQUE(kind, period_label) unless
+    force=True."""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/temporal/generate",
+        req.dict(exclude_none=True),
+        timeout=120.0,
+    )
+
+
+@router.get("/human-journal")
+async def list_human_journal(limit: int = 100, offset: int = 0):
+    """Proxy: GET /plugins/overseer/human-journal — newest first."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/human-journal",
+        {"limit": limit, "offset": offset})
+
+
+class HumanJournalRequest(BaseModel):
+    text: str
+    entry_type: str | None = "free"
+
+
+@router.post("/human-journal")
+async def add_human_journal(req: HumanJournalRequest):
+    """Proxy: POST /plugins/overseer/human-journal — append a free-form
+    user-written journal entry. Captured in local TZ; auto-included
+    in temporal narrative prompts for the period it falls in."""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/human-journal",
+        req.dict(exclude_none=True))
+
+
+class HumanJournalDeleteRequest(BaseModel):
+    id: int
+
+
+@router.post("/human-journal/delete")
+async def delete_human_journal(req: HumanJournalDeleteRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/human-journal/delete",
+        req.dict())
