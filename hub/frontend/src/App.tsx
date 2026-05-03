@@ -1,16 +1,14 @@
 import { useState, useEffect } from 'react'
 import { Layout } from './components/Layout'
 import { ChatPage } from './components/chat/ChatPage'
-import { TrainingPage } from './components/training/TrainingPage'
 import { PiPage } from './components/pi/PiPage'
-import { GamesPage } from './components/games/GamesPage'
 import { DataPage } from './components/data/DataPage'
 import { SettingsPage } from './components/settings/SettingsPage'
 import { OverseerPage } from './components/overseer/OverseerPage'
 import { apiFetch } from './lib/api'
 import { type PetStatus } from './components/PetWidget'
 
-export type Page = 'chat' | 'training' | 'pi' | 'games' | 'data' | 'overseer' | 'settings'
+export type Page = 'chat' | 'pi' | 'data' | 'overseer' | 'settings'
 
 export interface StatusInfo {
   lmstudioOnline: boolean
@@ -63,9 +61,7 @@ function App() {
   return (
     <Layout page={page} setPage={setPage} status={status} petStatus={petStatus}>
       {page === 'chat' && <ChatPage petStatus={petStatus} />}
-      {page === 'training' && <TrainingPage />}
       {page === 'pi' && <PiPage status={status} />}
-      {page === 'games' && <GamesPage />}
       {page === 'data' && <DataPage status={status} />}
       {page === 'overseer' && <OverseerPage />}
       {page === 'settings' && <SettingsPage />}

@@ -13,9 +13,7 @@ interface LayoutProps {
 
 const navItems: { id: Page; label: string; icon: string }[] = [
   { id: 'chat', label: 'Chat', icon: '💬' },
-  { id: 'training', label: 'Training', icon: '🧠' },
   { id: 'pi', label: 'Pi', icon: '🥧' },
-  { id: 'games', label: 'Games', icon: '🎮' },
   { id: 'data', label: 'Data', icon: '📊' },
   { id: 'overseer', label: 'Overseer', icon: '🧭' },
   { id: 'settings', label: 'Settings', icon: '⚙️' },
