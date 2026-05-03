@@ -181,6 +181,9 @@ interface ScanRow {
   size_bytes: number
   mtime: number
   mtime_iso: string
+  // Polish slice CP1: server-side authoritative flag
+  file_hash?: string
+  already_imported?: boolean
 }
 
 interface ScanResp {
@@ -189,6 +192,8 @@ interface ScanResp {
   total?: number
   scanned_dir?: string
   note?: string
+  already_imported_count?: number
+  new_count?: number
 }
 
 interface LoopResp {
@@ -1244,7 +1249,19 @@ export function OverseerPage() {
               Import {selectedPaths.size > 0 ? `(${selectedPaths.size})` : ''}
             </button>
             <span className="text-xs text-text-muted ml-auto">
-              {imports.length} imported, {scan?.total ?? '—'} found locally
+              {imports.length} imported
+              {scan && (
+                <>
+                  {', '}
+                  <span className="text-success">{scan.new_count ?? 0} new</span>
+                  {' / '}
+                  <span>{scan.already_imported_count ?? 0} already on Pi</span>
+                  {' (of '}
+                  {scan.total ?? '—'}
+                  {' found locally)'}
+                </>
+              )}
+              {!scan && ', — found locally'}
             </span>
           </div>
 
@@ -1262,18 +1279,23 @@ export function OverseerPage() {
                 </thead>
                 <tbody>
                   {scan.found.map((f) => {
-                    // The encoded folder name (`C--dev-ttx-VOICE-NVIDIA`)
-                    // and the imported `project` field (cwd basename, e.g.
-                    // `VOICE NVIDIA`) often differ — Claude Code's path
-                    // encoding flattens slashes/colons but the cwd in the
-                    // .jsonl preserves spaces and original casing. Look up
-                    // the matching import and surface its project name so
-                    // the user can see "yes this folder is the same as
-                    // that imported project."
-                    const matchedImport = imports.find(
-                      (i) => i.id.split(':').slice(1).join(':') === f.session_id
-                    )
-                    const known = !!matchedImport
+                    // Polish slice CP1: trust the server-computed
+                    // already_imported flag. Previously we did a client-
+                    // side ID match against the loaded imports list —
+                    // but that list is capped at 200 rows, so users
+                    // with 200+ imports saw real duplicates marked as
+                    // "new" and got "skipped" surprises on import.
+                    const known = !!f.already_imported
+                    // We can still surface the cwd-basename project
+                    // from the imports list when available — purely
+                    // cosmetic, so no harm if the import is past the
+                    // 200-row window.
+                    const matchedImport = known
+                      ? imports.find(
+                          (i) =>
+                            i.id.split(':').slice(1).join(':') === f.session_id,
+                        )
+                      : undefined
                     return (
                       <tr
                         key={f.path}
@@ -1289,10 +1311,11 @@ export function OverseerPage() {
                         </td>
                         <td className="p-2 text-text-secondary truncate max-w-xs">
                           {f.project_folder}
-                          {known && matchedImport!.project &&
-                              matchedImport!.project !== f.project_folder && (
+                          {matchedImport &&
+                              matchedImport.project &&
+                              matchedImport.project !== f.project_folder && (
                             <span className="block text-[10px] text-text-muted mt-0.5">
-                              imported as: {matchedImport!.project}
+                              imported as: {matchedImport.project}
                             </span>
                           )}
                         </td>

@@ -464,7 +464,10 @@ async def scan_claude_code(limit: int = 500):
     Returns metadata for each found file: path, session_id (filename
     stem = the UUID Claude Code assigns), project_folder (the encoded
     folder name; the actual cwd is inside the file and gets extracted
-    on Pi during import), size_bytes, mtime.
+    on Pi during import), size_bytes, mtime, AND already_imported (a
+    server-computed flag based on hash equality with rows in the Pi's
+    imported_sessions table — this is authoritative regardless of how
+    many rows the Hub Imports panel currently has loaded).
 
     Sorted by mtime descending — newest first.
     """
@@ -477,6 +480,16 @@ async def scan_claude_code(limit: int = 500):
                      "— Claude Code may not be installed."),
         }
 
+    # Pull the FULL set of already-imported hashes on the Pi so we can
+    # mark each scanned file authoritatively. Without this the UI was
+    # only matching against the first 200 imported rows it had loaded;
+    # users with 200+ imports saw real duplicates marked as "new" and
+    # then got "skipped" on import. Polish slice CP1.
+    try:
+        known_hashes = await _already_imported_hashes("claude-code")
+    except Exception:
+        known_hashes = set()  # degrade gracefully — UI still functional
+
     found: list[dict] = []
     for project_dir in sorted(base.iterdir()):
         if not project_dir.is_dir() or project_dir.name.startswith("."):
@@ -486,6 +499,11 @@ async def scan_claude_code(limit: int = 500):
                 stat = jsonl.stat()
             except OSError:
                 continue
+            digest = ""
+            try:
+                digest = _file_sha256(jsonl)
+            except Exception:
+                pass  # keep the row visible even if we can't hash it
             found.append({
                 "path": str(jsonl),
                 "session_id": jsonl.stem,
@@ -495,13 +513,18 @@ async def scan_claude_code(limit: int = 500):
                 "mtime_iso": time.strftime(
                     "%Y-%m-%dT%H:%M:%S",
                     time.gmtime(stat.st_mtime)) + "Z",
+                "file_hash": digest,
+                "already_imported": bool(digest and digest in known_hashes),
             })
 
     found.sort(key=lambda x: x["mtime"], reverse=True)
+    already = sum(1 for f in found if f.get("already_imported"))
     return {
         "ok": True,
         "scanned_dir": str(base),
         "total": len(found),
+        "already_imported_count": already,
+        "new_count": len(found) - already,
         "found": found[:limit],
     }
 
