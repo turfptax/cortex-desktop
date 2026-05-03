@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  BaseEdge,
   Background,
   BackgroundVariant,
   Controls,
@@ -7,7 +8,10 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
+  getStraightPath,
+  useInternalNode,
   type Edge as RFEdge,
+  type EdgeProps,
   type Node as RFNode,
   type NodeProps,
 } from '@xyflow/react'
@@ -87,6 +91,74 @@ function EngineNodeRenderer({ data }: NodeProps) {
 
 const nodeTypes = { engine: EngineNodeRenderer }
 
+// ── Floating edge ─────────────────────────────────────────────
+//
+// react-flow's built-in edge types route between fixed Handle positions
+// (here: source.top → target.bottom). For a force-directed graph where
+// nodes can sit anywhere relative to each other, that means edges
+// always exit the top of the source and enter the bottom of the
+// target — visually "crossed" or off-perimeter when a source is to the
+// left or right of its target. The Obsidian-feel fix is to compute
+// each endpoint as the point where the line between node centers
+// crosses the node's own circular perimeter.
+//
+// Assumes circular nodes; uses the node's smaller dimension as the
+// radius. For non-circular shapes we'd swap in a bounding-box
+// intersection but the engine's caller is responsible for shape.
+
+interface NodeCircle {
+  cx: number
+  cy: number
+  r: number
+}
+
+function nodeCircle(
+  node: { position: { x: number; y: number }; measured?: { width?: number; height?: number }; width?: number; height?: number } | null | undefined,
+): NodeCircle | null {
+  if (!node) return null
+  const w = node.measured?.width ?? node.width ?? 0
+  const h = node.measured?.height ?? node.height ?? 0
+  if (w === 0 || h === 0) return null
+  return {
+    cx: node.position.x + w / 2,
+    cy: node.position.y + h / 2,
+    r: Math.min(w, h) / 2,
+  }
+}
+
+function circlePerimeterPoint(
+  from: NodeCircle,
+  to: { cx: number; cy: number },
+): { x: number; y: number } {
+  const dx = to.cx - from.cx
+  const dy = to.cy - from.cy
+  const len = Math.hypot(dx, dy)
+  if (len === 0) return { x: from.cx, y: from.cy }
+  return {
+    x: from.cx + (dx * from.r) / len,
+    y: from.cy + (dy * from.r) / len,
+  }
+}
+
+function FloatingEdge({ id, source, target, style, markerEnd }: EdgeProps) {
+  const sourceNode = useInternalNode(source)
+  const targetNode = useInternalNode(target)
+  const s = nodeCircle(sourceNode as any)
+  const t = nodeCircle(targetNode as any)
+  if (!s || !t) return null
+  const sourcePoint = circlePerimeterPoint(s, t)
+  const targetPoint = circlePerimeterPoint(t, s)
+  const [path] = getStraightPath({
+    sourceX: sourcePoint.x,
+    sourceY: sourcePoint.y,
+    targetX: targetPoint.x,
+    targetY: targetPoint.y,
+  })
+  return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />
+}
+
+const edgeTypes = { floating: FloatingEdge }
+
 function GraphCanvasInner<TNodeData, TEdgeData>(
   props: GraphCanvasProps<TNodeData, TEdgeData>,
 ) {
@@ -165,6 +237,11 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
         id: p.id,
         type: 'engine',
         position: { x: p.x - s.w / 2, y: p.y - s.h / 2 },
+        // Set width/height explicitly so FloatingEdge can compute
+        // perimeter intersections on the first frame, before
+        // react-flow's async DOM measurement settles.
+        width: s.w,
+        height: s.h,
         data: data as unknown as Record<string, unknown>,
         draggable: false,
         selectable: false,
@@ -182,7 +259,7 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
         id: `e-${i}`,
         source: e.source,
         target: e.target,
-        type: 'straight',
+        type: 'floating',
         animated: false,
         style: edgeStyle(e, { highlighted, dimmed }),
       }
@@ -205,6 +282,7 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
         nodes={rfNodes}
         edges={rfEdges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         fitView={fitView}
         minZoom={minZoom}
         maxZoom={maxZoom}
