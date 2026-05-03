@@ -144,7 +144,9 @@ function CircleNode({
         width: size,
         height: size,
         position: 'relative',
-        transition: 'opacity 200ms ease',
+        // Ease-out-quint: slow-then-stop. Reads as "settles" rather
+        // than "snaps" — closer to the calm Obsidian feel.
+        transition: 'opacity 280ms cubic-bezier(0.22, 1, 0.36, 1)',
         opacity,
       }}
       title={`${TYPE_LABEL[graph.type]} ${graph.id}\n${graph.label}\nconfidence: ${graph.confidence}`}
@@ -253,6 +255,76 @@ function nodeMatchesFilters(
     if (!haystack.includes(needle)) return false
   }
   return true
+}
+
+// ── Empty-state nudge ────────────────────────────────────────
+//
+// Three cases that all render to "no nodes on canvas":
+//   1. Graph hasn't been fetched yet (totalCount === 0)
+//   2. Graph has nodes but every active filter combined hides them all
+//   3. Search term matches nothing
+// Distinguish them so the user knows whether to refresh or to loosen a
+// filter — the previous "click Refresh" message lied in cases 2 & 3.
+
+function describeActiveFilters(f: ExplorerFilters): string[] {
+  const out: string[] = []
+  if (f.search.trim()) out.push(`search "${f.search.trim()}"`)
+  if (f.confidence.size < 3) {
+    out.push(`confidence: ${[...f.confidence].sort().join(' / ')}`)
+  }
+  if (f.recencyDays != null) out.push(`recency ≤ ${f.recencyDays}d`)
+  if (f.questionFocus) out.push(`focused on ${f.questionFocus}`)
+  if (f.hideDisconnected) out.push('hide disconnected')
+  return out
+}
+
+function ExplorerEmptyState({
+  totalCount,
+  filters,
+  setFilters,
+  onRefresh,
+}: {
+  totalCount: number
+  filters: ExplorerFilters
+  setFilters: (f: ExplorerFilters) => void
+  onRefresh: () => void
+}) {
+  // Case 1 — nothing fetched.
+  if (totalCount === 0) {
+    return (
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm text-text-muted px-6 text-center">
+        <p>No graph data yet.</p>
+        <button
+          onClick={onRefresh}
+          className="px-3 py-1.5 rounded-md text-xs font-medium bg-accent/20 text-accent-hover hover:bg-accent/30 cursor-pointer"
+        >
+          Refresh
+        </button>
+      </div>
+    )
+  }
+
+  // Cases 2 & 3 — graph exists but filters hide it.
+  const active = describeActiveFilters(filters)
+  return (
+    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm text-text-muted px-6 text-center">
+      <p>
+        All <span className="text-text-secondary font-medium">{totalCount}</span>{' '}
+        nodes are hidden by your filters.
+      </p>
+      {active.length > 0 && (
+        <p className="text-[11px] text-text-muted/70 max-w-md">
+          Active: {active.join(' · ')}
+        </p>
+      )}
+      <button
+        onClick={() => setFilters({ ...DEFAULT_FILTERS })}
+        className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer"
+      >
+        Reset filters
+      </button>
+    </div>
+  )
 }
 
 // ── Sidebar ──────────────────────────────────────────────────
@@ -548,9 +620,13 @@ export function ExplorerPanel({
       { highlighted, dimmed }: { highlighted: boolean; dimmed: boolean },
     ) => ({
       stroke: EDGE_COLOR[edge.data!.kind],
-      strokeWidth: highlighted ? 2 : 1,
+      // Dimmed edges shrink AND fade — pulls them visually behind the
+      // foreground 2-hop subgraph in focus mode.
+      strokeWidth: highlighted ? 2 : dimmed ? 0.75 : 1,
       opacity: dimmed ? 0.15 : 1,
-      transition: 'opacity 200ms ease, stroke-width 200ms ease',
+      transition:
+        'opacity 280ms cubic-bezier(0.22, 1, 0.36, 1), ' +
+        'stroke-width 280ms cubic-bezier(0.22, 1, 0.36, 1)',
     }),
     [],
   )
@@ -630,9 +706,12 @@ export function ExplorerPanel({
             </div>
           )}
           {!loading && !error && engineNodes.length === 0 && (
-            <div className="absolute inset-0 flex items-center justify-center text-sm text-text-muted">
-              No graph data yet — click Refresh.
-            </div>
+            <ExplorerEmptyState
+              totalCount={totalCount}
+              filters={filters}
+              setFilters={setFilters}
+              onRefresh={onRefresh}
+            />
           )}
           <GraphCanvas<GraphNode, GraphEdge>
             nodes={engineNodes}
