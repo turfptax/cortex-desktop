@@ -146,7 +146,7 @@ function CircleNode({
         position: 'relative',
         // Ease-out-quint: slow-then-stop. Reads as "settles" rather
         // than "snaps" — closer to the calm Obsidian feel.
-        transition: 'opacity 280ms cubic-bezier(0.22, 1, 0.36, 1)',
+        transition: 'opacity 200ms cubic-bezier(0.22, 1, 0.36, 1)',
         opacity,
       }}
       title={`${TYPE_LABEL[graph.type]} ${graph.id}\n${graph.label}\nconfidence: ${graph.confidence}`}
@@ -625,8 +625,8 @@ export function ExplorerPanel({
       strokeWidth: highlighted ? 2 : dimmed ? 0.75 : 1,
       opacity: dimmed ? 0.15 : 1,
       transition:
-        'opacity 280ms cubic-bezier(0.22, 1, 0.36, 1), ' +
-        'stroke-width 280ms cubic-bezier(0.22, 1, 0.36, 1)',
+        'opacity 200ms cubic-bezier(0.22, 1, 0.36, 1), ' +
+        'stroke-width 200ms cubic-bezier(0.22, 1, 0.36, 1)',
     }),
     [],
   )
