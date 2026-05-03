@@ -120,9 +120,15 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
+    // Round to integers and skip updates when size hasn't actually changed.
+    // Sub-pixel reflows (e.g. a topbar button appearing on focus) would
+    // otherwise restart the force sim on every click via useForceLayout's
+    // [width, height] deps.
     const ro = new ResizeObserver(() => {
       const r = el.getBoundingClientRect()
-      setSize({ w: r.width, h: r.height })
+      const w = Math.round(r.width)
+      const h = Math.round(r.height)
+      setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }))
     })
     ro.observe(el)
     return () => ro.disconnect()
