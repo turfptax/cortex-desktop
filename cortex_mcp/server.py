@@ -359,11 +359,84 @@ def get_context() -> str:
     Returns active projects, recent sessions, pending reminders,
     recent decisions, open bugs, and computer info. Call this at the
     start of every conversation to understand what the user is working on.
+
+    The response includes a `working_memory` artifact assembled by the
+    Overseer plugin. Items in working_memory carry `token` fields like
+    "q:42" (question), "p:5" (pattern), "d:1" (drift), "g:75" (gist),
+    "r:18" (rollup), "n:1" (future-overseer note), "t:5" (theme),
+    "b:7" (blindspot), "j:1" (journal entry), "e:3" (episode),
+    "dial:2" (dialectic). Pass any of these to cortex_overseer_detail
+    to drill in.
     """
     try:
         return send_command(_get_bridge_lazy(), "get_context", timeout=20)
     except Exception as e:
         return "Error: {}".format(e)
+
+
+def _overseer_plugin_call(method, route, payload=None, timeout=20):
+    """Helper: call /plugins/overseer/<route> via the WiFi bridge.
+    Returns (result_dict, err_str)."""
+    bridge = _get_bridge_lazy()
+    fn = getattr(bridge, "plugin_call", None)
+    if fn is None:
+        return None, ("Overseer routes need the WiFi bridge to the Pi "
+                      "(BLE/serial fallback can't reach plugin endpoints).")
+    try:
+        result = fn("overseer", method, route, payload, timeout=timeout)
+    except Exception as e:
+        return None, str(e)
+    if not isinstance(result, dict):
+        return None, "Bad response shape from Pi"
+    if not result.get("ok"):
+        return None, result.get("error", "unknown error")
+    return result, None
+
+
+@mcp.tool()
+def cortex_overseer_detail(token: str) -> str:
+    """Drill into one item from the Overseer's working memory.
+
+    Working memory (returned by get_context) carries breadth — it lists
+    questions, patterns, drift, rollups, gists, themes, etc., but each
+    item is trimmed for size. This tool resolves a single item to its
+    full untruncated row plus any related artifacts you can drill into
+    next.
+
+    The token is a short string from working_memory like:
+      q:42    — open question
+      p:5     — behavioral pattern
+      d:1     — drift observation (started/stopped/shifted)
+      g:75    — gist (per-session summary)
+      e:3     — episode
+      t:5     — theme
+      r:18    — automation rollup (per-project per-day digest)
+      n:1     — note from a prior overseer instance to future ones
+      j:1     — overseer journal entry (the thinking layer)
+      b:7     — known blindspot
+      dial:2  — open dialectic between Opus and Gemma readings
+
+    Returns JSON with:
+      primary       — the full row with every column
+      tags          — tags attached to this row
+      context       — type-specific extras (e.g. evidence list for q:,
+                      sample sessions for r:, parsed referenced
+                      artifacts for j:)
+      next_tokens   — list of {token, label, kind} you can pass back to
+                      this tool to walk the graph (e.g. q: → its
+                      evidence gists; g: → the questions it was filed
+                      against; r: → the linked summary gist)
+
+    Args:
+        token: A token like "q:42" or "p:5".
+    """
+    import json as _json
+    result, err = _overseer_plugin_call(
+        "GET", "/detail", {"token": token}, timeout=10,
+    )
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
 
 
 @mcp.tool()

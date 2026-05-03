@@ -642,3 +642,14 @@ async def import_paths(req: ImportRequest):
         "skipped": skipped,
         "failed": failed,
     }
+
+
+# ── Slice 3g checkpoint 2: drill-down ──────────────────────────
+
+
+@router.get("/detail")
+async def overseer_detail(token: str):
+    """Resolve a working-memory token (e.g. 'q:42', 'p:5') to its full
+    row + tags + type-specific context + suggested next-step tokens."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/detail", {"token": token})

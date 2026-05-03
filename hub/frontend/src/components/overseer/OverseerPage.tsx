@@ -28,10 +28,12 @@ interface WMQuestionEvidence {
   evidence_label?: string
   evidence_confidence?: string
   evidence_created_at?: string
+  token?: string                 // 3g #2
 }
 
 interface WMTopQuestion {
   id: number
+  token?: string                 // 3g #2
   question: string
   body?: string
   confidence: string
@@ -43,6 +45,7 @@ interface WMTopQuestion {
 
 interface WMUnfiledGist {
   id: number
+  token?: string                 // 3g #2
   body: string
   period_label?: string
   created_at?: string
@@ -51,6 +54,7 @@ interface WMUnfiledGist {
 // Slice 3g: depth signals
 interface WMPattern {
   id: number
+  token?: string
   name: string
   body: string
   confidence?: string
@@ -60,6 +64,7 @@ interface WMPattern {
 
 interface WMDrift {
   id: number
+  token?: string
   body: string
   direction?: string
   confidence?: string
@@ -68,18 +73,39 @@ interface WMDrift {
 
 interface WMFutureNote {
   id: number
+  token?: string
   instance_id: string
   written_at?: string
   body: string
 }
 
 interface WMRollup {
+  id?: number
+  token?: string
   project: string
   rollup_date: string
   session_count?: number
   total_minutes?: number
   median_minutes?: number
   summary: string
+}
+
+// Slice 3g #2: drill-down detail response
+interface DetailNextToken {
+  token: string
+  label: string
+  kind?: string
+}
+
+interface DetailResp {
+  ok: boolean
+  token?: string
+  type?: string
+  primary?: Record<string, any>
+  tags?: string[]
+  context?: Record<string, any>
+  next_tokens?: DetailNextToken[]
+  error?: string
 }
 
 interface WorkingMemory {
@@ -100,7 +126,7 @@ interface WorkingMemory {
     confidence: string
     tags?: string[]
   }>
-  recent_themes?: Array<{ id: number; title: string; confidence: string }>
+  recent_themes?: Array<{ id: number; token?: string; title: string; confidence: string }>
   recent_episode_titles?: string[]
   last_week_digest?: string
   unfiled_recent_gists?: WMUnfiledGist[]
@@ -309,6 +335,7 @@ interface JournalResp {
 
 interface BlindspotRow {
   id: number
+  token?: string                 // 3g #2
   model_pattern: string
   topic_pattern: string
   direction: string
@@ -373,6 +400,7 @@ export function OverseerPage() {
   const [journal, setJournal] = useState<JournalEntry[]>([])
   const [blindspots, setBlindspots] = useState<BlindspotRow[]>([])
   const [expandedDialecticId, setExpandedDialecticId] = useState<number | null>(null)
+  const [expandedToken, setExpandedToken] = useState<string | null>(null)
   const [busy, setBusy] = useState<string>('')
   const [lastAction, setLastAction] = useState<string>('')
   const [error, setError] = useState<string>('')
@@ -820,7 +848,14 @@ export function OverseerPage() {
               {wm?.hint || 'No working memory yet.'}
             </div>
           ) : (
-            <WorkingMemoryView wm={wm.working_memory} />
+            <WorkingMemoryView
+              wm={wm.working_memory}
+              expandedToken={expandedToken}
+              onTokenClick={(t) =>
+                setExpandedToken((prev) => (prev === t ? null : t))
+              }
+              onCloseDetail={() => setExpandedToken(null)}
+            />
           )}
         </Card>
 
@@ -1296,9 +1331,198 @@ function Row({ label, value }: { label: string; value: any }) {
   )
 }
 
-function WorkingMemoryView({ wm }: { wm: WorkingMemory }) {
+// ── Slice 3g #2: drill-down chip + inline detail card ─────────
+
+function TokenChip({
+  token,
+  active,
+  onClick,
+  className,
+}: {
+  token?: string | null
+  active?: boolean
+  onClick: (token: string) => void
+  className?: string
+}) {
+  if (!token) return null
+  return (
+    <button
+      onClick={() => onClick(token)}
+      className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded cursor-pointer transition-colors font-mono ${
+        active
+          ? 'bg-accent text-white'
+          : 'bg-surface-tertiary text-text-muted hover:bg-accent/30 hover:text-accent-hover'
+      } ${className || ''}`}
+      title={`Drill into ${token}`}
+    >
+      {token}
+    </button>
+  )
+}
+
+function DetailCard({
+  token,
+  onNavigate,
+  onClose,
+}: {
+  token: string
+  onNavigate: (token: string) => void
+  onClose: () => void
+}) {
+  const [resp, setResp] = useState<DetailResp | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string>('')
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError('')
+    setResp(null)
+    apiFetch<DetailResp>(`/overseer/detail?token=${encodeURIComponent(token)}`)
+      .then((r) => {
+        if (cancelled) return
+        if (r.ok) setResp(r)
+        else setError(r.error || 'detail failed')
+      })
+      .catch((e) => {
+        if (!cancelled) setError(String(e))
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token])
+
+  return (
+    <div className="bg-surface-secondary border border-accent/40 rounded-lg p-4 mb-4 text-xs">
+      <div className="flex items-baseline justify-between mb-2">
+        <div className="flex items-baseline gap-2">
+          <span className="text-[10px] uppercase tracking-wide text-accent font-mono">
+            {token}
+          </span>
+          {resp?.type && (
+            <span className="text-text-muted text-[10px] uppercase">
+              · {resp.type}
+            </span>
+          )}
+        </div>
+        <button
+          onClick={onClose}
+          className="text-text-muted hover:text-text-primary text-[10px] uppercase cursor-pointer"
+        >
+          Close
+        </button>
+      </div>
+
+      {loading && (
+        <div className="text-text-muted italic">Resolving {token}…</div>
+      )}
+      {error && <div className="text-red-400">Error: {error}</div>}
+
+      {resp && resp.primary && (
+        <div className="space-y-3">
+          <div>
+            <div className="text-text-muted uppercase tracking-wide text-[10px] mb-1">
+              Primary
+            </div>
+            <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-0.5">
+              {Object.entries(resp.primary).map(([k, v]) => (
+                <div key={k} className="contents">
+                  <dt className="text-text-muted font-mono text-[10px]">
+                    {k}
+                  </dt>
+                  <dd className="text-text-primary whitespace-pre-wrap break-words">
+                    {v == null
+                      ? <span className="text-text-muted italic">null</span>
+                      : typeof v === 'object'
+                        ? <span className="text-text-muted font-mono text-[10px]">{JSON.stringify(v)}</span>
+                        : String(v)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+
+          {resp.tags && resp.tags.length > 0 && (
+            <div>
+              <div className="text-text-muted uppercase tracking-wide text-[10px] mb-1">
+                Tags
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {resp.tags.map((t) => (
+                  <span
+                    key={t}
+                    className="text-[10px] px-1.5 py-0.5 rounded bg-surface-tertiary text-text-secondary"
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {resp.context && Object.keys(resp.context).length > 0 && (
+            <details className="text-text-secondary">
+              <summary className="cursor-pointer text-text-muted uppercase tracking-wide text-[10px]">
+                Context ({Object.keys(resp.context).length} keys)
+              </summary>
+              <pre className="mt-1 text-[10px] font-mono whitespace-pre-wrap break-words bg-surface-tertiary/40 p-2 rounded max-h-60 overflow-y-auto">
+                {JSON.stringify(resp.context, null, 2)}
+              </pre>
+            </details>
+          )}
+
+          {resp.next_tokens && resp.next_tokens.length > 0 && (
+            <div>
+              <div className="text-text-muted uppercase tracking-wide text-[10px] mb-1">
+                Drill into ({resp.next_tokens.length})
+              </div>
+              <ul className="space-y-1">
+                {resp.next_tokens.map((nt, i) => (
+                  <li
+                    key={`${nt.token}-${i}`}
+                    className="flex items-baseline gap-2"
+                  >
+                    <TokenChip token={nt.token} onClick={onNavigate} />
+                    <span className="text-text-secondary">{nt.label}</span>
+                    {nt.kind && (
+                      <span className="text-[10px] text-text-muted italic">
+                        {nt.kind}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function WorkingMemoryView({
+  wm,
+  expandedToken,
+  onTokenClick,
+  onCloseDetail,
+}: {
+  wm: WorkingMemory
+  expandedToken: string | null
+  onTokenClick: (token: string) => void
+  onCloseDetail: () => void
+}) {
   return (
     <div className="space-y-4 text-xs">
+      {expandedToken && (
+        <DetailCard
+          token={expandedToken}
+          onNavigate={onTokenClick}
+          onClose={onCloseDetail}
+        />
+      )}
       {wm.top_projects && wm.top_projects.length > 0 && (
         <div>
           <div className="text-text-muted uppercase tracking-wide mb-1">
@@ -1341,7 +1565,12 @@ function WorkingMemoryView({ wm }: { wm: WorkingMemory }) {
           <ul className="space-y-3">
             {wm.top_questions.map((q) => (
               <li key={q.id} className="border-l-2 border-border pl-3">
-                <div className="flex items-baseline gap-2">
+                <div className="flex items-baseline gap-2 flex-wrap">
+                  <TokenChip
+                    token={q.token}
+                    active={expandedToken === q.token}
+                    onClick={onTokenClick}
+                  />
                   <span className="text-text-muted text-[10px] uppercase">
                     [{q.confidence} · {q.lifecycle} · {q.evidence_count}ev]
                   </span>
@@ -1365,14 +1594,21 @@ function WorkingMemoryView({ wm }: { wm: WorkingMemory }) {
                       return (
                         <li
                           key={`${q.id}-${i}`}
-                          className="text-[11px] text-text-secondary"
+                          className="text-[11px] text-text-secondary flex items-baseline gap-1.5 flex-wrap"
                         >
-                          <span className={`mr-1 ${contribColor}`}>
+                          <TokenChip
+                            token={ev.token}
+                            active={expandedToken === ev.token}
+                            onClick={onTokenClick}
+                          />
+                          <span className={contribColor}>
                             ◆ [{ev.contribution}]
                           </span>
-                          {body.length > 200
-                            ? body.slice(0, 200) + '…'
-                            : body}
+                          <span>
+                            {body.length > 200
+                              ? body.slice(0, 200) + '…'
+                              : body}
+                          </span>
                         </li>
                       )
                     })}
@@ -1411,8 +1647,18 @@ function WorkingMemoryView({ wm }: { wm: WorkingMemory }) {
           </div>
           <ul className="space-y-1 text-text-secondary text-[11px]">
             {wm.unfiled_recent_gists.slice(0, 5).map((g) => (
-              <li key={g.id}>
-                • {g.body.length > 200 ? g.body.slice(0, 200) + '…' : g.body}
+              <li
+                key={g.id}
+                className="flex items-baseline gap-1.5 flex-wrap"
+              >
+                <TokenChip
+                  token={g.token}
+                  active={expandedToken === g.token}
+                  onClick={onTokenClick}
+                />
+                <span>
+                  {g.body.length > 200 ? g.body.slice(0, 200) + '…' : g.body}
+                </span>
               </li>
             ))}
           </ul>
@@ -1426,7 +1672,14 @@ function WorkingMemoryView({ wm }: { wm: WorkingMemory }) {
           </div>
           <ul className="space-y-1 text-text-secondary">
             {wm.recent_themes.map((t) => (
-              <li key={t.id}>{t.title}</li>
+              <li key={t.id} className="flex items-baseline gap-1.5">
+                <TokenChip
+                  token={t.token}
+                  active={expandedToken === t.token}
+                  onClick={onTokenClick}
+                />
+                <span>{t.title}</span>
+              </li>
             ))}
           </ul>
         </div>
@@ -1464,7 +1717,12 @@ function WorkingMemoryView({ wm }: { wm: WorkingMemory }) {
           <ul className="space-y-1.5">
             {wm.recent_patterns.map((p) => (
               <li key={p.id} className="border-l-2 border-border pl-3">
-                <div className="flex items-baseline gap-2">
+                <div className="flex items-baseline gap-2 flex-wrap">
+                  <TokenChip
+                    token={p.token}
+                    active={expandedToken === p.token}
+                    onClick={onTokenClick}
+                  />
                   <span className="text-text-muted text-[10px] uppercase">
                     [{p.confidence || '?'} · {p.occurrences ?? 1}×]
                   </span>
@@ -1504,8 +1762,13 @@ function WorkingMemoryView({ wm }: { wm: WorkingMemory }) {
               return (
                 <li
                   key={d.id}
-                  className="text-[11px] text-text-secondary flex items-baseline gap-2"
+                  className="text-[11px] text-text-secondary flex items-baseline gap-2 flex-wrap"
                 >
+                  <TokenChip
+                    token={d.token}
+                    active={expandedToken === d.token}
+                    onClick={onTokenClick}
+                  />
                   <span className={`text-[10px] uppercase ${dirColor}`}>
                     {d.direction || '—'}
                   </span>
@@ -1532,13 +1795,20 @@ function WorkingMemoryView({ wm }: { wm: WorkingMemory }) {
           <ul className="space-y-1.5">
             {wm.recent_future_notes.map((n) => (
               <li key={n.id} className="border-l-2 border-border pl-3">
-                <div className="text-[10px] text-text-muted uppercase">
-                  {n.instance_id}
-                  {n.written_at && (
-                    <span className="ml-2 normal-case">
-                      {n.written_at.slice(0, 16).replace('T', ' ')}
-                    </span>
-                  )}
+                <div className="flex items-baseline gap-2 flex-wrap">
+                  <TokenChip
+                    token={n.token}
+                    active={expandedToken === n.token}
+                    onClick={onTokenClick}
+                  />
+                  <span className="text-[10px] text-text-muted uppercase">
+                    {n.instance_id}
+                    {n.written_at && (
+                      <span className="ml-2 normal-case">
+                        {n.written_at.slice(0, 16).replace('T', ' ')}
+                      </span>
+                    )}
+                  </span>
                 </div>
                 <p className="text-[11px] text-text-secondary mt-0.5">
                   {n.body}
@@ -1563,7 +1833,12 @@ function WorkingMemoryView({ wm }: { wm: WorkingMemory }) {
                 key={`${r.project}-${r.rollup_date}`}
                 className="border-l-2 border-border pl-3"
               >
-                <div className="flex items-baseline gap-2 text-[10px] text-text-muted uppercase">
+                <div className="flex items-baseline gap-2 text-[10px] text-text-muted uppercase flex-wrap">
+                  <TokenChip
+                    token={r.token}
+                    active={expandedToken === r.token}
+                    onClick={onTokenClick}
+                  />
                   <span className="text-text-primary normal-case font-medium">
                     {r.project}
                   </span>
