@@ -1720,6 +1720,53 @@ def cortex_people_for_project(project: str) -> str:
     return _json.dumps(result, indent=2, default=str)
 
 
+@mcp.tool()
+def cortex_people_unlink_project(project: str, person_id: int) -> str:
+    """Remove a project↔person link. Use this if you (or a prior
+    agent) created a wrong link — e.g. linked the wrong person, or
+    linked a person to a project they're not actually involved in.
+
+    The person record itself is NOT deleted; only the link.
+    """
+    import json as _json
+    payload = {"project": project, "person_id": person_id}
+    result, err = _people_get("POST", "/unlink-project", payload)
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def cortex_people_stats() -> str:
+    """Cross-cutting stats on the Overseer's people memory.
+
+    Returns counts + signal pointers:
+      total_people
+      added_24h, added_7d         — capture velocity
+      orphans_count               — people with no project links
+                                    (review candidates: agents added
+                                    them but never connected them
+                                    to a project)
+      multi_project_count         — people linked to ≥2 projects
+                                    (the connectors — these make
+                                    cross-project narratives interesting)
+      top_projects                — top 10 projects by linked-people count
+      top_expertise_tags          — top 5 areas_of_expertise tags by frequency
+      recent_additions            — newest 10 with timestamp + agent +
+                                    session_id (for spot-checking what
+                                    got captured recently)
+
+    Useful for both agents (decide whether the people memory is rich
+    enough to load into context) and the upcoming Hub UI (Network
+    section header summary).
+    """
+    import json as _json
+    result, err = _people_get("GET", "/stats", None)
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
 def main():
     """Entry point for the cortex-mcp console script."""
     mcp.run()
