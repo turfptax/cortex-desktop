@@ -1451,6 +1451,275 @@ def weekly_review() -> str:
         return "Error: {}".format(e)
 
 
+# ── Slice 6: people (Overseer's relationship memory) ────────────
+#
+# These tools are the PRIMARY surface for adding/updating people in
+# the user's memory. The Hub UI is the secondary curation/review
+# surface. Agents working alongside Tory in his other repos call
+# these to capture who he's working with — without him having to
+# do data entry.
+#
+# When TO use these:
+#   - Recurring conversation partners or collaborators named in
+#     the work you're doing with the user
+#   - Subjects of inquiry (researchers, founders, historical figures
+#     central to a project)
+#   - Mentors, references, sources cited repeatedly
+#
+# When NOT to use:
+#   - Casual single mentions in code or docs
+#   - Names of fictional characters in stories the user is writing
+#   - Variable names that happen to look like names
+#   - Yourself or other AI agents
+#
+# Add tools are IDEMPOTENT on case-insensitive name match — safe to
+# call repeatedly. Use cortex_people_search FIRST to check whether
+# someone's already in memory before adding (avoids dupe records
+# with slight name variations like "Dr. X" vs "Dr X").
+
+
+def _people_get(method, route, payload=None, timeout=15):
+    """Helper: call /plugins/overseer/people<route>."""
+    bridge = _get_bridge_lazy()
+    fn = getattr(bridge, "plugin_call", None)
+    if fn is None:
+        return None, ("People routes need the WiFi bridge to the Pi "
+                      "(BLE/serial fallback can't reach plugin endpoints).")
+    full_route = "/people" + route
+    try:
+        result = fn("overseer", method, full_route, payload,
+                    timeout=timeout)
+    except Exception as e:
+        return None, str(e)
+    if not isinstance(result, dict):
+        return None, "Bad response shape from Pi"
+    if not result.get("ok"):
+        return None, result.get("error", "unknown error")
+    return result, None
+
+
+@mcp.tool()
+def cortex_people_list(limit: int = 50) -> str:
+    """List people in the Overseer's memory, newest-interaction first.
+
+    Returns name + display_name + handles + expertise + linked
+    projects (count). Use cortex_people_get for the full record on
+    one person.
+
+    Args:
+        limit: Max rows to return (default 50, max 500).
+    """
+    import json as _json
+    result, err = _people_get("GET", "",
+                               {"limit": min(limit, 500)})
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def cortex_people_search(query: str, limit: int = 20) -> str:
+    """Search people by name / handle / expertise / tags / notes.
+
+    USE THIS BEFORE cortex_people_add to avoid creating duplicate
+    records when someone already exists under a slightly different
+    name (e.g. "Dr. Jane X" vs "Jane X" vs "@janex").
+
+    Args:
+        query: substring to match (case-insensitive). Empty = recent.
+        limit: max rows (default 20, max 200).
+    """
+    import json as _json
+    result, err = _people_get("GET", "/search",
+                               {"q": query,
+                                "limit": min(limit, 200)})
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def cortex_people_get(person_id: int) -> str:
+    """Full record for one person — name, handles, expertise, all
+    notes (full text, audit-trailed), tags, linked projects with
+    roles. Use cortex_people_search to find IDs first.
+    """
+    import json as _json
+    result, err = _people_get("GET", "/get", {"id": person_id})
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def cortex_people_add(
+    name: str,
+    display_name: str = "",
+    online_handles: str = "",
+    social_links: str = "",
+    areas_of_expertise: str = "",
+    notes: str = "",
+    tags: str = "",
+    created_by_agent: str = "claude-code",
+    created_by_session_id: str = "",
+) -> str:
+    """Add a person to the Overseer's relationship memory.
+
+    Idempotent on case-insensitive name — if someone with the same
+    name already exists, returns the existing record with
+    `created: false`. Call cortex_people_update instead to merge
+    new information into an existing record.
+
+    Use this for people who recur in the user's work — collaborators,
+    subjects of inquiry, mentors, regular conversation partners. Skip
+    casual single mentions, fictional names, and yourself.
+
+    Args:
+        name: Canonical name (e.g. "Jane Doe" or "Dr. Jane Doe").
+              Case-insensitive match for dedup; preserve user's
+              preferred capitalization.
+        display_name: How the user usually refers to them
+              (e.g. "Jane"). Optional.
+        online_handles: Comma-separated handles
+              (e.g. "@jane,github.com/jane,@jane#discord").
+        social_links: Comma-separated URLs
+              (e.g. "https://janedoe.com,linkedin.com/in/jane").
+        areas_of_expertise: Comma-separated short tags
+              (e.g. "AI ethics,ancient material culture").
+        notes: Free-form one or two sentences on who they are and
+              why they matter to the user. Append-mode on update —
+              this becomes the seed.
+        tags: Comma-separated general tags (optional).
+        created_by_agent: Identifies which agent added them
+              (default "claude-code").
+        created_by_session_id: Session identifier so the user can
+              trace back to the conversation that captured them.
+    """
+    import json as _json
+    payload = {
+        "name": name,
+        "display_name": display_name,
+        "online_handles": online_handles,
+        "social_links": social_links,
+        "areas_of_expertise": areas_of_expertise,
+        "notes": notes,
+        "tags": tags,
+        "created_by_agent": created_by_agent,
+        "created_by_session_id": created_by_session_id,
+    }
+    result, err = _people_get("POST", "/add", payload, timeout=20)
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def cortex_people_update(
+    person_id: int,
+    notes_append: str = "",
+    display_name: str = "",
+    online_handles: str = "",
+    social_links: str = "",
+    areas_of_expertise: str = "",
+    tags: str = "",
+    update_last_interacted: bool = True,
+) -> str:
+    """Update an existing person's record. Pass only the fields you
+    want to change.
+
+    notes_append is the agent-friendly mode: appends a new
+    timestamped line to the existing notes (preserves history). Use
+    this when you've learned something new about a person — e.g.
+    "Mentioned working on X with the user this week."
+
+    JSON list fields (handles / links / expertise / tags) are
+    REPLACE-mode — pass the FULL new list (existing list + your
+    additions). Call cortex_people_get first to see the current
+    state if you need to merge.
+
+    update_last_interacted: when True (default), bumps the
+    last_interacted_at timestamp. Drives ordering in the Hub UI;
+    NO nudge or notification is driven from this field.
+
+    Args:
+        person_id: id from cortex_people_search or cortex_people_list.
+        notes_append: new note line to append (timestamped + agent-
+              attributed automatically).
+        display_name / online_handles / social_links /
+        areas_of_expertise / tags: replace-mode updates.
+        update_last_interacted: bump the timestamp (default True).
+    """
+    import json as _json
+    payload = {"id": person_id}
+    if notes_append:
+        payload["notes_append"] = notes_append
+    if display_name:
+        payload["display_name"] = display_name
+    if online_handles:
+        payload["online_handles"] = online_handles
+    if social_links:
+        payload["social_links"] = social_links
+    if areas_of_expertise:
+        payload["areas_of_expertise"] = areas_of_expertise
+    if tags:
+        payload["tags"] = tags
+    if update_last_interacted:
+        from datetime import datetime, timezone
+        payload["last_interacted_at"] = datetime.now(
+            timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    result, err = _people_get("POST", "/update", payload, timeout=20)
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def cortex_people_link_project(
+    project: str,
+    person_id: int,
+    role: str = "",
+    created_by_agent: str = "claude-code",
+) -> str:
+    """Link a person to a project. Idempotent — re-linking updates
+    the role.
+
+    Use this when you can clearly identify a person's relationship
+    to a project (collaborator, subject, mentor, source, inspiration).
+
+    Args:
+        project: Project name as it appears in the Hub (e.g. "Cortex",
+              "UFOSINT", "Ancient Art"). See cortex_people_for_project
+              for the canonical project list.
+        person_id: id from cortex_people_search.
+        role: Optional free-text role (e.g. "collaborator", "mentor",
+              "subject", "source", "inspiration").
+        created_by_agent: agent identifier (default "claude-code").
+    """
+    import json as _json
+    payload = {
+        "project": project, "person_id": person_id,
+        "role": role, "created_by_agent": created_by_agent,
+    }
+    result, err = _people_get("POST", "/link-project", payload)
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def cortex_people_for_project(project: str) -> str:
+    """List all people linked to a project, with their roles. Use
+    this to load relationship context when working on a project —
+    e.g. before writing a session that references collaborators or
+    discusses someone the user has notes on.
+    """
+    import json as _json
+    result, err = _people_get("GET", "/for-project", {"project": project})
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
 def main():
     """Entry point for the cortex-mcp console script."""
     mcp.run()

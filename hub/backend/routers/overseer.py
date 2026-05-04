@@ -931,3 +931,111 @@ async def delete_human_journal(req: HumanJournalDeleteRequest):
     return await pi_client.plugin_call(
         "overseer", "POST", "/human-journal/delete",
         req.dict())
+
+
+# ── Slice 6: people ─────────────────────────────────────────────
+
+
+@router.get("/people")
+async def list_people(limit: int = 200, offset: int = 0,
+                       order_by: str = "last_interacted_at"):
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/people",
+        {"limit": limit, "offset": offset, "order_by": order_by})
+
+
+@router.get("/people/get")
+async def get_person(id: int):
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/people/get", {"id": id})
+
+
+@router.get("/people/search")
+async def search_people(q: str = "", limit: int = 50):
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/people/search",
+        {"q": q, "limit": limit})
+
+
+class PersonAddRequest(BaseModel):
+    name: str
+    display_name: str | None = None
+    online_handles: list[str] | str | None = None
+    social_links: list[str] | str | None = None
+    areas_of_expertise: list[str] | str | None = None
+    notes: str | None = None
+    tags: list[str] | str | None = None
+    last_interacted_at: str | None = None
+    created_by_agent: str | None = None
+    created_by_session_id: str | None = None
+
+
+@router.post("/people/add")
+async def add_person(req: PersonAddRequest):
+    """Add a person. Idempotent on case-insensitive name — if a
+    person with the same name already exists, returns the existing
+    row with `created: false` (the caller can then call
+    /people/update if they want to merge in new data)."""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/people/add",
+        req.dict(exclude_none=True))
+
+
+class PersonUpdateRequest(BaseModel):
+    id: int
+    display_name: str | None = None
+    online_handles: list[str] | str | None = None
+    social_links: list[str] | str | None = None
+    areas_of_expertise: list[str] | str | None = None
+    tags: list[str] | str | None = None
+    notes_append: str | None = None    # append-mode (default for agents)
+    notes_replace: str | None = None   # replace-mode (manual UI edits)
+    last_interacted_at: str | None = None
+
+
+@router.post("/people/update")
+async def update_person(req: PersonUpdateRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/people/update",
+        req.dict(exclude_none=True))
+
+
+class PersonDeleteRequest(BaseModel):
+    id: int
+
+
+@router.post("/people/delete")
+async def delete_person(req: PersonDeleteRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/people/delete", req.dict())
+
+
+class LinkProjectPersonRequest(BaseModel):
+    project: str
+    person_id: int
+    role: str | None = None
+    created_by_agent: str | None = None
+
+
+@router.post("/people/link-project")
+async def link_project_person(req: LinkProjectPersonRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/people/link-project",
+        req.dict(exclude_none=True))
+
+
+class UnlinkProjectPersonRequest(BaseModel):
+    project: str
+    person_id: int
+
+
+@router.post("/people/unlink-project")
+async def unlink_project_person(req: UnlinkProjectPersonRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/people/unlink-project", req.dict())
+
+
+@router.get("/people/for-project")
+async def people_for_project(project: str):
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/people/for-project", {"project": project})
