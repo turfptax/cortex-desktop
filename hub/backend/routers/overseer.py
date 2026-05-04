@@ -1039,3 +1039,13 @@ async def unlink_project_person(req: UnlinkProjectPersonRequest):
 async def people_for_project(project: str):
     return await pi_client.plugin_call(
         "overseer", "GET", "/people/for-project", {"project": project})
+
+
+@router.get("/people/stats")
+async def people_stats():
+    """Proxy: GET /plugins/overseer/people/stats — cross-cutting
+    counts (totals, recent additions, orphans, multi-project
+    connectors, top expertise tags, top projects by linked people).
+    Used by both MCP agents and the upcoming Hub UI Network section."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/people/stats", None)
