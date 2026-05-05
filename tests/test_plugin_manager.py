@@ -181,6 +181,10 @@ def test_marketplace_flags_installed(tmp_path: Path) -> None:
     before = mgr.marketplace()
     assert any(p["id"] == "cortex-vision" for p in before)
     assert all(p["installed"] is False for p in before)
+    # default_port is exposed so the frontend can render the
+    # "Register dev sidecar" hint without an extra round-trip.
+    cv_before = next(p for p in before if p["id"] == "cortex-vision")
+    assert cv_before["default_port"] == 8004
 
     mgr.upsert(InstalledPlugin(
         id="cortex-vision", version="dev", port=8004,
@@ -188,6 +192,19 @@ def test_marketplace_flags_installed(tmp_path: Path) -> None:
     after = mgr.marketplace()
     cv = next(p for p in after if p["id"] == "cortex-vision")
     assert cv["installed"] is True
+
+
+def test_marketplace_helpers() -> None:
+    """is_marketplace_id and marketplace_default_port are used by the
+    dev-register endpoint to validate input."""
+    from services.plugin_manager import (
+        is_marketplace_id,
+        marketplace_default_port,
+    )
+    assert is_marketplace_id("cortex-vision") is True
+    assert is_marketplace_id("not-a-real-plugin") is False
+    assert marketplace_default_port("cortex-vision") == 8004
+    assert marketplace_default_port("not-a-real-plugin") is None
 
 
 def test_uninstall_removes_entry(tmp_path: Path) -> None:

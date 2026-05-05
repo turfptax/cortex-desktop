@@ -20,6 +20,8 @@ from pydantic import BaseModel
 from services.plugin_manager import (
     InstalledPlugin,
     get_manager,
+    is_marketplace_id,
+    marketplace_default_port,
 )
 
 logger = logging.getLogger("cortex.hub.plugins")
@@ -36,6 +38,22 @@ class InstallRequest(BaseModel):
     plugin_id: str
     variant: str = "auto"
     version: str = "latest"
+
+
+class DevRegisterRequest(BaseModel):
+    """Request body for /api/plugins/dev-register.
+
+    The agent / curl / dev-mode UI calls this to track a sidecar
+    that's already running externally — for instance, when the
+    developer is iterating on the plugin's source tree. The Hub
+    writes the registry from inside its own (non-sandboxed) process,
+    which sidesteps the UWP %APPDATA% redirect issue that bites
+    direct file edits from agents on Windows.
+    """
+
+    plugin_id: str
+    host: str = "127.0.0.1"
+    port: int | None = None  # falls back to marketplace default
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +94,69 @@ async def install(req: InstallRequest) -> dict[str, Any]:
             ),
         },
     )
+
+
+@router.post("/dev-register")
+async def dev_register(req: DevRegisterRequest) -> dict[str, Any]:
+    """Register a sidecar that's already running externally as a
+    dev-mode plugin (executable=null, auto_start=false).
+
+    The Hub does the registry write from its own process context,
+    so this works regardless of how the caller's filesystem is
+    sandboxed (notably: agents running through the Microsoft Store
+    Claude Desktop on Windows, whose %APPDATA% writes get redirected
+    into the app's per-package container — see
+    feedback_uwp_appdata_sandbox_redirect.md).
+
+    Phase 0/dev only. Phase 5's real install flow has its own
+    download + extract + register path; that lives in install().
+    """
+    if not is_marketplace_id(req.plugin_id):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "unknown_plugin",
+                "plugin": req.plugin_id,
+                "message": (
+                    "dev-register only accepts plugin_ids that exist in the "
+                    "marketplace. This guards against accidentally tracking "
+                    "arbitrary processes as plugins."
+                ),
+            },
+        )
+
+    port = req.port if req.port is not None else marketplace_default_port(req.plugin_id)
+    if port is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "no_port",
+                "plugin": req.plugin_id,
+                "message": (
+                    "No port supplied and no default_port in the marketplace "
+                    "entry. Pass port explicitly."
+                ),
+            },
+        )
+
+    plugin = InstalledPlugin(
+        id=req.plugin_id,
+        version="dev",
+        variant="dev",
+        host=req.host,
+        port=port,
+        executable=None,
+        install_dir=None,
+        auto_start=False,
+    )
+    get_manager().upsert(plugin)
+    logger.info(
+        "Registered %s in dev mode at %s:%d via dev-register",
+        req.plugin_id,
+        req.host,
+        port,
+    )
+    return {"ok": True, "plugin": plugin.to_api_dict()}
 
 
 @router.post("/{plugin_id}/update", status_code=501)

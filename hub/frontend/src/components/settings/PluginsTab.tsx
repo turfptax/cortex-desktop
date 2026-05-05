@@ -79,6 +79,26 @@ export function PluginsTab() {
     setBusyId(null)
   }
 
+  const handleDevRegister = async (id: string) => {
+    setBusyId(id)
+    setActionMessage(null)
+    try {
+      await apiFetch('/plugins/dev-register', {
+        method: 'POST',
+        body: JSON.stringify({ plugin_id: id }),
+      })
+      setActionMessage(
+        `Registered ${id} in dev mode. Make sure the sidecar is ` +
+          `running on its default port; status will flip to Running ` +
+          `within 5 seconds.`
+      )
+      await refresh()
+    } catch (e) {
+      setActionMessage(e instanceof Error ? e.message : String(e))
+    }
+    setBusyId(null)
+  }
+
   return (
     <div className="bg-surface rounded-xl p-5 border border-border">
       <div className="mb-4">
@@ -131,6 +151,7 @@ export function PluginsTab() {
               plugin={m}
               busy={busyId === m.id}
               onInstall={() => handleInstall(m.id)}
+              onDevRegister={() => handleDevRegister(m.id)}
             />
           ))}
         </div>
@@ -215,11 +236,14 @@ function MarketplaceRow({
   plugin,
   busy,
   onInstall,
+  onDevRegister,
 }: {
   plugin: MarketplacePlugin
   busy: boolean
   onInstall: () => void
+  onDevRegister: () => void
 }) {
+  const portLabel = plugin.default_port ? `:${plugin.default_port}` : ''
   return (
     <div className="bg-surface-secondary rounded-lg p-3 border border-border">
       <div className="flex items-start justify-between gap-3">
@@ -240,17 +264,27 @@ function MarketplaceRow({
             github.com/{plugin.github_repo}
           </a>
         </div>
-        <div className="shrink-0">
+        <div className="shrink-0 flex flex-col items-end gap-1.5">
           {plugin.installed ? (
             <span className="text-xs text-text-muted italic">Installed</span>
           ) : (
-            <button
-              onClick={onInstall}
-              disabled={busy}
-              className="px-3 py-1.5 text-xs rounded bg-accent/15 text-accent-hover hover:bg-accent/25 disabled:opacity-50 cursor-pointer"
-            >
-              Install
-            </button>
+            <>
+              <button
+                onClick={onInstall}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs rounded bg-accent/15 text-accent-hover hover:bg-accent/25 disabled:opacity-50 cursor-pointer"
+              >
+                Install
+              </button>
+              <button
+                onClick={onDevRegister}
+                disabled={busy}
+                title={`Track an externally-running sidecar at 127.0.0.1${portLabel} as a dev plugin. Use this when you're running the plugin from source.`}
+                className="px-3 py-1.5 text-xs rounded border border-border text-text-secondary hover:bg-surface-tertiary hover:text-text-primary disabled:opacity-50 cursor-pointer whitespace-nowrap"
+              >
+                Register dev sidecar
+              </button>
+            </>
           )}
         </div>
       </div>

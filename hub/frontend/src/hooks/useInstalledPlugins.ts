@@ -25,6 +25,7 @@ export interface MarketplacePlugin {
   description: string
   github_repo: string
   manifest_url: string
+  default_port?: number
   installed: boolean
 }
 

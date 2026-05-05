@@ -49,7 +49,10 @@ GRACEFUL_STOP_TIMEOUT_S = 5.0
 # Reserved port range for plugins
 PLUGIN_PORT_RANGE = range(8004, 8100)
 
-# Marketplace (Phase 0: hardcoded; Phase 5 will fetch from a registry)
+# Marketplace (Phase 0: hardcoded; Phase 5 will fetch from a registry).
+# `default_port` is what dev-register uses when the user clicks "Register
+# dev sidecar" without specifying a port — pulled from each plugin's
+# plugin.json manifest at the time it was added.
 MARKETPLACE: list[dict[str, Any]] = [
     {
         "id": "cortex-vision",
@@ -61,8 +64,22 @@ MARKETPLACE: list[dict[str, Any]] = [
         "manifest_url": (
             "https://raw.githubusercontent.com/turfptax/cortex-vision/main/plugin.json"
         ),
+        "default_port": 8004,
     },
 ]
+
+
+def is_marketplace_id(plugin_id: str) -> bool:
+    """True if plugin_id is in the hardcoded marketplace list. Used to
+    gate dev-register so we don't accept arbitrary plugin ids."""
+    return any(p["id"] == plugin_id for p in MARKETPLACE)
+
+
+def marketplace_default_port(plugin_id: str) -> int | None:
+    for p in MARKETPLACE:
+        if p["id"] == plugin_id:
+            return p.get("default_port")
+    return None
 
 
 def _appdata() -> Path:
