@@ -304,16 +304,24 @@ function HumanJournalSection() {
                 ? 'Transcribing…'
                 : 'Voice'}
           </button>
-          {error && (
-            <span className="text-xs text-red-400 truncate max-w-md"
-                  title={error}>
-              {error}
-            </span>
-          )}
           <span className="ml-auto text-[11px] text-text-muted">
             {entries.length} entr{entries.length === 1 ? 'y' : 'ies'} total
           </span>
         </div>
+        {/* Multi-line error banner. Renders setup instructions
+            (e.g. install commands) without truncation. */}
+        {error && (
+          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300 leading-relaxed whitespace-pre-wrap">
+            {error}
+            <button
+              onClick={() => setError(null)}
+              className="ml-3 text-[10px] uppercase tracking-wider text-red-300/70 hover:text-red-300 cursor-pointer"
+              title="Dismiss"
+            >
+              dismiss
+            </button>
+          </div>
+        )}
       </div>
 
       {entries.length > 0 && (
