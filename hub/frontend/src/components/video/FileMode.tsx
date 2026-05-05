@@ -11,13 +11,18 @@ import { SessionStatusView } from './SessionStatusView'
  */
 export function FileMode() {
   const [url, setUrl] = useState('')
+  const [transcribeAudio, setTranscribeAudio] = useState(false)
   const { session, submitting, error, submit, reset } = useVideoJob()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const trimmed = url.trim()
     if (!trimmed) return
-    await submit({ source: trimmed, mode: 'file' })
+    await submit({
+      source: trimmed,
+      mode: 'file',
+      transcribe_audio: transcribeAudio,
+    })
   }
 
   const isRunning = session !== null && !isTerminal(session.status)
@@ -63,6 +68,18 @@ export function FileMode() {
             </button>
           )}
         </div>
+        <label className="flex items-center gap-2 text-xs text-text-secondary mt-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={transcribeAudio}
+            onChange={(e) => setTranscribeAudio(e.target.checked)}
+            disabled={isRunning || submitting}
+            className="w-4 h-4 rounded border-border accent-accent cursor-pointer"
+          />
+          Transcribe audio (extracts via ffmpeg, transcribes via Whisper —
+          adds a few seconds per minute; no-op if ffmpeg or a transcription
+          provider isn't configured)
+        </label>
       </form>
 
       {error && !session && (

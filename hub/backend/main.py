@@ -32,6 +32,7 @@ from routers import (
 )
 from routers import settings as settings_router
 from services.plugin_manager import PluginManager, set_manager
+from services.video_overseer_bridge import VideoOverseerBridge
 
 # --- Logging setup ---
 LOG_DIR = Path(os.environ.get("APPDATA", ".")) / "Cortex" / "logs"
@@ -107,11 +108,12 @@ app.include_router(video.router, prefix="/api/video", tags=["video"])
 # stops everything on shutdown. See services/plugin_manager.py.
 
 _health_task: asyncio.Task | None = None
+_bridge_task: asyncio.Task | None = None
 
 
 @app.on_event("startup")
 async def _start_plugins() -> None:
-    global _health_task
+    global _health_task, _bridge_task
     manager = PluginManager()
     set_manager(manager)
     app.state.plugins = manager
@@ -127,10 +129,32 @@ async def _start_plugins() -> None:
 
     _health_task = asyncio.create_task(manager.health_loop())
 
+    # Video overseer bridge — polls cortex-vision for completed-but-
+    # unpushed sessions and forwards each as a Pi note. Idempotent and
+    # self-healing; safe to start unconditionally regardless of whether
+    # cortex-vision is currently registered. See
+    # services/video_overseer_bridge.py.
+    bridge = VideoOverseerBridge(manager)
+    app.state.video_bridge = bridge
+    _bridge_task = bridge.start()
+
 
 @app.on_event("shutdown")
 async def _stop_plugins() -> None:
-    global _health_task
+    global _health_task, _bridge_task
+
+    bridge: VideoOverseerBridge | None = getattr(
+        app.state, "video_bridge", None
+    )
+    if bridge is not None:
+        bridge.stop()
+        if _bridge_task is not None:
+            _bridge_task.cancel()
+            try:
+                await _bridge_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
     manager: PluginManager | None = getattr(app.state, "plugins", None)
     if manager is None:
         return

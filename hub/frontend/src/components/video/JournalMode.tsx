@@ -46,6 +46,7 @@ export function JournalMode() {
   const [phase, setPhase] = useState<Phase>('idle')
   const [includeMic, setIncludeMic] = useState(true)
   const [pushToOverseer, setPushToOverseer] = useState(true)
+  const [transcribeAudio, setTranscribeAudio] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [elapsedMs, setElapsedMs] = useState(0)
   const [uploadProgress, setUploadProgress] = useState({ loaded: 0, total: 0 })
@@ -186,6 +187,7 @@ export function JournalMode() {
     const sessionId = await submitUpload(blob, filename, {
       mode: 'journal',
       push_to_overseer: pushToOverseer,
+      transcribe_audio: transcribeAudio,
       onProgress: (loaded, total) => setUploadProgress({ loaded, total }),
     })
 
@@ -241,6 +243,15 @@ export function JournalMode() {
                 className="w-4 h-4 rounded border-border accent-accent cursor-pointer"
               />
               Push scenes to today's overseer journal when complete
+            </label>
+            <label className="flex items-center gap-2 text-sm text-text-secondary cursor-pointer">
+              <input
+                type="checkbox"
+                checked={transcribeAudio}
+                onChange={(e) => setTranscribeAudio(e.target.checked)}
+                className="w-4 h-4 rounded border-border accent-accent cursor-pointer"
+              />
+              Transcribe audio (Whisper)
             </label>
           </div>
 
