@@ -198,6 +198,116 @@ export function frameUrl(
 }
 
 // ---------------------------------------------------------------------------
+// Live mode (Phase 4) — camera selection, start/stop, WebSocket protocol
+// ---------------------------------------------------------------------------
+
+export interface CameraInfo {
+  index: number
+  name?: string
+  resolution?: [number, number]
+  fps?: number
+  // Forward-compatible: cortex-vision may add fields
+  [key: string]: unknown
+}
+
+export interface LiveStartRequest {
+  camera_index?: number
+  resolution?: [number, number]
+  project_id?: string | null
+  threshold?: number
+  pixel_diff_threshold?: number
+  structural_threshold?: number
+  steady_interval?: number
+  min_scene_gap?: number
+  describer_model?: string | null
+}
+
+export interface LiveStartResponse {
+  session_id: string
+  status: SessionStatus
+  ws_url: string
+  stop_url: string
+  config: {
+    camera_index: number
+    resolution: [number, number]
+  }
+}
+
+export interface LiveStopResponse {
+  stopped: boolean
+  final_status: Record<string, unknown>
+}
+
+export type LiveStatus =
+  | { is_running: false }
+  | (Record<string, unknown> & { is_running?: true })
+
+export async function listCameras(): Promise<CameraInfo[]> {
+  const r = await apiFetch<{ cameras: CameraInfo[] }>('/video/live/cameras')
+  return r.cameras ?? []
+}
+
+export async function liveStart(
+  req: LiveStartRequest = {},
+): Promise<LiveStartResponse> {
+  return apiFetch<LiveStartResponse>('/video/live/start', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  })
+}
+
+export async function liveStop(): Promise<LiveStopResponse> {
+  return apiFetch<LiveStopResponse>('/video/live/stop', { method: 'POST' })
+}
+
+export async function liveStatus(): Promise<LiveStatus> {
+  return apiFetch<LiveStatus>('/video/live/status')
+}
+
+// --- WebSocket event protocol (per cortex_vision/pipeline/live.py) ----------
+
+export type LiveEvent =
+  | { type: 'started'; session_id: string; camera_index: number; resolution: [number, number] }
+  | {
+      type: 'scene'
+      scene_index: number
+      change_type: 'scene_change' | 'update'
+      thumbnail_url: string
+      trigger_method: string
+      similarity: number
+    }
+  | {
+      type: 'described'
+      scene_index: number
+      description: string
+      describer_model: string
+    }
+  | {
+      type: 'stats'
+      fps: number
+      frames: number
+      scene_count: number
+      elapsed_s: number
+      [key: string]: unknown
+    }
+  | {
+      type: 'stopped'
+      session_id: string
+      scene_count: number
+      duration_s: number
+    }
+  | { type: 'error'; message: string }
+  // Forward-compatible: ignore unknown future types
+  | { type: string; [key: string]: unknown }
+
+/** Build the WebSocket URL pointing at the Hub's proxied /live/ws path.
+ * Picks ws:// vs wss:// from the page's protocol so it works behind TLS. */
+export function liveWsUrl(): string {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${proto}//${window.location.host}/api/video/live/ws`
+}
+
+// ---------------------------------------------------------------------------
 // Helpers — status taxonomy
 // ---------------------------------------------------------------------------
 

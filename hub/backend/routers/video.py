@@ -18,11 +18,13 @@ Phase 0 contract:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+import websockets
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from services.plugin_manager import get_plugin
@@ -171,14 +173,107 @@ async def proxy(full_path: str, request: Request) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Phase 4 placeholder — when WebSocket support lands, add a sibling handler
-# here:
+# WebSocket pass-through (Phase 4 — live mode).
 #
-#   @router.websocket("/{full_path:path}")
-#   async def proxy_ws(full_path: str, websocket: WebSocket) -> None:
-#       base = _resolve_sidecar_base()  # reuse the same lookup
-#       ...bridge between client websocket and upstream websocket...
+# Bridges a browser WebSocket to the cortex-vision sidecar's live event
+# stream. cortex-vision's protocol is one-way (sidecar -> consumer) but
+# we still forward client-to-upstream messages in case future versions
+# accept commands over the same socket.
 #
-# Don't touch the proxy() function above to add it — keep the two handlers
-# independent so the HTTP path stays simple.
+# Scoped to /live/ws specifically rather than a path glob so it can't
+# accidentally shadow future HTTP routes the sidecar adds.
 # ---------------------------------------------------------------------------
+
+
+def _resolve_sidecar_for_ws() -> tuple[str, int] | None:
+    """Resolve sidecar host/port for a WebSocket connection. Returns
+    None if the plugin isn't installed or isn't running — the caller
+    closes the client socket with the appropriate close code."""
+    plugin = get_plugin(PLUGIN_ID)
+    if plugin is None or not plugin.is_running:
+        return None
+    return plugin.host, plugin.port
+
+
+@router.websocket("/live/ws")
+async def proxy_live_ws(client_ws: WebSocket) -> None:
+    """Bridge a browser WebSocket to the sidecar's live event stream."""
+    target = _resolve_sidecar_for_ws()
+    if target is None:
+        # Per RFC 6455: 1011 = "internal error" / sidecar unavailable.
+        # We accept first to send a structured close reason — some browsers
+        # don't surface the close reason if the connection is rejected
+        # before accept().
+        await client_ws.accept()
+        await client_ws.close(
+            code=1011, reason="Cortex Vision plugin not installed or not running"
+        )
+        return
+
+    host, port = target
+    upstream_url = f"ws://{host}:{port}/api/video/live/ws"
+    await client_ws.accept()
+
+    try:
+        async with websockets.connect(upstream_url) as upstream:
+
+            async def upstream_to_client() -> None:
+                # Returns naturally when the upstream closes
+                # (websockets exits the async-iter on close frame).
+                try:
+                    async for msg in upstream:
+                        if isinstance(msg, bytes):
+                            await client_ws.send_bytes(msg)
+                        else:
+                            await client_ws.send_text(msg)
+                except Exception:
+                    # Upstream disconnect / send-after-client-close — nothing
+                    # to recover; the sibling task or the gather wrapper
+                    # finalizes the close.
+                    pass
+
+            async def client_to_upstream() -> None:
+                # WebSocketDisconnect is raised when the browser closes;
+                # treat as a normal exit.
+                try:
+                    while True:
+                        msg = await client_ws.receive_text()
+                        await upstream.send(msg)
+                except WebSocketDisconnect:
+                    pass
+                except Exception:
+                    pass
+
+            # Run both directions concurrently. As soon as EITHER side
+            # finishes (upstream closes, browser closes, error), cancel
+            # the still-blocked task so the gather wrapper exits and we
+            # can close both sockets cleanly. The naive
+            # asyncio.gather(...) blocks forever waiting on the side
+            # that's still doing receive_text() / aiter_raw().
+            tasks = [
+                asyncio.create_task(upstream_to_client()),
+                asyncio.create_task(client_to_upstream()),
+            ]
+            try:
+                _, pending = await asyncio.wait(
+                    tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+                for t in pending:
+                    t.cancel()
+                # Drain so the cancellations actually run before we exit
+                # the websockets context manager.
+                for t in pending:
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
+            except Exception as inner:
+                logger.warning("WebSocket bridge gather error: %s", inner)
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.warning("WebSocket bridge error: %s", exc)
+        try:
+            await client_ws.close(code=1011, reason="upstream sidecar error")
+        except Exception:
+            pass
