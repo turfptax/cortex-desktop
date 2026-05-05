@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { FileMode } from './FileMode'
 import { JournalMode } from './JournalMode'
+import { LiveMode } from './LiveMode'
 import { SessionList } from './SessionList'
 
 /** Video page — replaces the placeholder once cortex-vision is registered.
  *
- * Phases enabled so far: File (Phase 1), Journal (Phase 3), History
- * (cross-mode session list). Live remains gated until Phase 4
- * (OBS virtual cam + WebSocket pass-through).
+ * All four cortex-vision modes are now wired: File (Phase 1), Journal
+ * (Phase 3), Live (Phase 4), and the cross-mode History list.
  */
 type VideoTab = 'file' | 'journal' | 'live' | 'history'
 
@@ -21,8 +21,8 @@ interface TabSpec {
 const TABS: TabSpec[] = [
   { id: 'file', label: 'Process video', enabled: true },
   { id: 'journal', label: 'Video journal', enabled: true },
+  { id: 'live', label: 'Live (OBS)', enabled: true },
   { id: 'history', label: 'History', enabled: true },
-  { id: 'live', label: 'Live (OBS)', enabled: false, comingIn: 'Phase 4' },
 ]
 
 export function VideoPage() {
@@ -69,8 +69,8 @@ export function VideoPage() {
       <div className="flex-1 overflow-y-auto">
         {tab === 'file' && <FileMode />}
         {tab === 'journal' && <JournalMode />}
+        {tab === 'live' && <LiveMode />}
         {tab === 'history' && <SessionList />}
-        {/* live tab disabled until Phase 4 */}
       </div>
     </div>
   )
