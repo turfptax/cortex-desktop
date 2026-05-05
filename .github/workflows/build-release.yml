@@ -39,6 +39,24 @@ jobs:
         working-directory: hub/frontend
         run: npm run build
 
+      # Slice 7 CP2: build whisper.cpp from a pinned tag and stage
+      # the binary at hub/backend/bin/whisper-cli.exe so PyInstaller
+      # picks it up. Cached across runs since whisper.cpp tag is
+      # pinned in the script.
+      - name: Cache whisper-cli binary
+        id: whisper-cache
+        uses: actions/cache@v4
+        with:
+          path: hub/backend/bin
+          # Cache key tracks the script — bump WHISPER_CPP_TAG in
+          # the script to invalidate.
+          key: whisper-cli-${{ runner.os }}-${{ hashFiles('scripts/build_whisper_cpp.py') }}
+
+      - name: Build whisper.cpp (if cache miss)
+        if: steps.whisper-cache.outputs.cache-hit != 'true'
+        run: python scripts/build_whisper_cpp.py
+        shell: pwsh
+
       - name: Build exe (PyInstaller)
         run: python build.py --skip-frontend
 
