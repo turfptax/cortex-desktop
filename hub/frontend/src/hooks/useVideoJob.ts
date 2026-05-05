@@ -3,7 +3,10 @@ import {
   createJob,
   getSession,
   isTerminal,
+  uploadJob,
   type CreateJobRequest,
+  type UploadJobOptions,
+  type VideoMode,
   type VideoSession,
 } from '../lib/videoApi'
 
@@ -103,6 +106,48 @@ export function useVideoJob(initialSessionId?: string) {
     [pollOnce, stopPolling]
   )
 
+  const submitUpload = useCallback(
+    async (
+      blob: Blob,
+      filename: string,
+      options: UploadJobOptions & { mode?: VideoMode } = {},
+    ): Promise<string | null> => {
+      stopPolling()
+      setSubmitting(true)
+      setError(null)
+      setSession(null)
+      try {
+        const resp = await uploadJob(blob, filename, options)
+        setSessionId(resp.session_id)
+        // Optimistic seed before the first poll
+        setSession({
+          id: resp.session_id,
+          mode: options.mode ?? 'journal',
+          source: { kind: 'upload', filename },
+          status: resp.status,
+          project_id: options.project_id ?? null,
+          started_at: new Date().toISOString(),
+          ended_at: null,
+          duration_s: null,
+          scenes: [],
+          narrative: null,
+          transcript: [],
+          pushed_to_overseer: false,
+          error: null,
+          progress: {},
+        })
+        pollOnce(resp.session_id)
+        return resp.session_id
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e))
+        return null
+      } finally {
+        setSubmitting(false)
+      }
+    },
+    [pollOnce, stopPolling],
+  )
+
   const reset = useCallback(() => {
     stopPolling()
     setSessionId(null)
@@ -110,5 +155,13 @@ export function useVideoJob(initialSessionId?: string) {
     setError(null)
   }, [stopPolling])
 
-  return { sessionId, session, submitting, error, submit, reset }
+  return {
+    sessionId,
+    session,
+    submitting,
+    error,
+    submit,
+    submitUpload,
+    reset,
+  }
 }

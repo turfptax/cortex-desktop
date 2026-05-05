@@ -58,11 +58,13 @@ export interface VideoSession {
   progress: { current_scene?: number; total_scenes?: number; [key: string]: unknown }
 }
 
-/** Returned by POST /api/video/jobs */
+/** Returned by POST /api/video/jobs and POST /api/video/jobs/upload.
+ * The upload endpoint additionally reports bytes_uploaded. */
 export interface CreateJobResponse {
   session_id: string
   status: SessionStatus
   poll_url: string
+  bytes_uploaded?: number
 }
 
 /** Body for POST /api/video/jobs */
@@ -97,6 +99,76 @@ export async function createJob(req: CreateJobRequest): Promise<CreateJobRespons
   return apiFetch<CreateJobResponse>('/video/jobs', {
     method: 'POST',
     body: JSON.stringify(req),
+  })
+}
+
+export interface UploadJobOptions {
+  mode?: VideoMode
+  project_id?: string | null
+  push_to_overseer?: boolean
+  transcribe_audio?: boolean
+  keyframes_per_scene?: number
+  describer_model?: string | null
+  narrative_model?: string | null
+  /** Reports bytes-uploaded as the upload streams. The browser doesn't
+   * surface upload progress on fetch(); this hook uses XHR under the
+   * hood for the progress event. */
+  onProgress?: (loaded: number, total: number) => void
+}
+
+/** Multipart upload to POST /api/video/jobs/upload (Phase 3 + journal mode).
+ *
+ * Uses XMLHttpRequest rather than fetch() so we can report upload progress
+ * via the `onProgress` callback. Browsers don't expose upload progress via
+ * fetch() yet (the spec exists but no major browser ships it).
+ */
+export function uploadJob(
+  blob: Blob,
+  filename: string,
+  options: UploadJobOptions = {},
+): Promise<CreateJobResponse> {
+  return new Promise((resolve, reject) => {
+    const fd = new FormData()
+    fd.append('file', blob, filename)
+    if (options.mode) fd.append('mode', options.mode)
+    if (options.project_id) fd.append('project_id', options.project_id)
+    if (options.push_to_overseer != null)
+      fd.append('push_to_overseer', String(options.push_to_overseer))
+    if (options.transcribe_audio != null)
+      fd.append('transcribe_audio', String(options.transcribe_audio))
+    if (options.keyframes_per_scene != null)
+      fd.append('keyframes_per_scene', String(options.keyframes_per_scene))
+    if (options.describer_model)
+      fd.append('describer_model', options.describer_model)
+    if (options.narrative_model)
+      fd.append('narrative_model', options.narrative_model)
+
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/api/video/jobs/upload')
+
+    if (options.onProgress) {
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) options.onProgress!(e.loaded, e.total)
+      })
+    }
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText))
+        } catch (e) {
+          reject(new Error(`Bad upload response: ${e}`))
+        }
+      } else {
+        reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`))
+      }
+    })
+    xhr.addEventListener('error', () =>
+      reject(new Error('Upload network error'))
+    )
+    xhr.addEventListener('abort', () => reject(new Error('Upload aborted')))
+
+    xhr.send(fd)
   })
 }
 
