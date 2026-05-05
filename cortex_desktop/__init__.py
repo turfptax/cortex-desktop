@@ -1,3 +1,3 @@
 """Cortex Desktop — system tray application for Cortex Hub."""
 
-__version__ = "0.17.0-dev.9"
+__version__ = "0.17.0-dev.10"

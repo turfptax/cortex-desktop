@@ -95,14 +95,15 @@ export function UpdateCard() {
           {checking ? 'Checking...' : 'Check for Updates'}
         </button>
 
-        {/* Channel toggle */}
-        <div className="flex items-center bg-surface-secondary rounded-lg p-0.5 text-xs">
+        {/* Channel toggle — bordered + clearer contrast so it
+            doesn't blend into the card surface. */}
+        <div className="flex items-center bg-surface-tertiary rounded-lg p-0.5 text-xs border border-border shrink-0">
           <button
             onClick={() => handleChannelChange('stable')}
             className={`px-3 py-1 rounded-md transition-colors cursor-pointer ${
               channel === 'stable'
-                ? 'bg-surface-tertiary text-text-primary font-medium'
-                : 'text-text-muted hover:text-text-secondary'
+                ? 'bg-accent/20 text-accent-hover font-semibold'
+                : 'text-text-secondary hover:text-text-primary'
             }`}
           >
             Stable
@@ -111,8 +112,8 @@ export function UpdateCard() {
             onClick={() => handleChannelChange('dev')}
             className={`px-3 py-1 rounded-md transition-colors cursor-pointer ${
               channel === 'dev'
-                ? 'bg-amber-500/20 text-amber-400 font-medium'
-                : 'text-text-muted hover:text-text-secondary'
+                ? 'bg-amber-500/25 text-amber-300 font-semibold'
+                : 'text-text-secondary hover:text-text-primary'
             }`}
           >
             Dev
