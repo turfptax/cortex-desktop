@@ -132,7 +132,26 @@ interface TranscribeResp {
   audio_extracted?: boolean
   source_format?: string
   bytes?: number
+  // Slice 7 CP2 model-download path
+  status?: 'model_downloading' | 'model_already_downloading'
+  message?: string
+  bytes_total?: number
+  bytes_downloaded?: number
   detail?: { error?: string; message?: string } | string
+}
+
+interface TranscribeStatusResp {
+  ok: boolean
+  binary_present: boolean
+  ffmpeg_installed: boolean
+  model: string
+  model_present: boolean
+  model_download: {
+    in_progress: boolean
+    bytes_downloaded: number
+    bytes_total: number
+    error?: string | null
+  }
 }
 
 function HumanJournalSection() {
@@ -143,7 +162,12 @@ function HumanJournalSection() {
   const [showAll, setShowAll] = useState(false)
   // Slice 7 transcribe state
   const [transcribeStage, setTranscribeStage] = useState<
-    null | 'extracting' | 'transcribing'>(null)
+    null | 'extracting' | 'transcribing'
+    | 'downloading-model' | 'queued-pending-model'>(null)
+  const [downloadProgress, setDownloadProgress] = useState<{
+    bytes: number; total: number
+  } | null>(null)
+  const pendingFileRef = useRef<File | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const refresh = useCallback(async () => {
@@ -194,14 +218,55 @@ function HumanJournalSection() {
     }
   }
 
-  // Slice 7: voice transcription. Upload a file (audio or video),
-  // get back a transcript, pre-fill the textarea. User then edits
-  // (if desired) and saves via the regular flow.
+  // Slice 7 CP2: voice transcription via local whisper.cpp.
+  // Two paths:
+  //   1. Happy path — model present, transcribes immediately.
+  //   2. First-run path — backend reports the GGML model isn't
+  //      downloaded yet. Hub kicks off a background download;
+  //      we poll /api/transcribe/status for progress, then
+  //      retry the upload when the model lands.
+  const pollDownloadAndRetry = async () => {
+    setTranscribeStage('downloading-model')
+    while (true) {
+      await new Promise((r) => setTimeout(r, 2000))
+      try {
+        const s = await fetch('/api/transcribe/status').then(
+          (r) => r.json() as Promise<TranscribeStatusResp>)
+        const dl = s?.model_download
+        if (dl) {
+          setDownloadProgress({
+            bytes: dl.bytes_downloaded || 0,
+            total: dl.bytes_total || 0,
+          })
+        }
+        if (dl?.error) {
+          setError('Model download failed: ' + dl.error)
+          setTranscribeStage(null)
+          setDownloadProgress(null)
+          return
+        }
+        if (s?.model_present) {
+          // Download done — retry the file the user gave us.
+          setDownloadProgress(null)
+          const pending = pendingFileRef.current
+          if (pending) {
+            pendingFileRef.current = null
+            await handleTranscribe(pending)
+          } else {
+            setTranscribeStage(null)
+          }
+          return
+        }
+      } catch (e: any) {
+        // Don't bail on transient poll errors — keep trying for a
+        // little while; user can refresh if it never recovers.
+        // (intentional no-op)
+      }
+    }
+  }
+
   const handleTranscribe = async (file: File) => {
     setError(null)
-    // Best-effort guess at the stage from the filename so the user
-    // sees the right hint immediately. Backend will tell us
-    // authoritatively in the response.
     const lower = file.name.toLowerCase()
     const isVideo = /\.(mp4|mov|webm|mkv|avi|mpg|mpeg|m4v|3gp)$/.test(lower)
     setTranscribeStage(isVideo ? 'extracting' : 'transcribing')
@@ -211,18 +276,35 @@ function HumanJournalSection() {
       const resp = await fetch('/api/transcribe', {
         method: 'POST', body: form,
       })
-      const r: TranscribeResp = await resp.json().catch(() => ({ ok: false }))
+      const r: TranscribeResp = await resp.json()
+        .catch(() => ({ ok: false }))
+
+      // First-run path: model not downloaded yet. Backend started
+      // the download; remember the file and poll until the model
+      // lands, then retry the upload automatically.
+      if (resp.ok && !r.ok && r.status?.startsWith('model_')) {
+        pendingFileRef.current = file
+        if (r.bytes_total || r.bytes_downloaded) {
+          setDownloadProgress({
+            bytes: r.bytes_downloaded || 0,
+            total: r.bytes_total || 0,
+          })
+        }
+        await pollDownloadAndRetry()
+        return
+      }
+
       if (!resp.ok || !r.ok) {
         const detail = r.detail
         const msg = typeof detail === 'string'
           ? detail
-          : detail?.message || `transcribe failed (${resp.status})`
+          : detail?.message || r.message
+              || `transcribe failed (${resp.status})`
         setError(msg)
         return
       }
+
       const transcript = (r.transcript || '').trim()
-      // Append (or pre-fill) — preserve any existing typed text so
-      // the user doesn't lose half-written thoughts.
       setText((prev) => {
         if (!prev.trim()) return transcript
         return prev.trimEnd() + '\n\n' + transcript
@@ -231,7 +313,6 @@ function HumanJournalSection() {
       setError(e?.message || String(e))
     } finally {
       setTranscribeStage(null)
-      // Reset the file input so picking the same file twice still fires onChange
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }
@@ -263,11 +344,18 @@ function HumanJournalSection() {
             }
           }}
           placeholder={
-            transcribeStage
-              ? (transcribeStage === 'extracting'
-                  ? 'Extracting audio from video…'
-                  : 'Transcribing… (large-v3 — first run downloads ~3GB)')
-              : "What's on your mind? (Cmd/Ctrl+Enter to save)"
+            transcribeStage === 'extracting'
+              ? 'Extracting audio from video…'
+              : transcribeStage === 'transcribing'
+                ? 'Transcribing locally with whisper.cpp…'
+                : transcribeStage === 'downloading-model'
+                  ? (downloadProgress && downloadProgress.total
+                      ? `Downloading large-v3 model (${
+                          Math.round(downloadProgress.bytes /
+                                     downloadProgress.total * 100)
+                        }% — one-time setup, ~3GB)…`
+                      : 'Downloading large-v3 model — one-time setup, ~3GB…')
+                  : "What's on your mind? (Cmd/Ctrl+Enter to save)"
           }
           rows={3}
           disabled={!!transcribeStage}
@@ -294,7 +382,7 @@ function HumanJournalSection() {
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={busy || !!transcribeStage}
-            title="Upload audio or video — local Whisper transcription, file never leaves your machine"
+            title="Upload audio or video — local whisper.cpp transcription, file never leaves your machine"
             className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer disabled:opacity-40 inline-flex items-center gap-1"
           >
             <span>🎤</span>
@@ -302,7 +390,13 @@ function HumanJournalSection() {
               ? 'Extracting…'
               : transcribeStage === 'transcribing'
                 ? 'Transcribing…'
-                : 'Voice'}
+                : transcribeStage === 'downloading-model'
+                  ? (downloadProgress && downloadProgress.total
+                      ? `Setup ${Math.round(
+                          downloadProgress.bytes /
+                          downloadProgress.total * 100)}%`
+                      : 'Setup…')
+                  : 'Voice'}
           </button>
           <span className="ml-auto text-[11px] text-text-muted">
             {entries.length} entr{entries.length === 1 ? 'y' : 'ies'} total

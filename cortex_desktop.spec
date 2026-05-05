@@ -21,6 +21,18 @@ if BACKEND_DIR.is_dir():
         dest = Path("backend") / rel.parent
         datas.append((str(py_file), str(dest)))
 
+# Slice 7 CP2: whisper.cpp CLI binary for local voice transcription.
+# Built before PyInstaller runs (CI: build_whisper_cpp.py step;
+# local dev: same script). Tracks any binary file in this dir so
+# adding things later (alternate models, etc.) Just Works.
+WHISPER_BIN_DIR = BACKEND_DIR / "bin"
+if WHISPER_BIN_DIR.is_dir():
+    for f in WHISPER_BIN_DIR.iterdir():
+        if f.is_file():
+            # Land at backend/bin/<filename> in the bundle so the
+            # transcribe router can resolve it relative to _MEIPASS.
+            datas.append((str(f), "backend/bin"))
+
 # Frontend dist (pre-built React SPA)
 if FRONTEND_DIST.is_dir():
     datas.append((str(FRONTEND_DIST), "frontend_dist"))

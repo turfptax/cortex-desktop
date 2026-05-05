@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cortex-desktop"
-version = "0.17.0.dev8"
+version = "0.17.0.dev9"
 description = "Cortex Hub desktop application — system tray + browser UI"
 requires-python = ">=3.10"
 dependencies = [
@@ -25,14 +25,13 @@ dependencies = [
 build = [
     "pyinstaller>=6.0",
 ]
-# Slice 7: local audio/video transcription for the human journal.
-# Heavy (~2GB installed due to PyTorch). Optional so the base Hub
-# stays light. Install with: pip install -e ".[voice]"
-# Also requires ffmpeg on PATH (winget install ffmpeg, brew install
-# ffmpeg, or apt install ffmpeg).
-voice = [
-    "openai-whisper>=20240930",
-]
+# Slice 7 CP2 (dev.9): voice transcription dropped its Python deps.
+# whisper.cpp ships as a native binary built into the installer
+# (see scripts/build_whisper_cpp.py + cortex_desktop.spec). The
+# Hub backend invokes it via subprocess. ffmpeg is the only
+# remaining external dependency — required for audio normalization.
+# Install with: winget install ffmpeg / brew install ffmpeg /
+# apt install ffmpeg.
 
 [project.scripts]
 cortex-desktop = "cortex_desktop.app:main"
