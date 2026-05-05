@@ -38,3 +38,28 @@ config.json
 
 # Build artifacts
 *.exe
+
+# ── User data — never committed ─────────────────────────────────
+# Defensive: nothing in this repo currently writes these, but if any
+# future code (Hub backend, MCP server, dev tooling) ever creates a
+# local DB, JSONL export, or SQL dump, it stays local.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.jsonl
+*.sql
+
+# Local imports / uploads / caches (user-data staging dirs)
+imports/
+uploads/
+*.session.json
+*.cache.json
+
+# Secrets — actual secrets live in %APPDATA% / ~/.cortex outside the
+# repo, but block any in-repo accidents.
+secrets.toml
+secrets.json
+*.pem
+*.key
