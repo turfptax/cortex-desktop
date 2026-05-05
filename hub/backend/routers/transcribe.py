@@ -158,6 +158,36 @@ def _find_binary() -> Path | None:
     return None
 
 
+def _binary_marker(binary_path: Path) -> dict:
+    """Read whisper-cli.version next to the binary. Format is
+    "<tag>+<backend1>+<backend2>" (e.g. "v1.7.4+vulkan+cpu" or
+    "v1.7.4+cpu"). Returns:
+      {
+        version: "v1.7.4",
+        backends: ["vulkan", "cpu"],
+        gpu_capable: True,    # vulkan/cuda/metal in backends
+        raw: "v1.7.4+vulkan+cpu",
+      }
+    Best-effort — returns empty dict if marker missing/unreadable."""
+    marker = binary_path.with_suffix(".version")
+    if not marker.is_file():
+        return {}
+    try:
+        raw = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return {}
+    parts = raw.split("+")
+    version = parts[0] if parts else ""
+    backends = [p for p in parts[1:] if p]
+    gpu_backends = {"vulkan", "cuda", "metal", "rocm", "opencl"}
+    return {
+        "version": version,
+        "backends": backends,
+        "gpu_capable": any(b in gpu_backends for b in backends),
+        "raw": raw,
+    }
+
+
 # ── ffmpeg sanity check ─────────────────────────────────────────
 
 
@@ -522,6 +552,7 @@ async def transcribe_status():
     """
     binary = _find_binary()
     binary_path = str(binary) if binary else None
+    binary_info = _binary_marker(binary) if binary else {}
     model_name = _configured_model()
     model_file = _model_path(model_name)
     return {
@@ -530,6 +561,9 @@ async def transcribe_status():
                and model_file.is_file()),
         "binary_present": binary is not None,
         "binary_path": binary_path,
+        "binary_version": binary_info.get("version", ""),
+        "binary_backends": binary_info.get("backends", []),
+        "gpu_capable": binary_info.get("gpu_capable", False),
         "ffmpeg_installed": _check_ffmpeg(),
         "model": model_name,
         "model_present": model_file.is_file(),

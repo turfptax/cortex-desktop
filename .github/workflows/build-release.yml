@@ -39,18 +39,30 @@ jobs:
         working-directory: hub/frontend
         run: npm run build
 
+      # Slice 7 CP3: install Vulkan SDK so whisper.cpp builds with
+      # GPU support. The compiled binary works on every modern
+      # Windows machine (NVIDIA / AMD / Intel — vulkan-1.dll ships
+      # with all current GPU drivers). Falls back to CPU at runtime
+      # if Vulkan device init fails.
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1.4.0
+        with:
+          vulkan_version: 1.3.290.0
+          install_runtime: true
+          cache: true
+          stripdown: true
+
       # Slice 7 CP2: build whisper.cpp from a pinned tag and stage
       # the binary at hub/backend/bin/whisper-cli.exe so PyInstaller
       # picks it up. Cached across runs since whisper.cpp tag is
-      # pinned in the script.
+      # pinned in the script. Cache key now includes vulkan to
+      # avoid serving a stale CPU-only binary after the SDK lands.
       - name: Cache whisper-cli binary
         id: whisper-cache
         uses: actions/cache@v4
         with:
           path: hub/backend/bin
-          # Cache key tracks the script — bump WHISPER_CPP_TAG in
-          # the script to invalidate.
-          key: whisper-cli-${{ runner.os }}-${{ hashFiles('scripts/build_whisper_cpp.py') }}
+          key: whisper-cli-${{ runner.os }}-vulkan-${{ hashFiles('scripts/build_whisper_cpp.py') }}
 
       - name: Build whisper.cpp (if cache miss)
         if: steps.whisper-cache.outputs.cache-hit != 'true'
