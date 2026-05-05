@@ -92,9 +92,25 @@ def have_cmake() -> bool:
     return shutil.which("cmake") is not None
 
 
-def build(work_dir: Path) -> Path:
-    """Clone + build whisper.cpp inside work_dir. Returns the path
-    to the produced whisper-cli binary."""
+def vulkan_sdk_present() -> bool:
+    """Slice 7 CP3 (dev.12): build with Vulkan GPU support when the
+    Vulkan SDK is available at build time. CI installs it via
+    jakoch/install-vulkan-sdk-action; local devs can install via
+    https://vulkan.lunarg.com/sdk/home if they want GPU builds.
+
+    The compiled binary works on any Windows machine that has
+    vulkan-1.dll (provided by every modern GPU driver — NVIDIA,
+    AMD, Intel). Falls back to CPU at runtime if Vulkan device
+    init fails. No CUDA-specific dependency; works on every GPU
+    vendor.
+    """
+    return bool(os.environ.get("VULKAN_SDK"))
+
+
+def build(work_dir: Path) -> tuple[Path, list[str]]:
+    """Clone + build whisper.cpp inside work_dir. Returns
+    (binary_path, build_flags) where build_flags is a list of
+    backend tags ('vulkan', 'cpu') for the marker file."""
     src = work_dir / "whisper.cpp"
     if not src.exists():
         run(["git", "clone", "--depth", "1", "--branch",
@@ -116,6 +132,15 @@ def build(work_dir: Path) -> Path:
         "-DBUILD_SHARED_LIBS=OFF",
         "-DWHISPER_BUILD_EXAMPLES=ON",
     ]
+    flags = ["cpu"]
+    if vulkan_sdk_present():
+        cmake_cfg.append("-DGGML_VULKAN=ON")
+        flags.insert(0, "vulkan")
+        print(f"==> Vulkan SDK detected at "
+              f"{os.environ.get('VULKAN_SDK')!r}; "
+              f"building with GPU support")
+    else:
+        print("==> Vulkan SDK not present; building CPU-only binary")
     run(cmake_cfg)
     run(["cmake", "--build", str(build_dir),
          "--config", "Release", "--target", "whisper-cli"])
@@ -130,11 +155,11 @@ def build(work_dir: Path) -> Path:
     ]
     for c in candidates:
         if c.is_file():
-            return c
+            return c, flags
     # Fall back: search whole build tree
     matches = list(build_dir.rglob(binary_name()))
     if matches:
-        return matches[0]
+        return matches[0], flags
     raise RuntimeError(
         "Build succeeded but couldn't locate {} under {}".format(
             binary_name(), build_dir,
@@ -163,7 +188,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="whispercpp-build-") as td:
         work = Path(td)
         try:
-            built = build(work)
+            built, build_flags = build(work)
         except subprocess.CalledProcessError as e:
             print(f"\nBuild failed: {e}", file=sys.stderr)
             return 1
@@ -175,8 +200,13 @@ def main() -> int:
         if not is_windows():
             target.chmod(target.stat().st_mode | 0o111)
 
-    VERSION_MARKER.write_text(WHISPER_CPP_TAG + "\n", encoding="utf-8")
-    print(f"\nDone. whisper-cli {WHISPER_CPP_TAG} installed at "
+    # Marker format: "<tag>+<flag1>+<flag2>" (e.g. "v1.7.4+vulkan+cpu"
+    # or "v1.7.4+cpu"). transcribe.py reads this to surface the
+    # backend(s) in /api/transcribe/status so the UI knows whether
+    # GPU acceleration is available.
+    marker_value = WHISPER_CPP_TAG + "".join("+" + f for f in build_flags)
+    VERSION_MARKER.write_text(marker_value + "\n", encoding="utf-8")
+    print(f"\nDone. whisper-cli {marker_value} installed at "
           f"{BIN_DIR / binary_name()}")
     return 0
 
