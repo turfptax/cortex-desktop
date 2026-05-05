@@ -6,6 +6,7 @@ Unified web interface for:
   - Pi Zero interaction
 """
 
+import asyncio
 import logging
 import os
 from collections import deque
@@ -17,8 +18,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
-from routers import chat, training, pi, games, data, learning, overseer, transcribe
+from routers import (
+    chat,
+    training,
+    pi,
+    games,
+    data,
+    learning,
+    overseer,
+    plugins as plugins_router,
+    transcribe,
+    video,
+)
 from routers import settings as settings_router
+from services.plugin_manager import PluginManager, set_manager
 
 # --- Logging setup ---
 LOG_DIR = Path(os.environ.get("APPDATA", ".")) / "Cortex" / "logs"
@@ -84,6 +97,57 @@ app.include_router(learning.router, prefix="/api/learning", tags=["learning"])
 app.include_router(settings_router.router, prefix="/api/settings", tags=["settings"])
 app.include_router(overseer.router, prefix="/api/overseer", tags=["overseer"])
 app.include_router(transcribe.router, prefix="/api/transcribe", tags=["transcribe"])
+app.include_router(plugins_router.router, prefix="/api/plugins", tags=["plugins"])
+app.include_router(video.router, prefix="/api/video", tags=["video"])
+
+
+# --- Plugin sidecar lifecycle ----------------------------------------------
+# Owns the registry at %APPDATA%/Cortex/plugins/registry.json. Spawns
+# auto_start=true plugins on boot, polls health every 5s, gracefully
+# stops everything on shutdown. See services/plugin_manager.py.
+
+_health_task: asyncio.Task | None = None
+
+
+@app.on_event("startup")
+async def _start_plugins() -> None:
+    global _health_task
+    manager = PluginManager()
+    set_manager(manager)
+    app.state.plugins = manager
+
+    for plugin in manager.list_installed():
+        if plugin.auto_start:
+            try:
+                manager.start(plugin.id)
+            except Exception as exc:
+                logger.error(
+                    "Failed to auto-start plugin %s: %s", plugin.id, exc
+                )
+
+    _health_task = asyncio.create_task(manager.health_loop())
+
+
+@app.on_event("shutdown")
+async def _stop_plugins() -> None:
+    global _health_task
+    manager: PluginManager | None = getattr(app.state, "plugins", None)
+    if manager is None:
+        return
+
+    manager.stop_health_loop()
+    if _health_task is not None:
+        _health_task.cancel()
+        try:
+            await _health_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    for plugin in manager.list_installed():
+        try:
+            manager.stop(plugin.id, graceful=True)
+        except Exception as exc:
+            logger.error("Failed to stop plugin %s: %s", plugin.id, exc)
 
 
 @app.get("/api/debug/logs")
