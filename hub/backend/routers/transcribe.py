@@ -42,12 +42,27 @@ CONCURRENCY
   in-flight, /api/transcribe returns 202 with a status hint; the
   UI polls /api/transcribe/status to track progress and retries
   once the model is ready.
+
+  CP4 (dev.13): transcription itself ALSO runs async in a daemon
+  thread. POST /api/transcribe stages the upload, kicks off the
+  background runner, returns 202 immediately. Frontend polls
+  /api/transcribe/status — the response now carries
+  transcribe_state with stage + progress_pct + transcript-when-
+  ready. Two side benefits:
+    - whisper-cli progress (parsed from -pp stderr) shows live as
+      a percentage in the UI textarea/button.
+    - Browser refresh during transcription no longer kills the
+      job: the state lives server-side, the UI rebinds on next
+      load.
+  Singleton design — one transcription at a time. Concurrent POST
+  while a run is in-flight returns 409 / "transcribe_already_running".
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import os
 import subprocess
 import sys
@@ -313,6 +328,187 @@ def _start_model_download(model: str) -> bool:
         return True
 
 
+# ── Async transcription state (CP4) ──────────────────────────────
+
+
+# whisper-cli with -pp prints lines like
+#   "whisper_print_progress_callback: progress = 5%"
+# to stderr. We grep these as we stream the output.
+_PROGRESS_RX = re.compile(r"progress\s*=\s*(\d+)\s*%")
+
+
+# Singleton state. Personal-use Hub runs one transcription at a
+# time; concurrent POSTs return 409. Polled by /api/transcribe/status.
+_transcribe_lock = threading.Lock()
+_transcribe_state: dict = {
+    "in_progress": False,
+    # 'queued' | 'normalizing' | 'transcribing' | 'ready' | 'error'
+    "stage": "idle",
+    "progress_pct": 0,
+    "started_at": None,
+    "finished_at": None,
+    "model": "",
+    "filename": "",
+    "bytes": 0,
+    "source_format": "",
+    "audio_extracted": False,
+    "duration_s": 0.0,
+    "language": "",
+    "latency_ms": 0,
+    "transcript": None,
+    "error": None,
+}
+
+
+def _reset_transcribe_state(*, model: str, filename: str,
+                              bytes_: int, source_format: str,
+                              audio_extracted: bool) -> None:
+    """Caller has the lock. Resets state for a fresh run."""
+    _transcribe_state.update({
+        "in_progress": True,
+        "stage": "queued",
+        "progress_pct": 0,
+        "started_at": time.time(),
+        "finished_at": None,
+        "model": model,
+        "filename": filename,
+        "bytes": bytes_,
+        "source_format": source_format,
+        "audio_extracted": audio_extracted,
+        "duration_s": 0.0,
+        "language": "",
+        "latency_ms": 0,
+        "transcript": None,
+        "error": None,
+    })
+
+
+def _stream_progress(proc: subprocess.Popen) -> None:
+    """Read whisper-cli's stderr line-by-line and bump
+    _transcribe_state['progress_pct'] when we see a progress line.
+    Runs in the same thread that started the subprocess; returns
+    when the subprocess closes its stderr."""
+    if proc.stderr is None:
+        return
+    for raw in iter(proc.stderr.readline, ""):
+        if not raw:
+            break
+        m = _PROGRESS_RX.search(raw)
+        if m:
+            try:
+                _transcribe_state["progress_pct"] = int(m.group(1))
+            except (ValueError, KeyError):
+                pass
+
+
+def _transcribe_background(*, upload_path: Path, audio_path: Path,
+                            tmp_dir: Path,
+                            binary: Path, model_path: Path,
+                            model_name: str, ext: str,
+                            is_video: bool) -> None:
+    """Daemon thread entry point. Owns its temp dir and cleans up
+    in finally. Mutates _transcribe_state as it progresses."""
+    t_start = time.monotonic()
+    try:
+        # ── normalize ────────────────────────────────────────────
+        _transcribe_state["stage"] = "normalizing"
+        _normalize_to_wav(upload_path, audio_path)
+
+        # ── transcribe ───────────────────────────────────────────
+        _transcribe_state["stage"] = "transcribing"
+        _transcribe_state["progress_pct"] = 0
+
+        out_base = audio_path.with_suffix("")
+        threads = max(1, (os.cpu_count() or 4))
+        cmd = [
+            str(binary),
+            "-m", str(model_path),
+            "-f", str(audio_path),
+            "-t", str(threads),
+            "-oj",
+            "-of", str(out_base),
+            "-l", "auto",
+            "-pp",                  # print progress (we stream it)
+            "-nt",
+        ]
+        log.info("transcribing %s with model %s (background)",
+                 audio_path.name, model_name)
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,              # line-buffered for live progress
+        )
+        try:
+            _stream_progress(proc)
+        finally:
+            try:
+                proc.wait(timeout=3600)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                raise RuntimeError(
+                    "whisper-cli timeout after 1 hour")
+        if proc.returncode != 0:
+            stderr_tail = ""
+            if proc.stderr is not None:
+                try:
+                    stderr_tail = proc.stderr.read()[-2000:]
+                except Exception:
+                    pass
+            raise RuntimeError(
+                "whisper-cli exit {}: {}".format(
+                    proc.returncode, stderr_tail))
+
+        json_path = out_base.with_suffix(".json")
+        if not json_path.is_file():
+            raise RuntimeError(
+                "whisper-cli ran but didn't write JSON output")
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        finally:
+            try:
+                json_path.unlink()
+            except OSError:
+                pass
+
+        transcript, duration_s = _flatten_transcription(payload)
+        language = ((payload.get("result") or {})
+                    .get("language") or "")
+
+        _transcribe_state.update({
+            "transcript": transcript,
+            "language": language,
+            "duration_s": duration_s,
+            "progress_pct": 100,
+            "stage": "ready",
+            "latency_ms": int((time.monotonic() - t_start) * 1000),
+            "finished_at": time.time(),
+        })
+        log.info("transcription ready (%d chars, %.1fs audio, %dms wall)",
+                 len(transcript), duration_s,
+                 _transcribe_state["latency_ms"])
+    except Exception as e:
+        _transcribe_state.update({
+            "stage": "error",
+            "error": str(e),
+            "finished_at": time.time(),
+            "latency_ms": int((time.monotonic() - t_start) * 1000),
+        })
+        log.exception("background transcription failed: %s", e)
+    finally:
+        _transcribe_state["in_progress"] = False
+        # Best-effort temp cleanup
+        try:
+            for p in (upload_path, audio_path):
+                if p.exists():
+                    p.unlink()
+            tmp_dir.rmdir()
+        except OSError:
+            pass
+
+
 # ── whisper.cpp invocation ──────────────────────────────────────
 
 
@@ -479,7 +675,21 @@ async def transcribe(
                 "bytes_downloaded", 0),
         }
 
-    # Stream upload to a temp file
+    # CP4: refuse a second concurrent transcription. Returns 409
+    # so the UI can show "already running, polling for current."
+    with _transcribe_lock:
+        if _transcribe_state["in_progress"]:
+            return {
+                "ok": False,
+                "status": "transcribe_already_running",
+                "message": "A transcription is already in progress. "
+                           "Poll /api/transcribe/status for its state.",
+                "transcribe_state": dict(_transcribe_state),
+            }
+
+    # Stream upload to a temp file. We do the read in the request
+    # handler (FastAPI's UploadFile is async) before handing off to
+    # the background thread.
     tmp_dir = Path(tempfile.mkdtemp(prefix="cortex-transcribe-"))
     upload_path = tmp_dir / ("upload" + ext)
     audio_path = tmp_dir / "normalized.wav"
@@ -498,48 +708,74 @@ async def transcribe(
                         "max_bytes": MAX_UPLOAD_BYTES,
                         "received_bytes": total})
                 out.write(chunk)
-
-        # Always normalize to 16kHz mono WAV — whisper.cpp wants
-        # exactly that, and ffmpeg handles every format we accept
-        # plus video → audio extraction in one pass.
-        log.info("normalizing %s (%d bytes) -> WAV 16kHz mono",
-                 upload_path.name, total)
-        _normalize_to_wav(upload_path, audio_path)
-
-        # Run whisper.cpp
-        log.info("transcribing %s with model %s",
-                 audio_path.name, model_name)
-        t0 = time.monotonic()
-        payload = _run_whisper_cli(
-            binary=binary, model_path=model_file,
-            audio_path=audio_path,
-        )
-        latency_ms = int((time.monotonic() - t0) * 1000)
-
-        transcript, duration_s = _flatten_transcription(payload)
-        language = ((payload.get("result") or {})
-                    .get("language") or "")
-
-        return {
-            "ok": True,
-            "transcript": transcript,
-            "language": language,
-            "model": model_name,
-            "duration_s": duration_s,
-            "latency_ms": latency_ms,
-            "audio_extracted": is_video,
-            "source_format": ext,
-            "bytes": total,
-        }
-    finally:
-        # Best-effort cleanup
-        try:
-            for p in (upload_path, audio_path):
+    except Exception:
+        # Upload failed before we even started — clean up.
+        for p in (upload_path,):
+            try:
                 if p.exists():
                     p.unlink()
+            except OSError:
+                pass
+        try:
             tmp_dir.rmdir()
-        except OSError as e:
-            log.warning("temp cleanup failed: %s", e)
+        except OSError:
+            pass
+        raise
+
+    # Hand off to the background runner. Acquire the lock again
+    # to publish the initial state atomically with `in_progress`.
+    with _transcribe_lock:
+        if _transcribe_state["in_progress"]:
+            # Race: another POST snuck in between our checks.
+            for p in (upload_path,):
+                try:
+                    if p.exists():
+                        p.unlink()
+                except OSError:
+                    pass
+            try:
+                tmp_dir.rmdir()
+            except OSError:
+                pass
+            return {
+                "ok": False,
+                "status": "transcribe_already_running",
+                "message": "A transcription is already in progress.",
+                "transcribe_state": dict(_transcribe_state),
+            }
+        _reset_transcribe_state(
+            model=model_name,
+            filename=file.filename or "",
+            bytes_=total,
+            source_format=ext,
+            audio_extracted=is_video,
+        )
+
+    t = threading.Thread(
+        target=_transcribe_background,
+        kwargs={
+            "upload_path": upload_path,
+            "audio_path": audio_path,
+            "tmp_dir": tmp_dir,
+            "binary": binary,
+            "model_path": model_file,
+            "model_name": model_name,
+            "ext": ext,
+            "is_video": is_video,
+        },
+        daemon=True,
+        name="whisper-transcribe",
+    )
+    t.start()
+
+    # 202 Accepted shape — UI polls /api/transcribe/status from here.
+    return {
+        "ok": False,
+        "status": "transcribing",
+        "message": "Transcription started. Poll "
+                   "/api/transcribe/status for progress.",
+        "transcribe_state": dict(_transcribe_state),
+    }
 
 
 @router.get("/status")
@@ -569,6 +805,10 @@ async def transcribe_status():
         "model_present": model_file.is_file(),
         "model_path": str(model_file),
         "model_download": dict(_download_state),
+        # CP4: live transcription state for UI polling. Stage values:
+        #   'idle' | 'queued' | 'normalizing' | 'transcribing'
+        #   | 'ready' | 'error'
+        "transcribe_state": dict(_transcribe_state),
         "supported_audio_exts": sorted(AUDIO_EXTS),
         "supported_video_exts": sorted(VIDEO_EXTS),
     }
