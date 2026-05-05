@@ -292,12 +292,23 @@ def _run_whisper_cli(*, binary: Path, model_path: Path,
 
     whisper-cli's -oj flag writes <input>.json next to the input,
     with the structured transcription. We pass an explicit -of to
-    control the basename so we know exactly where to read."""
+    control the basename so we know exactly where to read.
+
+    Slice 7 dev.11: explicit -t <cpu_count>. whisper-cli's default
+    is min(cpu_count, 4) — wastes most of a modern CPU. Tory's
+    Task Manager showed 14% CPU utilization on his 16-thread box
+    during a real run; bumping to all available threads typically
+    delivers 2-3× speedup on CPU-only builds (memory bandwidth
+    becomes the limit past ~8 threads, but extra threads don't
+    hurt — whisper.cpp's scheduler tops out gracefully).
+    """
     out_base = audio_path.with_suffix("")
+    threads = max(1, (os.cpu_count() or 4))
     cmd = [
         str(binary),
         "-m", str(model_path),
         "-f", str(audio_path),
+        "-t", str(threads),        # all CPU threads (default was 4)
         "-oj",                     # output JSON
         "-of", str(out_base),      # output file base (no extension)
         "-l", "auto",              # language autodetect
