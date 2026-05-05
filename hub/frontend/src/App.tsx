@@ -5,7 +5,7 @@ import { PiPage } from './components/pi/PiPage'
 import { DataPage } from './components/data/DataPage'
 import { SettingsPage } from './components/settings/SettingsPage'
 import { OverseerPage } from './components/overseer/OverseerPage'
-import { VideoPlaceholder } from './components/video/VideoPlaceholder'
+import { VideoPage } from './components/video/VideoPage'
 import { apiFetch } from './lib/api'
 import { type PetStatus } from './components/PetWidget'
 import { useInstalledPlugins } from './hooks/useInstalledPlugins'
@@ -85,7 +85,7 @@ function App() {
       {page === 'pi' && <PiPage status={status} />}
       {page === 'data' && <DataPage status={status} />}
       {page === 'overseer' && <OverseerPage />}
-      {page === 'video' && visionRunning && <VideoPlaceholder />}
+      {page === 'video' && visionRunning && <VideoPage />}
       {page === 'settings' && <SettingsPage />}
     </Layout>
   )
