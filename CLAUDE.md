@@ -205,7 +205,7 @@ Triggered by tuck-in: runs sync -> synthesize -> prepare -> train -> eval -> dep
 ### Configuration
 Training config lives in `cortex-pet-training/config/settings.json` (sibling repo). The `cortex_train.paths` module auto-detects this via `CORTEX_TRAINING_DIR` env var or sibling directory search.
 
-## Overseer (Slice 3 + 4 + 5 — added in v0.13–0.17)
+## Overseer (Slice 3 + 4 + 5 + 6 + 7 — added in v0.13–0.17)
 
 The Overseer is a memory-upkeep agent that LIVES on the Pi (in `cortex-core/plugins/overseer/`) but is consumed end-to-end through this Hub.
 
@@ -249,13 +249,37 @@ The Overseer page (top-level sidebar tab) has these inner tabs:
 - Hub Projects tab consumes everything via `GET /api/overseer/projects/summary`
 
 ### Slice 5 (Temporal Cadence + Human Journal) — v0.17.0-dev.1+dev.2
-- `temporal.py`: local-TZ helpers + `should_attempt_daily/weekly/monthly` (22:00 local triggers, hardcoded `TRIGGER_HOUR_LOCAL=22`)
-- `temporal_narrative.py`: 3 prompt templates + gatherers + generators. Daily uses today-slice numbers from `imported_sessions` (NOT lifetime). Weekly synthesizes 7 dailies + cross-project signals. Monthly synthesizes the weeklies + open-question lifecycle (gated: skip if no daily in past 14 days).
+- `temporal.py`: local-TZ helpers + `should_attempt_daily/weekly/monthly/yearly` (22:00 local triggers, hardcoded `TRIGGER_HOUR_LOCAL=22`)
+- `temporal_narrative.py`: 4 prompt templates + gatherers + generators (yearly added Slice 5.6). Daily uses today-slice numbers from `imported_sessions` (NOT lifetime). Weekly synthesizes 7 dailies + cross-project signals. Monthly synthesizes the weeklies + open-question lifecycle (gated: skip if no daily in past 14 days). Yearly synthesizes the monthlies + carrying-forward observation (gated: skip if year had zero monthlies).
 - `temporal_narratives` table — `UNIQUE(kind, period_label)` prevents double-generation
 - `human_journal_entries` table — free-form, multiple per day allowed
-- Loop step 9 (`_run_temporal_cadence`): one kind per tick max
+- Loop **Step 0** (`_run_temporal_cadence` — moved from step 9 in Slice 5.5): runs FIRST so time-anchored narratives get budget priority. **BYPASSES the daily LLM budget** entirely (Slice 5.6) — these are once-per-period and missing the trigger window is permanent. Per-call cost cap ($0.05) still applies as the safety bound. Cost still logged to `llm_calls` for full audit; tick log records `temporal_bypassed_budget=True` when fired.
 - Routes: `GET/POST /plugins/overseer/temporal*` and `GET/POST /plugins/overseer/human-journal*`
 - Hub `JournalTab.tsx` consumes everything; the entire Journal tab was restructured into 3 sections (Your journal / Temporal narratives / Overseer reflections)
+
+### Slice 5.5 (cadence calibration — v0.17.0-dev.5)
+- `tick_interval_s` 300 → 900 (5min → 15min)
+- Journal capped at 6 entries / local-day with 90-min cooldown (`loop_journal_max_per_local_day`, `loop_journal_min_minutes_between`)
+- Loop steps reordered: temporal cadence Step 9 → Step 0
+- DailyBudget reset switched UTC → local-day so the budget calendar matches the user's calendar AND the temporal-narrative period system
+- See [memory/slice_5_complete.md](https://github.com/turfptax/cortex-desktop/blob/master/.claude/projects/...) for the bug timeline (root cause: budget exhausted before 22:00 local trigger because UTC reset at 19:00 CDT and `overseer-journal` step burned 70-80% of the daily budget)
+
+### Slice 6 (People as first-class memory entity) — v0.17.0-dev.3+dev.4
+- `overseer_people` table — namespaced to avoid collision with the simpler `people` table CortexDB owns. Audit trail (`created_by_agent`, `created_by_session_id`) on every row.
+- `overseer_project_people` junction (project, person_id, role)
+- 9 Pi-side routes (`/plugins/overseer/people/*`) + matching Hub proxies
+- **9 MCP tools** (`cortex_people_*`) — the PRIMARY entry surface. Agents working with Tory in his other repos call these to capture relationships during work. Tool descriptions opinionated about WHEN to use vs WHEN NOT (recurring people in his work — yes; casual mentions, fictional names, code variables, AI agents — no).
+- `cortex_people_stats` returns: total, added_24h/7d, orphans (no project links), multi_project (≥2 connectors), top_projects, top_expertise_tags, recent_additions with audit info.
+- **CP2 (Hub UI) deferred** until ~30+ people accumulate from real agent capture. **CP3 (narrative integration)** held until Slice 5 soak completes.
+
+### Slice 7 (Voice journal entries via local Whisper) — v0.17.0-dev.7→dev.13
+- **whisper.cpp bundled in installer** — single ~5MB native binary. No Python deps for transcription; sidesteps the PyInstaller-bundle-vs-system-Python issue we hit on dev.7. CI step builds whisper.cpp from a pinned tag (`scripts/build_whisper_cpp.py`) before PyInstaller runs. Vulkan SDK installed via `jakoch/install-vulkan-sdk-action@v1.4.0` so the binary has GPU support compiled in (works on NVIDIA / AMD / Intel; falls back to CPU if Vulkan device init fails).
+- Default model: `large-v3` (~3GB GGML file). Auto-downloads from HuggingFace on first transcription, cached at `%APPDATA%\Cortex\whisper-models\`. Single network call ever; after that, fully offline.
+- Default settings: `whisper-cli -t <cpu_count>` (was capped at 4 — meaningful CPU speedup on multi-core boxes). Vulkan auto-detects GPU at runtime if compiled in.
+- **Async with live progress (CP4):** POST `/api/transcribe` returns 202 immediately, kicks off a daemon thread, frontend polls `/api/transcribe/status` every 1.5s. Progress percentage parsed from whisper-cli's stderr (`progress = N%` lines from `-pp` flag) and surfaced in the textarea placeholder + 🎤 button label.
+- **Refresh resilience:** Hub backend's transcribe state survives a browser reload. On-mount effect in `JournalTab.tsx` checks `transcribe_state.in_progress` and rebinds the polling loop. Subprocess + state outlive the original POST request.
+- Privacy posture: file never leaves the host. Single network call ever is the one-time HuggingFace model download.
+- Hub UI: 🎤 button next to "Save entry" in the human journal section. Accepts audio + video; ffmpeg normalizes everything to 16kHz mono WAV before whisper-cli runs.
 
 ### When to update what
 - **Add a new overseer route** → modify `cortex-core/plugins/overseer/__init__.py` (Pi-side) AND `cortex-desktop/hub/backend/routers/overseer.py` (Hub proxy)
