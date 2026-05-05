@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
-from routers import chat, training, pi, games, data, learning, overseer
+from routers import chat, training, pi, games, data, learning, overseer, transcribe
 from routers import settings as settings_router
 
 # --- Logging setup ---
@@ -83,6 +83,7 @@ app.include_router(data.router, prefix="/api/data", tags=["data"])
 app.include_router(learning.router, prefix="/api/learning", tags=["learning"])
 app.include_router(settings_router.router, prefix="/api/settings", tags=["settings"])
 app.include_router(overseer.router, prefix="/api/overseer", tags=["overseer"])
+app.include_router(transcribe.router, prefix="/api/transcribe", tags=["transcribe"])
 
 
 @app.get("/api/debug/logs")

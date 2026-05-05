@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cortex-desktop"
-version = "0.17.0.dev6"
+version = "0.17.0.dev7"
 description = "Cortex Hub desktop application — system tray + browser UI"
 requires-python = ">=3.10"
 dependencies = [
@@ -24,6 +24,14 @@ dependencies = [
 [project.optional-dependencies]
 build = [
     "pyinstaller>=6.0",
+]
+# Slice 7: local audio/video transcription for the human journal.
+# Heavy (~2GB installed due to PyTorch). Optional so the base Hub
+# stays light. Install with: pip install -e ".[voice]"
+# Also requires ffmpeg on PATH (winget install ffmpeg, brew install
+# ffmpeg, or apt install ffmpeg).
+voice = [
+    "openai-whisper>=20240930",
 ]
 
 [project.scripts]

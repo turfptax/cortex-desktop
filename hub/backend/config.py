@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8003
 
+    # Slice 7: local Whisper transcription. Default model is the
+    # most accurate Whisper offers; ~3GB cached on first use.
+    # Override via CORTEX_HUB_WHISPER_MODEL env var or config file.
+    # Valid: tiny | base | small | medium | large | large-v2 |
+    # large-v3 | turbo (also accepts language-specific variants
+    # like "small.en" — see Whisper docs).
+    whisper_model: str = "large-v3"
+
     class Config:
         env_prefix = "CORTEX_HUB_"
 
