@@ -24,7 +24,7 @@
  * write when you want to write.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../../lib/api'
 
 // ── Types ────────────────────────────────────────────────────────
@@ -122,12 +122,29 @@ function fmtLocalShort(iso: string): string {
 
 // ── Section 1: Human journal ─────────────────────────────────────
 
+interface TranscribeResp {
+  ok: boolean
+  transcript?: string
+  language?: string
+  model?: string
+  duration_s?: number
+  latency_ms?: number
+  audio_extracted?: boolean
+  source_format?: string
+  bytes?: number
+  detail?: { error?: string; message?: string } | string
+}
+
 function HumanJournalSection() {
   const [entries, setEntries] = useState<HumanJournalEntry[]>([])
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showAll, setShowAll] = useState(false)
+  // Slice 7 transcribe state
+  const [transcribeStage, setTranscribeStage] = useState<
+    null | 'extracting' | 'transcribing'>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -177,6 +194,48 @@ function HumanJournalSection() {
     }
   }
 
+  // Slice 7: voice transcription. Upload a file (audio or video),
+  // get back a transcript, pre-fill the textarea. User then edits
+  // (if desired) and saves via the regular flow.
+  const handleTranscribe = async (file: File) => {
+    setError(null)
+    // Best-effort guess at the stage from the filename so the user
+    // sees the right hint immediately. Backend will tell us
+    // authoritatively in the response.
+    const lower = file.name.toLowerCase()
+    const isVideo = /\.(mp4|mov|webm|mkv|avi|mpg|mpeg|m4v|3gp)$/.test(lower)
+    setTranscribeStage(isVideo ? 'extracting' : 'transcribing')
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const resp = await fetch('/api/transcribe', {
+        method: 'POST', body: form,
+      })
+      const r: TranscribeResp = await resp.json().catch(() => ({ ok: false }))
+      if (!resp.ok || !r.ok) {
+        const detail = r.detail
+        const msg = typeof detail === 'string'
+          ? detail
+          : detail?.message || `transcribe failed (${resp.status})`
+        setError(msg)
+        return
+      }
+      const transcript = (r.transcript || '').trim()
+      // Append (or pre-fill) — preserve any existing typed text so
+      // the user doesn't lose half-written thoughts.
+      setText((prev) => {
+        if (!prev.trim()) return transcript
+        return prev.trimEnd() + '\n\n' + transcript
+      })
+    } catch (e: any) {
+      setError(e?.message || String(e))
+    } finally {
+      setTranscribeStage(null)
+      // Reset the file input so picking the same file twice still fires onChange
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
   const visibleEntries = showAll ? entries : entries.slice(0, 5)
 
   return (
@@ -203,20 +262,53 @@ function HumanJournalSection() {
               void handleSave()
             }
           }}
-          placeholder="What's on your mind? (Cmd/Ctrl+Enter to save)"
+          placeholder={
+            transcribeStage
+              ? (transcribeStage === 'extracting'
+                  ? 'Extracting audio from video…'
+                  : 'Transcribing… (large-v3 — first run downloads ~3GB)')
+              : "What's on your mind? (Cmd/Ctrl+Enter to save)"
+          }
           rows={3}
-          className="w-full px-3 py-2 bg-surface-tertiary text-text-primary text-sm rounded-md border border-border focus:outline-none focus:border-accent resize-y placeholder:text-text-muted/60"
+          disabled={!!transcribeStage}
+          className="w-full px-3 py-2 bg-surface-tertiary text-text-primary text-sm rounded-md border border-border focus:outline-none focus:border-accent resize-y placeholder:text-text-muted/60 disabled:opacity-60"
         />
         <div className="flex items-center gap-2">
           <button
             onClick={handleSave}
-            disabled={busy || !text.trim()}
+            disabled={busy || !text.trim() || !!transcribeStage}
             className="px-3 py-1.5 rounded-md text-xs font-medium bg-accent text-white hover:bg-accent-hover cursor-pointer disabled:opacity-40"
           >
             {busy ? 'Saving…' : 'Save entry'}
           </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".mp3,.wav,.m4a,.ogg,.flac,.aac,.opus,.mp4,.mov,.webm,.mkv,.avi,.mpeg,.mpg,.m4v,.3gp,audio/*,video/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (f) void handleTranscribe(f)
+            }}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={busy || !!transcribeStage}
+            title="Upload audio or video — local Whisper transcription, file never leaves your machine"
+            className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer disabled:opacity-40 inline-flex items-center gap-1"
+          >
+            <span>🎤</span>
+            {transcribeStage === 'extracting'
+              ? 'Extracting…'
+              : transcribeStage === 'transcribing'
+                ? 'Transcribing…'
+                : 'Voice'}
+          </button>
           {error && (
-            <span className="text-xs text-red-400">{error}</span>
+            <span className="text-xs text-red-400 truncate max-w-md"
+                  title={error}>
+              {error}
+            </span>
           )}
           <span className="ml-auto text-[11px] text-text-muted">
             {entries.length} entr{entries.length === 1 ? 'y' : 'ies'} total
