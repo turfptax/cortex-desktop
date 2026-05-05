@@ -8,18 +8,39 @@ interface LayoutProps {
   setPage: (page: Page) => void
   status: StatusInfo
   petStatus: PetStatus | null
+  visionRunning?: boolean
   children: ReactNode
 }
 
-const navItems: { id: Page; label: string; icon: string }[] = [
+interface NavItem {
+  id: Page
+  label: string
+  icon: string
+  /** When true, only show this nav item when its plugin is registered + running */
+  pluginGated?: boolean
+}
+
+const navItems: NavItem[] = [
   { id: 'chat', label: 'Chat', icon: '💬' },
   { id: 'pi', label: 'Pi', icon: '🥧' },
   { id: 'data', label: 'Data', icon: '📊' },
   { id: 'overseer', label: 'Overseer', icon: '🧭' },
+  { id: 'video', label: 'Video', icon: '🎥', pluginGated: true },
   { id: 'settings', label: 'Settings', icon: '⚙️' },
 ]
 
-export function Layout({ page, setPage, status, petStatus, children }: LayoutProps) {
+export function Layout({
+  page,
+  setPage,
+  status,
+  petStatus,
+  visionRunning = false,
+  children,
+}: LayoutProps) {
+  const visibleNav = navItems.filter((item) => {
+    if (item.id === 'video') return visionRunning
+    return !item.pluginGated
+  })
   const [useVoxels, setUseVoxels] = useState(false)
 
   return (
@@ -34,7 +55,7 @@ export function Layout({ page, setPage, status, petStatus, children }: LayoutPro
 
         {/* Navigation */}
         <nav className="p-2 space-y-1">
-          {navItems.map((item) => (
+          {visibleNav.map((item) => (
             <button
               key={item.id}
               onClick={() => setPage(item.id)}

@@ -5,10 +5,12 @@ import { PiPage } from './components/pi/PiPage'
 import { DataPage } from './components/data/DataPage'
 import { SettingsPage } from './components/settings/SettingsPage'
 import { OverseerPage } from './components/overseer/OverseerPage'
+import { VideoPlaceholder } from './components/video/VideoPlaceholder'
 import { apiFetch } from './lib/api'
 import { type PetStatus } from './components/PetWidget'
+import { useInstalledPlugins } from './hooks/useInstalledPlugins'
 
-export type Page = 'chat' | 'pi' | 'data' | 'overseer' | 'settings'
+export type Page = 'chat' | 'pi' | 'data' | 'overseer' | 'video' | 'settings'
 
 export interface StatusInfo {
   lmstudioOnline: boolean
@@ -22,6 +24,19 @@ function App() {
     piOnline: false,
   })
   const [petStatus, setPetStatus] = useState<PetStatus | null>(null)
+  const { plugins } = useInstalledPlugins()
+  const visionRunning =
+    plugins.find((p) => p.id === 'cortex-vision')?.is_running ?? false
+
+  // Deep-link guard: if user navigates to Video but the plugin isn't
+  // running (e.g. plugin was uninstalled in another tab), bounce them
+  // to Settings → Plugins. Half-broken pages age worse than missing
+  // ones.
+  useEffect(() => {
+    if (page === 'video' && !visionRunning) {
+      setPage('settings')
+    }
+  }, [page, visionRunning])
 
   // Poll connectivity status
   useEffect(() => {
@@ -59,11 +74,18 @@ function App() {
   }, [])
 
   return (
-    <Layout page={page} setPage={setPage} status={status} petStatus={petStatus}>
+    <Layout
+      page={page}
+      setPage={setPage}
+      status={status}
+      petStatus={petStatus}
+      visionRunning={visionRunning}
+    >
       {page === 'chat' && <ChatPage petStatus={petStatus} />}
       {page === 'pi' && <PiPage status={status} />}
       {page === 'data' && <DataPage status={status} />}
       {page === 'overseer' && <OverseerPage />}
+      {page === 'video' && visionRunning && <VideoPlaceholder />}
       {page === 'settings' && <SettingsPage />}
     </Layout>
   )

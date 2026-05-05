@@ -5,6 +5,7 @@ import { McpSetupCard } from './McpSetupCard'
 import { GeneralCard } from './GeneralCard'
 import { UpdateCard } from './UpdateCard'
 import { DebugLogsCard } from './DebugLogsCard'
+import { PluginsTab } from './PluginsTab'
 
 export function SettingsPage() {
   const [config, setConfig] = useState<Record<string, unknown>>({})
@@ -100,6 +101,7 @@ export function SettingsPage() {
         <PiConnectionCard config={config} onChange={handleChange} />
         <McpSetupCard />
         <GeneralCard config={config} onChange={handleChange} />
+        <PluginsTab />
         <UpdateCard />
         <DebugLogsCard />
       </div>
