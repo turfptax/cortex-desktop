@@ -122,21 +122,38 @@ function fmtLocalShort(iso: string): string {
 
 // ── Section 1: Human journal ─────────────────────────────────────
 
+type TranscribeStage =
+  | 'idle' | 'queued' | 'normalizing' | 'transcribing'
+  | 'ready' | 'error'
+
+interface TranscribeStateBlock {
+  in_progress: boolean
+  stage: TranscribeStage
+  progress_pct: number
+  started_at: number | null
+  finished_at: number | null
+  model: string
+  filename: string
+  duration_s: number
+  language: string
+  latency_ms: number
+  transcript: string | null
+  error: string | null
+}
+
 interface TranscribeResp {
   ok: boolean
-  transcript?: string
-  language?: string
-  model?: string
-  duration_s?: number
-  latency_ms?: number
-  audio_extracted?: boolean
-  source_format?: string
-  bytes?: number
-  // Slice 7 CP2 model-download path
-  status?: 'model_downloading' | 'model_already_downloading'
+  // CP4 happy path: 202 Accepted, kick off polling
+  status?: 'transcribing' | 'transcribe_already_running'
+          | 'model_downloading' | 'model_already_downloading'
   message?: string
+  transcribe_state?: TranscribeStateBlock
+  // Model-download specifics
   bytes_total?: number
   bytes_downloaded?: number
+  // Legacy synchronous shape (pre-CP4) — kept so the response
+  // parser is forward+backward compatible.
+  transcript?: string
   detail?: { error?: string; message?: string } | string
 }
 
@@ -146,12 +163,15 @@ interface TranscribeStatusResp {
   ffmpeg_installed: boolean
   model: string
   model_present: boolean
+  gpu_capable?: boolean
+  binary_backends?: string[]
   model_download: {
     in_progress: boolean
     bytes_downloaded: number
     bytes_total: number
     error?: string | null
   }
+  transcribe_state?: TranscribeStateBlock
 }
 
 function HumanJournalSection() {
@@ -160,10 +180,13 @@ function HumanJournalSection() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showAll, setShowAll] = useState(false)
-  // Slice 7 transcribe state
+  // Slice 7 transcribe state. CP4 added live percentage during
+  // 'transcribing' (whisper-cli's stderr progress is parsed by the
+  // backend and exposed via /api/transcribe/status).
   const [transcribeStage, setTranscribeStage] = useState<
     null | 'extracting' | 'transcribing'
     | 'downloading-model' | 'queued-pending-model'>(null)
+  const [transcribePct, setTranscribePct] = useState<number>(0)
   const [downloadProgress, setDownloadProgress] = useState<{
     bytes: number; total: number
   } | null>(null)
@@ -182,6 +205,31 @@ function HumanJournalSection() {
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  // CP4 refresh resilience: on mount, ask the backend whether a
+  // transcription is mid-flight (e.g., user reloaded the page
+  // during a long whisper-cli run). If so, rebind the polling
+  // loop so the percentage display picks up where it left off
+  // and the transcript still lands when the run finishes.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const s = await fetch('/api/transcribe/status').then(
+          (r) => r.json() as Promise<TranscribeStatusResp>)
+        if (cancelled) return
+        const ts = s?.transcribe_state
+        if (ts && ts.in_progress) {
+          setTranscribePct(ts.progress_pct || 0)
+          await pollTranscribeProgress()
+        }
+      } catch {
+        // No backend reachable — nothing to resume.
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handleSave = async () => {
     const trimmed = text.trim()
@@ -215,6 +263,62 @@ function HumanJournalSection() {
       void refresh()
     } catch (e: any) {
       setError(e?.message || String(e))
+    }
+  }
+
+  // CP4: poll /api/transcribe/status during an in-flight
+  // background transcription. Updates the percentage, then
+  // when stage === 'ready' pre-fills the textarea with the
+  // transcript and clears the loading state.
+  //
+  // Doubles as the refresh-resilience hook — if the user reloads
+  // the page mid-transcription, mountTranscribeResume() (below)
+  // calls this and the UI rebinds to the still-running job.
+  const pollTranscribeProgress = async () => {
+    setTranscribeStage('transcribing')
+    while (true) {
+      await new Promise((r) => setTimeout(r, 1500))
+      try {
+        const s = await fetch('/api/transcribe/status').then(
+          (r) => r.json() as Promise<TranscribeStatusResp>)
+        const ts = s?.transcribe_state
+        if (!ts) {
+          setTranscribeStage(null)
+          return
+        }
+        // Map backend stage to UI stage
+        if (ts.stage === 'normalizing') {
+          setTranscribeStage('extracting')
+        } else if (ts.stage === 'transcribing') {
+          setTranscribeStage('transcribing')
+          setTranscribePct(ts.progress_pct || 0)
+        } else if (ts.stage === 'ready') {
+          const transcript = (ts.transcript || '').trim()
+          if (transcript) {
+            setText((prev) =>
+              prev.trim()
+                ? prev.trimEnd() + '\n\n' + transcript
+                : transcript)
+          }
+          setTranscribeStage(null)
+          setTranscribePct(0)
+          return
+        } else if (ts.stage === 'error') {
+          setError(ts.error || 'transcription failed')
+          setTranscribeStage(null)
+          setTranscribePct(0)
+          return
+        } else if (!ts.in_progress) {
+          // Some transient state we don't recognize and the run
+          // isn't active — bail.
+          setTranscribeStage(null)
+          setTranscribePct(0)
+          return
+        }
+      } catch (e: any) {
+        // Don't bail on a transient poll error; keep trying. If
+        // the network's truly down, the user can dismiss + retry.
+      }
     }
   }
 
@@ -279,9 +383,7 @@ function HumanJournalSection() {
       const r: TranscribeResp = await resp.json()
         .catch(() => ({ ok: false }))
 
-      // First-run path: model not downloaded yet. Backend started
-      // the download; remember the file and poll until the model
-      // lands, then retry the upload automatically.
+      // First-run model-download path
       if (resp.ok && !r.ok && r.status?.startsWith('model_')) {
         pendingFileRef.current = file
         if (r.bytes_total || r.bytes_downloaded) {
@@ -291,6 +393,23 @@ function HumanJournalSection() {
           })
         }
         await pollDownloadAndRetry()
+        return
+      }
+
+      // CP4 happy path: backend kicked off a background runner
+      // and returned 202 with status: "transcribing". Switch to
+      // polling — progress percentage will surface in the UI as
+      // the run advances; transcript pre-fills when stage='ready'.
+      if (resp.ok && !r.ok && r.status === 'transcribing') {
+        setTranscribePct(r.transcribe_state?.progress_pct || 0)
+        await pollTranscribeProgress()
+        return
+      }
+
+      if (resp.ok && !r.ok && r.status === 'transcribe_already_running') {
+        // Bind to the existing run and watch it finish — common
+        // when the user uploaded, refreshed, then uploaded again.
+        await pollTranscribeProgress()
         return
       }
 
@@ -304,11 +423,16 @@ function HumanJournalSection() {
         return
       }
 
+      // Legacy synchronous path (kept for safety; backend always
+      // returns 202 for transcribe in CP4+, but a clean 200 with
+      // transcript still works if anyone wires that shape later).
       const transcript = (r.transcript || '').trim()
-      setText((prev) => {
-        if (!prev.trim()) return transcript
-        return prev.trimEnd() + '\n\n' + transcript
-      })
+      if (transcript) {
+        setText((prev) => {
+          if (!prev.trim()) return transcript
+          return prev.trimEnd() + '\n\n' + transcript
+        })
+      }
     } catch (e: any) {
       setError(e?.message || String(e))
     } finally {
@@ -345,9 +469,11 @@ function HumanJournalSection() {
           }}
           placeholder={
             transcribeStage === 'extracting'
-              ? 'Extracting audio from video…'
+              ? 'Normalizing audio…'
               : transcribeStage === 'transcribing'
-                ? 'Transcribing locally with whisper.cpp…'
+                ? (transcribePct > 0
+                    ? `Transcribing locally with whisper.cpp… ${transcribePct}%`
+                    : 'Transcribing locally with whisper.cpp…')
                 : transcribeStage === 'downloading-model'
                   ? (downloadProgress && downloadProgress.total
                       ? `Downloading large-v3 model (${
@@ -389,7 +515,9 @@ function HumanJournalSection() {
             {transcribeStage === 'extracting'
               ? 'Extracting…'
               : transcribeStage === 'transcribing'
-                ? 'Transcribing…'
+                ? (transcribePct > 0
+                    ? `Transcribing ${transcribePct}%`
+                    : 'Transcribing…')
                 : transcribeStage === 'downloading-model'
                   ? (downloadProgress && downloadProgress.total
                       ? `Setup ${Math.round(
