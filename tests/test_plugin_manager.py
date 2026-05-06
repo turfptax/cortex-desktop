@@ -273,6 +273,173 @@ def test_install_end_to_end_with_mocked_github(
     assert (install_path / "cortex-vision.exe").exists()
 
 
+def test_rename_with_retry_eventually_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Simulate a held handle that releases on the 3rd attempt — the
+    helper should retry past the transient error and succeed."""
+    import services.plugin_manager as pm_mod
+
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+
+    real_rename = Path.rename
+    state = {"attempts": 0}
+
+    def flaky_rename(self, target):
+        state["attempts"] += 1
+        if state["attempts"] < 3:
+            raise PermissionError("WinError 5: file in use")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", flaky_rename)
+    monkeypatch.setattr(pm_mod, "RENAME_RETRY_DELAY_S", 0.01)
+
+    pm_mod._rename_with_retry(src, dst)
+
+    assert state["attempts"] == 3
+    assert dst.exists()
+    assert not src.exists()
+
+
+def test_rename_with_retry_raises_install_locked_after_n_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.plugin_manager as pm_mod
+
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+
+    def always_locked(self, target):
+        raise PermissionError("WinError 5: file in use")
+    monkeypatch.setattr(Path, "rename", always_locked)
+    monkeypatch.setattr(pm_mod, "RENAME_RETRY_DELAY_S", 0.01)
+
+    with pytest.raises(pm_mod.InstallLocked, match="after"):
+        pm_mod._rename_with_retry(src, dst)
+
+
+def test_install_pre_cleans_stale_bak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If a previous install crashed mid-rollback and left a .bak dir
+    behind, the next install should clean it before reusing the name
+    rather than failing with FileExistsError."""
+    import services.plugin_manager as pm_mod
+
+    monkeypatch.setattr(pm_mod.sys, "platform", "win32")
+    # Plant a leftover .bak from a hypothetical prior failed install
+    plugins_root = tmp_path / "plugins"
+    plugins_root.mkdir()
+    leftover_bak = plugins_root / "cortex-vision.bak"
+    leftover_bak.mkdir()
+    (leftover_bak / "junk.txt").write_text("old")
+
+    # Build the install bundle
+    bundle_root = tmp_path / "bundle_src"
+    bundle_root.mkdir()
+    (bundle_root / "cortex-vision.exe").write_bytes(b"x")
+    zip_src = tmp_path / "cortex-vision-0.2.0-windows-cpu.zip"
+    with zipfile.ZipFile(zip_src, "w") as zf:
+        for f in bundle_root.rglob("*"):
+            if f.is_file():
+                zf.write(f, arcname=f.relative_to(bundle_root))
+    expected_sha = hashlib.sha256(zip_src.read_bytes()).hexdigest()
+
+    fake_release = {
+        "tag_name": "v0.2.0",
+        "assets": [
+            {"name": "cortex-vision-0.2.0-windows-cpu.zip",
+             "size": zip_src.stat().st_size,
+             "browser_download_url": "https://x/zip"},
+            {"name": "cortex-vision-0.2.0-windows-cpu.zip.sha256",
+             "size": 100,
+             "browser_download_url": "https://x/sha"},
+        ],
+    }
+
+    async def fake_fetch_release(self, repo, version): return fake_release
+    async def fake_download_to(self, url, dest): shutil.copy(zip_src, dest)
+    async def fake_fetch_sha256(self, url): return expected_sha
+    monkeypatch.setattr(pm_mod.PluginManager, "_fetch_release", fake_fetch_release)
+    monkeypatch.setattr(pm_mod.PluginManager, "_download_to", fake_download_to)
+    monkeypatch.setattr(pm_mod.PluginManager, "_fetch_sha256", fake_fetch_sha256)
+    monkeypatch.setattr(pm_mod.PluginManager, "start", lambda self, pid: None)
+    # Don't shell out to PowerShell during the test
+    monkeypatch.setattr(pm_mod, "_force_release_install_dir", lambda d, p: 0)
+
+    mgr = pm_mod.PluginManager(registry_path=plugins_root / "registry.json")
+    plugin = asyncio.run(mgr.install("cortex-vision"))
+
+    assert plugin.id == "cortex-vision"
+    # Stale .bak should be gone, fresh install in place
+    assert not leftover_bak.exists()
+    assert (plugins_root / "cortex-vision" / "cortex-vision.exe").exists()
+
+
+def test_uninstall_preserves_registry_when_rmtree_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the install dir can't be released (handle held by some
+    process we couldn't kill), uninstall MUST raise InstallLocked
+    and leave the registry entry intact. Previously the registry
+    flipped to 'uninstalled' while the disk stayed dirty."""
+    import services.plugin_manager as pm_mod
+
+    plugins_root = tmp_path / "plugins"
+    plugins_root.mkdir()
+    install_dir = plugins_root / "cortex-vision"
+    install_dir.mkdir()
+    (install_dir / "stuck.txt").write_text("locked")
+
+    mgr = pm_mod.PluginManager(registry_path=plugins_root / "registry.json")
+    mgr.upsert(pm_mod.InstalledPlugin(
+        id="cortex-vision", version="0.2.0", port=8004,
+        install_dir=str(install_dir),
+        executable="cortex-vision.exe",
+    ))
+
+    # Force _rmtree_with_retry to fail, simulating a held handle that
+    # the kill+retry loop couldn't release.
+    def always_locked(path):
+        raise pm_mod.InstallLocked(f"locked: {path}")
+    monkeypatch.setattr(pm_mod, "_rmtree_with_retry", always_locked)
+    monkeypatch.setattr(pm_mod, "_force_release_install_dir", lambda d, p: 0)
+
+    with pytest.raises(pm_mod.InstallLocked):
+        mgr.uninstall("cortex-vision", keep_user_data=False)
+
+    # Registry MUST still have the entry — that's the whole point
+    assert mgr.get("cortex-vision") is not None
+
+
+def test_uninstall_keeps_user_data_skips_rmtree(
+    tmp_path: Path,
+) -> None:
+    """The default keep_user_data=True path skips the rmtree entirely
+    so a locked install dir doesn't block deregistration when the
+    user just wants to forget the plugin (registry-only uninstall)."""
+    plugins_root = tmp_path / "plugins"
+    plugins_root.mkdir()
+    install_dir = plugins_root / "cortex-vision"
+    install_dir.mkdir()
+    (install_dir / "data.txt").write_text("kept")
+
+    mgr = PluginManager(registry_path=plugins_root / "registry.json")
+    mgr.upsert(InstalledPlugin(
+        id="cortex-vision", version="0.2.0", port=8004,
+        install_dir=str(install_dir),
+        executable="cortex-vision.exe",
+    ))
+
+    mgr.uninstall("cortex-vision", keep_user_data=True)
+
+    assert mgr.get("cortex-vision") is None  # registry cleaned
+    assert install_dir.exists()                # disk preserved
+
+
 def test_install_rejects_bad_sha256(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
