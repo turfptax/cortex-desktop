@@ -120,6 +120,127 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+class InstallLocked(Exception):
+    """Install/uninstall couldn't manipulate the install dir because a
+    process is still holding handles open. The router maps this to a
+    409 with a structured error pointing the user at the Hub log."""
+
+
+# ---------------------------------------------------------------------------
+# File-system helpers — Windows is unforgiving about open handles. These
+# wrap the operations install/uninstall need with a kill-then-retry loop
+# so a stale process or AV scanner holding a handle for 100ms doesn't
+# silently corrupt the install dir.
+# ---------------------------------------------------------------------------
+
+# How aggressively we retry rename/rmtree when Windows raises
+# PermissionError (WinError 5) for "file is being used by another
+# process". Total wait ~ RETRY_COUNT * RETRY_DELAY_S.
+RENAME_RETRY_COUNT = 5
+RENAME_RETRY_DELAY_S = 0.2
+
+
+def _force_release_install_dir(install_dir: Path, port: int | None) -> int:
+    """Forcibly stop any process holding the install dir or the configured
+    port. Catches stragglers our PluginManager._processes dict might have
+    lost track of (orphan from a prior crash, manually-launched dev
+    sidecar still running, etc.).
+
+    Windows-only — uses PowerShell since it's universally present and
+    we don't want to depend on psutil. Returns the count of processes
+    killed (0 if none / on error). Logs but never raises — best-effort.
+    """
+    if sys.platform != "win32":
+        return 0
+
+    # Escape any single-quotes in the path for the LIKE pattern
+    install_pattern = str(install_dir).replace("'", "''") + "\\*"
+    port_clause = (
+        f"$port_pids = Get-NetTCPConnection -LocalPort {int(port)} "
+        f"| Select-Object -ExpandProperty OwningProcess "
+        f"| Sort-Object -Unique;"
+        f"foreach ($p in $port_pids) {{ Stop-Process -Id $p -Force; $killed++ }};"
+        if port is not None
+        else ""
+    )
+    ps_script = (
+        f"$ErrorActionPreference = 'SilentlyContinue';"
+        f"$killed = 0;"
+        f"{port_clause}"
+        f"$path_procs = Get-Process | Where-Object {{ $_.Path -like '{install_pattern}' }};"
+        f"foreach ($p in $path_procs) {{ Stop-Process -Id $p.Id -Force; $killed++ }};"
+        f"Write-Output $killed"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+            capture_output=True, text=True, timeout=10,
+        )
+        n = int((result.stdout or "0").strip() or "0")
+        if n:
+            logger.info(
+                "Force-released %d process(es) holding %s (port=%s)",
+                n, install_dir, port,
+            )
+        return n
+    except Exception as e:
+        logger.warning(
+            "Force-release on %s (port=%s) failed: %s", install_dir, port, e
+        )
+        return 0
+
+
+def _rename_with_retry(src: Path, dst: Path) -> None:
+    """Rename src -> dst, retrying on PermissionError (Windows holds
+    file handles for a beat after a process exits). Raises
+    InstallLocked if every retry fails — caller should NOT catch
+    PermissionError here since we've already exhausted the recovery
+    options."""
+    last_err: Exception | None = None
+    for attempt in range(RENAME_RETRY_COUNT):
+        try:
+            src.rename(dst)
+            return
+        except PermissionError as e:
+            last_err = e
+            if attempt < RENAME_RETRY_COUNT - 1:
+                time.sleep(RENAME_RETRY_DELAY_S)
+        except OSError as e:
+            # WinError 5 sometimes shows up as OSError (errno 13 / 1)
+            # rather than PermissionError depending on the Python version.
+            last_err = e
+            if attempt < RENAME_RETRY_COUNT - 1:
+                time.sleep(RENAME_RETRY_DELAY_S)
+            else:
+                break
+    raise InstallLocked(
+        f"Could not rename {src} -> {dst} after "
+        f"{RENAME_RETRY_COUNT} retries: {last_err}"
+    )
+
+
+def _rmtree_with_retry(path: Path) -> None:
+    """rmtree with the same kill-handle-then-retry pattern as
+    rename. Raises InstallLocked on persistent failure rather than
+    silently swallowing (shutil.rmtree(ignore_errors=True) leaves
+    half-deleted dirs and the user with no clue)."""
+    last_err: Exception | None = None
+    for attempt in range(RENAME_RETRY_COUNT):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return  # already gone, win
+        except (PermissionError, OSError) as e:
+            last_err = e
+            if attempt < RENAME_RETRY_COUNT - 1:
+                time.sleep(RENAME_RETRY_DELAY_S)
+    raise InstallLocked(
+        f"Could not delete {path} after {RENAME_RETRY_COUNT} retries: "
+        f"{last_err}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Data shapes
 # ---------------------------------------------------------------------------
@@ -650,8 +771,12 @@ class PluginManager:
                     "checksum verification", asset_name,
                 )
 
-            # 4. Stop the existing managed process so the .exe isn't held
-            #    open while we replace it. No-op for dev-mode entries.
+            # 4. Stop the existing managed process. No-op for dev-mode
+            #    entries — and the tracked PID may be stale if a prior
+            #    Hub crashed mid-shutdown, so step 4b force-releases
+            #    anything we might have lost track of.
+            install_dir = self.registry_path.parent / plugin_id
+            target_port: int | None = market.get("default_port")
             if self.get(plugin_id) is not None:
                 try:
                     self.stop(plugin_id, graceful=True)
@@ -660,16 +785,32 @@ class PluginManager:
                         "Pre-install stop failed for %s: %s", plugin_id, e
                     )
 
-            # 5. Back up existing install dir so we can roll back if
-            #    extraction fails midway. The backup is moved back to
-            #    install_dir on failure; deleted on success.
-            install_dir = self.registry_path.parent / plugin_id
+            # 4b. Force-release ANY process holding the install dir or
+            #     the configured port (catches orphans from prior runs,
+            #     manually-launched dev sidecars, etc.). PowerShell-based
+            #     so it works even when our _processes dict is empty.
+            if install_dir.exists() or target_port:
+                _force_release_install_dir(install_dir, target_port)
+
+            # 5. Pre-clean any leftover .bak from a previous failed
+            #    install — its existence already means we're recovering
+            #    from a bad state. Use the retry helper so a slow AV
+            #    scanner can't wedge us.
             backup_dir: Path | None = None
+            stale_backup = install_dir.with_suffix(".bak")
+            if stale_backup.exists():
+                logger.info(
+                    "Removing stale .bak from prior install attempt: %s",
+                    stale_backup,
+                )
+                _rmtree_with_retry(stale_backup)
+
+            # 5b. Back up the existing install dir so we can roll back if
+            #     extraction fails midway. The backup is moved back to
+            #     install_dir on failure; deleted on success.
             if install_dir.exists():
                 backup_dir = install_dir.with_suffix(".bak")
-                if backup_dir.exists():
-                    shutil.rmtree(backup_dir, ignore_errors=True)
-                install_dir.rename(backup_dir)
+                _rename_with_retry(install_dir, backup_dir)
 
             try:
                 install_dir.mkdir(parents=True)
@@ -719,18 +860,41 @@ class PluginManager:
                         plugin_id, actual_version, e,
                     )
 
-                # 8. Drop backup on success
+                # 8. Drop backup on success. Best-effort — a leftover
+                #    .bak is annoying but not broken; the next install
+                #    will pre-clean it.
                 if backup_dir and backup_dir.exists():
-                    shutil.rmtree(backup_dir, ignore_errors=True)
+                    try:
+                        _rmtree_with_retry(backup_dir)
+                    except InstallLocked as e:
+                        logger.warning(
+                            "Couldn't clean post-install backup %s: %s",
+                            backup_dir, e,
+                        )
 
                 return plugin
 
             except Exception:
-                # Roll back: restore the backup if we had one
+                # Roll back: restore the backup if we had one. Use the
+                # retry helpers so a still-locked half-extracted install
+                # doesn't make the rollback also fail.
                 if backup_dir and backup_dir.exists():
                     if install_dir.exists():
-                        shutil.rmtree(install_dir, ignore_errors=True)
-                    backup_dir.rename(install_dir)
+                        try:
+                            _rmtree_with_retry(install_dir)
+                        except InstallLocked:
+                            logger.error(
+                                "Rollback rmtree failed for %s — manual "
+                                "cleanup may be needed", install_dir,
+                            )
+                    try:
+                        _rename_with_retry(backup_dir, install_dir)
+                    except InstallLocked:
+                        logger.error(
+                            "Rollback rename %s -> %s failed — backup "
+                            "remains; user will need to retry install",
+                            backup_dir, install_dir,
+                        )
                 raise
 
         finally:
@@ -745,19 +909,35 @@ class PluginManager:
     def uninstall(
         self, plugin_id: str, keep_user_data: bool = True
     ) -> None:
-        """Stop the process, remove the registry entry, and optionally
-        delete the install dir. User data lives elsewhere (cortex-vision
-        keeps sessions in %APPDATA%/Cortex/video/, separate from the
-        plugin install dir) so keep_user_data only governs the install
-        bytes themselves."""
-        plugin = self.get(plugin_id)
-        self.stop(plugin_id, graceful=True)
-        self.remove(plugin_id)
+        """Stop the process, optionally delete the install dir, and
+        only THEN remove the registry entry — flipping the registry
+        first would leave the user in the bad state where the registry
+        says clean but the disk says dirty.
 
-        if not keep_user_data and plugin and plugin.install_dir:
-            install_dir = Path(plugin.install_dir)
-            # Only delete if it's under our managed plugins root — never
-            # rmtree an arbitrary path the registry might claim.
+        User data lives elsewhere (cortex-vision keeps sessions in
+        %APPDATA%/Cortex/video/, separate from the plugin install dir)
+        so keep_user_data only governs the install bytes themselves.
+
+        Raises InstallLocked if the install dir can't be released —
+        registry entry is left intact so the user knows to retry/reboot.
+        """
+        plugin = self.get(plugin_id)
+        if plugin is None:
+            return
+
+        # 1. Stop our tracked process first
+        self.stop(plugin_id, graceful=True)
+
+        # 2. Decide whether we'll delete the install dir
+        will_delete = (
+            (not keep_user_data) and bool(plugin.install_dir)
+        )
+
+        if will_delete:
+            install_dir = Path(plugin.install_dir)  # type: ignore[arg-type]
+            # Defensive path check: only rmtree under our managed
+            # plugins root. Never trust the registry to point at
+            # something else.
             plugins_root = self.registry_path.parent
             try:
                 install_dir.relative_to(plugins_root)
@@ -766,9 +946,49 @@ class PluginManager:
                     "Refusing to delete %s — not under plugins root %s",
                     install_dir, plugins_root,
                 )
-                return
-            shutil.rmtree(install_dir, ignore_errors=True)
-            logger.info("Deleted %s", install_dir)
+                # Path-suspicious; treat as "kept" rather than an
+                # error. Drop the registry entry below.
+                will_delete = False
+
+        if will_delete:
+            install_dir = Path(plugin.install_dir)  # type: ignore[arg-type]
+
+            # 3. Force-release any lingering process holders before
+            #    rmtree. Same as install — _processes might be empty
+            #    if the Hub crashed mid-shutdown previously.
+            _force_release_install_dir(install_dir, plugin.port)
+
+            # 4. rmtree with retry. If it persistently fails we
+            #    raise InstallLocked and DO NOT touch the registry —
+            #    leaving the user in a known-bad-but-recoverable state
+            #    (sees the entry, knows it's still there, can retry
+            #    after killing the holder or rebooting). The previous
+            #    behavior used ignore_errors=True which silently flipped
+            #    the registry to "uninstalled" while the disk was dirty.
+            try:
+                _rmtree_with_retry(install_dir)
+                logger.info("Deleted %s", install_dir)
+            except InstallLocked:
+                logger.error(
+                    "Uninstall of %s blocked: install dir %s could not "
+                    "be released. Registry entry preserved.",
+                    plugin_id, install_dir,
+                )
+                raise
+
+            # 5. Sanity check: the dir really is gone before we flip the
+            #    registry. Belt-and-braces — _rmtree_with_retry should
+            #    have raised if it didn't, but a partial delete here
+            #    would corrupt our state.
+            if install_dir.exists():
+                raise InstallLocked(
+                    f"Uninstall left {install_dir} on disk despite "
+                    f"successful rmtree return — refusing to flip "
+                    f"registry to 'uninstalled' while bytes remain."
+                )
+
+        # 6. Only now is it safe to remove the registry entry
+        self.remove(plugin_id)
 
         # Plugin logs (sidecar.log) live under plugins_root/<id>/logs/
         # which we'd want to clean too, but only if we deleted the

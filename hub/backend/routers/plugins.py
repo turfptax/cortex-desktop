@@ -19,10 +19,36 @@ from pydantic import BaseModel
 
 from services.plugin_manager import (
     InstalledPlugin,
+    InstallLocked,
     get_manager,
     is_marketplace_id,
     marketplace_default_port,
 )
+
+
+def _install_locked_response(plugin_id: str, action: str, exc: Exception) -> HTTPException:
+    """Shared 409 shape for install/update/uninstall when handles are
+    still held. Points the user at the Hub log so they can see which
+    process or path is the holdout."""
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error": "install_locked",
+            "plugin": plugin_id,
+            "action": action,
+            "message": (
+                f"Could not {action} {plugin_id} — a process is still "
+                f"holding the install directory or its port. The Hub "
+                f"tried to force-release any holders before retrying. "
+                f"See %APPDATA%/Cortex/logs/cortex-hub.log for which "
+                f"process or path was the holdout. Manual recovery: "
+                f"close any open File Explorer / antivirus scan windows "
+                f"on the install dir, kill any stray plugin .exe in "
+                f"Task Manager, or reboot."
+            ),
+            "underlying": str(exc)[:300],
+        },
+    )
 
 logger = logging.getLogger("cortex.hub.plugins")
 
@@ -90,6 +116,8 @@ async def install(req: InstallRequest) -> dict[str, Any]:
         plugin = await mgr.install(
             req.plugin_id, variant=variant_arg, version=req.version
         )
+    except InstallLocked as e:
+        raise _install_locked_response(req.plugin_id, "install", e)
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     except ValueError as e:
@@ -189,6 +217,8 @@ async def update(plugin_id: str) -> dict[str, Any]:
         raise HTTPException(404, f"Plugin not installed: {plugin_id}")
     try:
         plugin = await mgr.update(plugin_id)
+    except InstallLocked as e:
+        raise _install_locked_response(plugin_id, "update", e)
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     except ValueError as e:
@@ -216,7 +246,15 @@ async def uninstall(
     mgr = get_manager()
     if mgr.get(plugin_id) is None:
         raise HTTPException(404, f"Plugin not registered: {plugin_id}")
-    mgr.uninstall(plugin_id, keep_user_data=keep_user_data)
+    try:
+        mgr.uninstall(plugin_id, keep_user_data=keep_user_data)
+    except InstallLocked as e:
+        # Registry entry intentionally preserved by the manager so the
+        # user can retry / reboot. Surface a 409 with action context.
+        raise _install_locked_response(plugin_id, "uninstall", e)
+    except Exception as e:
+        logger.exception("Uninstall failed for %s", plugin_id)
+        raise HTTPException(500, f"Uninstall failed: {e}")
     return {"ok": True, "plugin_id": plugin_id}
 
 
