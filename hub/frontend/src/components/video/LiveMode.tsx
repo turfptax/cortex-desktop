@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import {
   liveStart,
   liveStop,
-  liveStatus,
   liveWsUrl,
   listCameras,
   type CameraInfo,
@@ -14,12 +13,17 @@ import {
  * Subscribes to WS /api/video/live/ws (proxied through cortex-desktop)
  * and renders scenes as the cortex-vision sidecar emits them. Audio is
  * intentionally absent — the locked design says overseer's existing
- * audio-journal flow handles speech and Phase 6 wires the bridge.
+ * audio-journal flow handles speech.
  *
- * Reconnect is intentionally NOT implemented: a live session is a
- * single thing the user explicitly started; if the connection drops
- * mid-session, surfacing that to the user is more useful than silently
- * reconnecting and possibly missing events.
+ * Sessions are explicit, not implicit:
+ *   - Mount fetches the camera list and renders a picker, but does NOT
+ *     adopt or start any session. The user has to click Start.
+ *   - Unmount stops any session this component started so navigating
+ *     away never leaves a sidecar pipeline running with the camera on.
+ *   - Refresh-resilience would be nice but turned out to cause more
+ *     pain than it solved (auto-attaching the wrong camera_index on
+ *     mount). Skipping for v0.1; revisit when there's a real
+ *     long-session use case.
  */
 
 interface SceneState {
@@ -52,34 +56,47 @@ export function LiveMode() {
   const [stats, setStats] = useState<LiveStats | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
+  // Set to true when *we* called liveStart() in this component instance.
+  // Used to gate the unmount cleanup so we don't blindly stop a
+  // session some other tab might own.
+  const ownsSessionRef = useRef(false)
 
-  // Probe for an already-running session on mount (refresh resilience)
-  // and pre-fetch the camera list.
+  // Mount: fetch the camera list and pre-select a sensible default.
+  // We do NOT call /live/status or attach to any pre-existing session
+  // here — that turned out to create the "auto-fire with the wrong
+  // camera" surprise. Starting is explicit; unmount cleans up if we
+  // started something.
   useEffect(() => {
     let cancelled = false
-    const init = async () => {
-      try {
-        const status = await liveStatus()
-        if (!cancelled && (status as { is_running?: boolean }).is_running) {
-          // Already running from a previous tab/session — adopt it.
-          setPhase('running')
-          openSocket()
-        }
-      } catch {
-        /* sidecar might not have /status yet; harmless */
-      }
-      try {
-        const list = await listCameras()
-        if (!cancelled) setCameras(list)
-      } catch (e) {
-        if (!cancelled)
-          setError(e instanceof Error ? e.message : String(e))
-      }
-    }
-    init()
+    listCameras()
+      .then((list) => {
+        if (cancelled) return
+        setCameras(list)
+        const defaultIndex = pickDefaultCamera(list)
+        if (defaultIndex !== null) setCameraIndex(defaultIndex)
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+      })
     return () => {
       cancelled = true
+    }
+  }, [])
+
+  // Unmount: stop any session this component started. The browser is
+  // a more invasive client than the typical web tab — leaving a live
+  // capture pipeline running with the camera light on after the user
+  // navigates away is bad behavior. fire-and-forget; if the stop call
+  // fails we can't do much from a teardown path anyway.
+  useEffect(() => {
+    return () => {
       closeSocket()
+      if (ownsSessionRef.current) {
+        liveStop().catch(() => {
+          /* best-effort teardown */
+        })
+        ownsSessionRef.current = false
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -201,9 +218,14 @@ export function LiveMode() {
         // cortex-vision's bridge contract. Toggle is rendered for the
         // user but applied at the bridge layer once Phase 6 lands.
       })
+      ownsSessionRef.current = true
       openSocket()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      // cortex-vision returns a structured 503 with a clean message
+      // when the camera fails to open; surface as a prominent error
+      // banner rather than a small toast. Same for 409 (session
+      // already running) — give the user enough to act on.
+      setError(parseStartError(e))
       setPhase('error')
     }
   }
@@ -212,6 +234,7 @@ export function LiveMode() {
     setPhase('stopping')
     try {
       await liveStop()
+      ownsSessionRef.current = false
       // The "stopped" event over WS finalizes the phase; if the WS is
       // already gone, force-finalize here.
       if (!wsRef.current) setPhase('stopped')
@@ -223,6 +246,7 @@ export function LiveMode() {
 
   const handleReset = () => {
     closeSocket()
+    ownsSessionRef.current = false
     setPhase('idle')
     setError(null)
     setSessionId(null)
@@ -236,6 +260,29 @@ export function LiveMode() {
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
+      {/* Prominent error banner — sticks above whatever phase card is
+          showing. Replaces the easy-to-miss thin amber strip. */}
+      {error && phase !== 'error' && (
+        <div className="bg-error/10 border border-error/40 rounded-lg p-4 flex items-start gap-3">
+          <span className="text-error text-lg leading-none">⚠</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-error">
+              Live mode error
+            </p>
+            <p className="text-xs text-error/80 mt-1 whitespace-pre-wrap">
+              {error}
+            </p>
+          </div>
+          <button
+            onClick={() => setError(null)}
+            className="text-text-muted hover:text-text-primary text-sm cursor-pointer"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {phase === 'idle' && (
         <SetupCard
           cameras={cameras}
@@ -287,11 +334,6 @@ export function LiveMode() {
         </div>
       )}
 
-      {error && phase !== 'error' && (
-        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-400 whitespace-pre-wrap">
-          {error}
-        </div>
-      )}
     </div>
   )
 }
@@ -348,9 +390,7 @@ function SetupCard({
             >
               {cameras.map((c) => (
                 <option key={c.index} value={c.index}>
-                  #{c.index}
-                  {c.name ? ` · ${c.name}` : ''}
-                  {c.resolution ? ` (${c.resolution[0]}×${c.resolution[1]})` : ''}
+                  {formatCameraLabel(c)}
                 </option>
               ))}
             </select>
@@ -578,6 +618,85 @@ function SceneCard({ scene }: { scene: SceneState }) {
       </div>
     </div>
   )
+}
+
+/** Format one camera as "Camera 2 — 1920×1080 @ 30fps" per the spec.
+ * Falls back gracefully when the sidecar omits any of the optional
+ * fields (missing native_resolution, fps==0, etc.). */
+function formatCameraLabel(c: CameraInfo): string {
+  const parts = [`Camera ${c.index}`]
+  if (c.name) parts.push(c.name)
+  if (c.native_resolution) {
+    const [w, h] = c.native_resolution
+    let res = `${w}×${h}`
+    if (c.native_fps && c.native_fps > 0) {
+      res += ` @ ${Math.round(c.native_fps)}fps`
+    }
+    parts.push(res)
+  }
+  return parts.join(' — ')
+}
+
+/** Pick a sensible default camera. Prefer:
+ *   1. An entry whose name explicitly says "OBS"
+ *   2. The highest-resolution entry (≥1280 wide is the OBS Virtual
+ *      Camera signature on a typical desktop — it mirrors the user's
+ *      primary monitor)
+ *   3. Index 0 as a last resort
+ *
+ * Returns the chosen camera_index, or null if the list is empty.
+ */
+function pickDefaultCamera(cameras: CameraInfo[]): number | null {
+  if (cameras.length === 0) return null
+
+  const named = cameras.find((c) =>
+    typeof c.name === 'string' && /obs/i.test(c.name),
+  )
+  if (named) return named.index
+
+  // Highest-resolution; fall back to lowest index on ties
+  let best: CameraInfo | null = null
+  for (const c of cameras) {
+    if (!c.native_resolution) continue
+    if (
+      best === null ||
+      !best.native_resolution ||
+      c.native_resolution[0] > best.native_resolution[0]
+    ) {
+      best = c
+    }
+  }
+  if (best && best.native_resolution && best.native_resolution[0] >= 1280) {
+    return best.index
+  }
+
+  // Nothing 1280+; just return the first one to avoid silently picking
+  // index 0 when index 0 is e.g. a phone via DroidCam.
+  return cameras[0].index
+}
+
+/** Render a /live/start error in human-readable form. cortex-vision's
+ * error path returns the familiar FastAPI {"detail": "..."} shape. */
+function parseStartError(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e)
+  // apiFetch wraps non-2xx as `Error: API error <code>: <body>` — pull
+  // a JSON detail field out if present so the user sees just the
+  // useful sentence.
+  const match = msg.match(/API error (\d+): (.+)$/s)
+  if (!match) return msg
+  const [, code, body] = match
+  try {
+    const parsed = JSON.parse(body)
+    const detail = typeof parsed.detail === 'string'
+      ? parsed.detail
+      : typeof parsed.detail?.message === 'string'
+        ? parsed.detail.message
+        : null
+    if (detail) return `${detail} (HTTP ${code})`
+  } catch {
+    /* not json; fall through */
+  }
+  return msg
 }
 
 function fmtElapsed(s: number): string {
