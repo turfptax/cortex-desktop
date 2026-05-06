@@ -14,12 +14,15 @@ The lifecycle test uses a real stdlib HTTP server as a fake sidecar
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
+import shutil
 import socket
 import subprocess
 import sys
 import textwrap
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -166,14 +169,160 @@ def test_registry_ignores_future_schema(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_install_is_phase5_stub(tmp_path: Path) -> None:
+def test_install_rejects_unknown_plugin(tmp_path: Path) -> None:
+    """install() validates plugin_id against MARKETPLACE before
+    touching the network."""
+    mgr = PluginManager(registry_path=tmp_path / "registry.json")
+
+    async def _call():
+        await mgr.install("not-a-real-plugin")
+
+    with pytest.raises(ValueError, match="not in marketplace"):
+        asyncio.run(_call())
+
+
+def test_install_rejects_non_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The release assets are windows zips; refuse to attempt install
+    on other platforms with a clear message rather than a confusing
+    asset-not-found further down the pipeline."""
+    monkeypatch.setattr("services.plugin_manager.sys.platform", "linux")
     mgr = PluginManager(registry_path=tmp_path / "registry.json")
 
     async def _call():
         await mgr.install("cortex-vision")
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(RuntimeError, match="Windows only"):
         asyncio.run(_call())
+
+
+def test_install_end_to_end_with_mocked_github(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Full install flow end-to-end with the network stubbed:
+       fetch release -> download zip -> verify sha256 -> extract ->
+       upsert -> start.
+
+    Builds a real zip on disk so the extract path is exercised. The
+    'executable' is a tiny .py shim wrapped in a .exe-named file —
+    we don't actually try to start it; we patch start() to a no-op
+    so the test stays hermetic."""
+    import services.plugin_manager as pm_mod
+
+    monkeypatch.setattr(pm_mod.sys, "platform", "win32")
+
+    # Build a fake bundle zip with a top-level cortex-vision.exe stub
+    bundle_root = tmp_path / "bundle_src"
+    bundle_root.mkdir()
+    (bundle_root / "cortex-vision.exe").write_bytes(b"fake-exe-stub")
+    zip_src = tmp_path / "cortex-vision-0.2.0-windows-cpu.zip"
+    with zipfile.ZipFile(zip_src, "w") as zf:
+        for f in bundle_root.rglob("*"):
+            if f.is_file():
+                zf.write(f, arcname=f.relative_to(bundle_root))
+    expected_sha = hashlib.sha256(zip_src.read_bytes()).hexdigest()
+
+    fake_release = {
+        "tag_name": "v0.2.0",
+        "assets": [
+            {
+                "name": "cortex-vision-0.2.0-windows-cpu.zip",
+                "size": zip_src.stat().st_size,
+                "browser_download_url": "https://example.test/zip",
+            },
+            {
+                "name": "cortex-vision-0.2.0-windows-cpu.zip.sha256",
+                "size": 100,
+                "browser_download_url": "https://example.test/sha",
+            },
+        ],
+    }
+
+    # Stub the manager's network helpers to return the fake release,
+    # download the local zip into the requested dest, and serve the
+    # known sha256.
+    async def fake_fetch_release(self, repo, version):
+        assert repo == "turfptax/cortex-vision"
+        assert version == "latest"
+        return fake_release
+
+    async def fake_download_to(self, url, dest):
+        assert url == "https://example.test/zip"
+        shutil.copy(zip_src, dest)
+
+    async def fake_fetch_sha256(self, url):
+        assert url == "https://example.test/sha"
+        return expected_sha
+
+    monkeypatch.setattr(pm_mod.PluginManager, "_fetch_release", fake_fetch_release)
+    monkeypatch.setattr(pm_mod.PluginManager, "_download_to", fake_download_to)
+    monkeypatch.setattr(pm_mod.PluginManager, "_fetch_sha256", fake_fetch_sha256)
+    # No real subprocess spawn during the test.
+    monkeypatch.setattr(pm_mod.PluginManager, "start", lambda self, pid: None)
+
+    mgr = pm_mod.PluginManager(registry_path=tmp_path / "registry.json")
+    plugin = asyncio.run(mgr.install("cortex-vision"))
+
+    assert plugin.id == "cortex-vision"
+    assert plugin.version == "0.2.0"
+    assert plugin.variant == "cpu"
+    assert plugin.executable == "cortex-vision.exe"
+    assert plugin.install_dir is not None
+    install_path = Path(plugin.install_dir)
+    assert (install_path / "cortex-vision.exe").exists()
+
+
+def test_install_rejects_bad_sha256(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A SHA256 mismatch must abort the install before extract +
+    spawn — protects against MITM / corrupted downloads."""
+    import services.plugin_manager as pm_mod
+
+    monkeypatch.setattr(pm_mod.sys, "platform", "win32")
+
+    zip_src = tmp_path / "cortex-vision-0.2.0-windows-cpu.zip"
+    with zipfile.ZipFile(zip_src, "w") as zf:
+        zf.writestr("cortex-vision.exe", b"x")
+
+    fake_release = {
+        "tag_name": "v0.2.0",
+        "assets": [
+            {
+                "name": "cortex-vision-0.2.0-windows-cpu.zip",
+                "size": zip_src.stat().st_size,
+                "browser_download_url": "https://example.test/zip",
+            },
+            {
+                "name": "cortex-vision-0.2.0-windows-cpu.zip.sha256",
+                "size": 100,
+                "browser_download_url": "https://example.test/sha",
+            },
+        ],
+    }
+
+    async def fake_fetch_release(self, repo, version):
+        return fake_release
+
+    async def fake_download_to(self, url, dest):
+        shutil.copy(zip_src, dest)
+
+    async def fake_fetch_sha256(self, url):
+        return "0" * 64  # wrong
+
+    monkeypatch.setattr(pm_mod.PluginManager, "_fetch_release", fake_fetch_release)
+    monkeypatch.setattr(pm_mod.PluginManager, "_download_to", fake_download_to)
+    monkeypatch.setattr(pm_mod.PluginManager, "_fetch_sha256", fake_fetch_sha256)
+    monkeypatch.setattr(pm_mod.PluginManager, "start", lambda self, pid: None)
+
+    mgr = pm_mod.PluginManager(registry_path=tmp_path / "registry.json")
+
+    with pytest.raises(ValueError, match="SHA256 mismatch"):
+        asyncio.run(mgr.install("cortex-vision"))
+
+    # Registry must NOT have been updated
+    assert mgr.get("cortex-vision") is None
 
 
 def test_marketplace_flags_installed(tmp_path: Path) -> None:

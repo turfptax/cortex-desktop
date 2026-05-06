@@ -72,28 +72,45 @@ async def list_marketplace() -> list[dict[str, Any]]:
     return get_manager().marketplace()
 
 
-@router.post("/install", status_code=501)
+@router.post("/install")
 async def install(req: InstallRequest) -> dict[str, Any]:
-    """Phase 0: stub. Real install lands in Phase 5.
+    """Download, verify, extract, register, and start a plugin from
+    its GitHub release. Synchronous — bundles are 50-150 MB so this
+    can take 30-90s on residential connections. Returns the
+    InstalledPlugin entry on success.
 
-    The 501 forces dev users into the documented hand-edit-registry.json
-    flow — which is the right amount of friction for Phase 0 since
-    there's nothing to install yet (cortex-vision hasn't published a
-    GitHub release).
-    """
-    raise HTTPException(
-        status_code=501,
-        detail={
-            "error": "install_not_implemented",
-            "plugin": req.plugin_id,
-            "message": (
-                "Plugin installs land in Phase 5 of the v0.18 cycle. For "
-                "now, run the sidecar from source and register it via "
-                "%APPDATA%/Cortex/plugins/registry.json. See "
-                "cortex-vision/HANDOFF.md → 'Testing it end-to-end'."
-            ),
-        },
-    )
+    On failure the previous installation (if any) is rolled back and
+    the error surfaces with enough detail to act on (404 unknown
+    asset, 400 bad SHA256, 502 GitHub unreachable, etc.)."""
+    import httpx as _httpx  # local to keep top of file lean
+
+    mgr = get_manager()
+    variant_arg = None if req.variant in (None, "auto") else req.variant
+    try:
+        plugin = await mgr.install(
+            req.plugin_id, variant=variant_arg, version=req.version
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        # Bad SHA256 / unknown plugin id / bad variant — caller-fixable
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        # Platform / environment issues
+        raise HTTPException(409, str(e))
+    except _httpx.HTTPError as e:
+        raise HTTPException(
+            502,
+            detail={
+                "error": "github_unreachable",
+                "plugin": req.plugin_id,
+                "message": f"Could not fetch release metadata: {e}",
+            },
+        )
+    except Exception as e:
+        logger.exception("Install failed for %s", req.plugin_id)
+        raise HTTPException(500, f"Install failed: {e}")
+    return {"ok": True, "plugin": plugin.to_api_dict()}
 
 
 @router.post("/dev-register")
@@ -159,16 +176,36 @@ async def dev_register(req: DevRegisterRequest) -> dict[str, Any]:
     return {"ok": True, "plugin": plugin.to_api_dict()}
 
 
-@router.post("/{plugin_id}/update", status_code=501)
+@router.post("/{plugin_id}/update")
 async def update(plugin_id: str) -> dict[str, Any]:
-    raise HTTPException(
-        status_code=501,
-        detail={
-            "error": "update_not_implemented",
-            "plugin": plugin_id,
-            "message": "Plugin updates land in Phase 5.",
-        },
-    )
+    """Update an installed plugin to the latest GitHub release. Same
+    rollback semantics as install — if the new version fails to
+    extract or start, the previous one is restored from a temp
+    backup."""
+    import httpx as _httpx
+
+    mgr = get_manager()
+    if mgr.get(plugin_id) is None:
+        raise HTTPException(404, f"Plugin not installed: {plugin_id}")
+    try:
+        plugin = await mgr.update(plugin_id)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except _httpx.HTTPError as e:
+        raise HTTPException(
+            502,
+            detail={
+                "error": "github_unreachable",
+                "plugin": plugin_id,
+                "message": f"Could not fetch release metadata: {e}",
+            },
+        )
+    except Exception as e:
+        logger.exception("Update failed for %s", plugin_id)
+        raise HTTPException(500, f"Update failed: {e}")
+    return {"ok": True, "plugin": plugin.to_api_dict()}
 
 
 @router.delete("/{plugin_id}")
