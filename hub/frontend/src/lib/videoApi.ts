@@ -222,6 +222,27 @@ export interface LiveStartRequest {
   steady_interval?: number
   min_scene_gap?: number
   describer_model?: string | null
+  /** Phase 7 audio capture (cortex-vision v0.4.0+).
+   *   - null: video-only, no audio capture
+   *   - "desktop": WASAPI loopback (records system audio)
+   *   - int: sounddevice index from /live/audio-devices
+   *   - other string: name substring match against the device list */
+  audio_source?: number | string | null
+  /** Run the captured audio through whisper after Stop. Off by
+   * default; same UX shape as FileMode. */
+  transcribe_audio?: boolean
+}
+
+/** One entry from GET /api/video/live/audio-devices. cortex-vision
+ * exposes both real input devices and the synthetic "desktop" loopback. */
+export interface AudioDevice {
+  index: number | null              // null for the synthetic "desktop" entry
+  name: string
+  kind: 'desktop' | 'input' | string
+  channels?: number
+  default_sample_rate?: number
+  // Forward-compatible — cortex-vision may add fields
+  [key: string]: unknown
 }
 
 export interface LiveStartResponse {
@@ -247,6 +268,15 @@ export type LiveStatus =
 export async function listCameras(): Promise<CameraInfo[]> {
   const r = await apiFetch<{ cameras: CameraInfo[] }>('/video/live/cameras')
   return r.cameras ?? []
+}
+
+export async function listAudioDevices(): Promise<AudioDevice[]> {
+  const r = await apiFetch<{ devices?: AudioDevice[]; audio_devices?: AudioDevice[] }>(
+    '/video/live/audio-devices',
+  )
+  // Tolerate either key name on the wire — cortex-vision's spec
+  // says "audio-devices" plural; safe to accept both.
+  return r.devices ?? r.audio_devices ?? []
 }
 
 export async function liveStart(
@@ -299,6 +329,24 @@ export type LiveEvent =
       duration_s: number
     }
   | { type: 'error'; message: string }
+  // Phase 7 audio events (cortex-vision v0.4.0+)
+  | {
+      type: 'audio_level'
+      rms: number                          // 0..1
+      peak: number                         // 0..1
+      [key: string]: unknown
+    }
+  | {
+      type: 'transcribing'
+      message?: string
+    }
+  | {
+      type: 'transcribed'
+      segment_count: number
+      scenes_with_audio: number
+    }
+  | { type: 'transcribe_skipped'; reason?: string }
+  | { type: 'transcribe_failed'; error?: string; message?: string }
   // Forward-compatible: ignore unknown future types
   | { type: string; [key: string]: unknown }
 
