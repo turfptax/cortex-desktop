@@ -204,8 +204,10 @@ export function frameUrl(
 export interface CameraInfo {
   index: number
   name?: string
-  resolution?: [number, number]
-  fps?: number
+  /** Per cortex-vision's describe_cameras() — opens each device briefly
+   * to read the native capture format. */
+  native_resolution?: [number, number]
+  native_fps?: number
   // Forward-compatible: cortex-vision may add fields
   [key: string]: unknown
 }
