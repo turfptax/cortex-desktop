@@ -5,6 +5,11 @@ import {
   type InstalledPlugin,
   type MarketplacePlugin,
 } from '../../hooks/useInstalledPlugins'
+import { CortexVisionConfigForm } from './CortexVisionConfigForm'
+
+/** Plugins that expose their own Configure form. Today only
+ * cortex-vision; future plugins would register here. */
+const CONFIGURABLE_PLUGINS = new Set(['cortex-vision'])
 
 /** Settings → Plugins card.
  *
@@ -20,6 +25,7 @@ export function PluginsTab() {
   const [marketplace, setMarketplace] = useState<MarketplacePlugin[]>([])
   const [busyId, setBusyId] = useState<string | null>(null)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
+  const [configuringId, setConfiguringId] = useState<string | null>(null)
 
   useEffect(() => {
     apiFetch<MarketplacePlugin[]>('/plugins/marketplace')
@@ -165,13 +171,24 @@ export function PluginsTab() {
             </p>
           )}
           {plugins.map((p) => (
-            <PluginRow
-              key={p.id}
-              plugin={p}
-              busy={busyId === p.id}
-              onRestart={() => handleRestart(p.id)}
-              onUninstall={() => handleUninstall(p.id)}
-            />
+            <div key={p.id} className="space-y-2">
+              <PluginRow
+                plugin={p}
+                busy={busyId === p.id}
+                configurable={CONFIGURABLE_PLUGINS.has(p.id)}
+                isConfiguring={configuringId === p.id}
+                onRestart={() => handleRestart(p.id)}
+                onUninstall={() => handleUninstall(p.id)}
+                onToggleConfigure={() =>
+                  setConfiguringId(configuringId === p.id ? null : p.id)
+                }
+              />
+              {configuringId === p.id && p.id === 'cortex-vision' && (
+                <CortexVisionConfigForm
+                  onClose={() => setConfiguringId(null)}
+                />
+              )}
+            </div>
           ))}
         </div>
       )}
@@ -206,13 +223,19 @@ export function PluginsTab() {
 function PluginRow({
   plugin,
   busy,
+  configurable,
+  isConfiguring,
   onRestart,
   onUninstall,
+  onToggleConfigure,
 }: {
   plugin: InstalledPlugin
   busy: boolean
+  configurable: boolean
+  isConfiguring: boolean
   onRestart: () => void
   onUninstall: () => void
+  onToggleConfigure: () => void
 }) {
   // Dev mode = no managed executable (registered via dev-register or
   // by hand-editing registry.json). The is_dev_mode runtime flag only
@@ -252,6 +275,19 @@ function PluginRow({
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {configurable && (
+            <button
+              onClick={onToggleConfigure}
+              disabled={busy}
+              className={`px-2 py-1 text-xs rounded border disabled:opacity-50 cursor-pointer ${
+                isConfiguring
+                  ? 'border-accent/50 bg-accent/10 text-accent-hover'
+                  : 'border-border hover:bg-surface-tertiary'
+              }`}
+            >
+              {isConfiguring ? 'Close config' : 'Configure'}
+            </button>
+          )}
           {!isDevMode && (
             <button
               onClick={onRestart}
