@@ -310,6 +310,72 @@ export function liveWsUrl(): string {
 }
 
 // ---------------------------------------------------------------------------
+// Vision config (Phase 6 — Settings → Plugins → Configure)
+//
+// API keys round-trip with the sentinel "***" when the server already
+// has a key set. Submit "***" to keep the existing key, "" to clear,
+// anything else to set. The server also accepts partial updates — we
+// always send the full object since we have it loaded anyway.
+// ---------------------------------------------------------------------------
+
+export interface VisionConfigSection {
+  url: string
+  model: string
+  api_key: string                      // "***" === existing key kept
+}
+
+export interface VisionConfig {
+  describer: VisionConfigSection
+  transcribe: VisionConfigSection
+  /** Phase 4 live-mode tuning knobs. We pass through unchanged on save
+   * so users don't lose their tuning when adjusting describer/transcribe. */
+  live?: Record<string, unknown>
+  config_path?: string
+  // Forward-compatible — cortex-vision may add sections we don't render
+  [key: string]: unknown
+}
+
+/** Per-section result from POST /api/video/config/test. */
+export interface VisionTestSection {
+  reachable: boolean
+  available_models?: string[]
+  error?: string | null
+}
+
+export type VisionTestResponse = {
+  describer?: VisionTestSection
+  transcribe?: VisionTestSection
+} & {
+  [key: string]: VisionTestSection | undefined
+}
+
+export async function getVisionConfig(): Promise<VisionConfig> {
+  return apiFetch<VisionConfig>('/video/config')
+}
+
+/** Send the full config object back. Server treats it as a patch —
+ * atomic write, no restart needed (sidecar re-reads on every request). */
+export async function updateVisionConfig(
+  patch: VisionConfig,
+): Promise<VisionConfig> {
+  return apiFetch<VisionConfig>('/video/config', {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  })
+}
+
+/** Probe connectivity without saving. Returns `available_models` per
+ * section when reachable so the form can populate model dropdowns. */
+export async function testVisionConfig(
+  proposed: VisionConfig,
+): Promise<VisionTestResponse> {
+  return apiFetch<VisionTestResponse>('/video/config/test', {
+    method: 'POST',
+    body: JSON.stringify(proposed),
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Helpers — status taxonomy
 // ---------------------------------------------------------------------------
 
