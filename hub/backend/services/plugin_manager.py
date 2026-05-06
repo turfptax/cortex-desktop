@@ -51,6 +51,16 @@ HEALTH_INTERVAL_S = 5.0
 HEALTH_TIMEOUT_S = 2.0
 GRACEFUL_STOP_TIMEOUT_S = 5.0
 
+# Auto-respawn caps. After this many consecutive failed restart
+# attempts, the manager gives up and leaves the plugin Stopped until
+# the user clicks Restart manually — protects against restart-loop
+# hell when the bundle is fundamentally broken (missing DLL, port
+# permanently in use, etc.). Counter resets on a successful health.
+MAX_RESPAWN_ATTEMPTS = 5
+# Minimum gap between respawn attempts. Grows linearly with attempts
+# so we don't burn CPU on a hot loop. attempt_n waits ≥ n*MIN seconds.
+MIN_RESPAWN_GAP_S = 5.0
+
 # Install / update timeouts. Bundles are 50-150 MB so the connect
 # timeout stays tight (the server should respond fast) but the read
 # timeout has to span the whole download.
@@ -265,6 +275,17 @@ class InstalledPlugin:
     auto_start: bool = True
     installed_at: str = field(default_factory=_utc_now)
     last_health_check: str | None = None
+    # Auto-respawn the sidecar when the health loop detects it died.
+    # Default true so users don't have to manually click Restart after
+    # a crash or external kill. Capped at MAX_RESPAWN_ATTEMPTS to
+    # avoid restart-loop hell; counter resets on a successful health.
+    restart_on_crash: bool = True
+    # Cached from check_updates(). Populated on Hub startup + on every
+    # manual "Check for updates" click. None means "current" or "not
+    # checked yet"; non-None means an upgrade is available to that
+    # version.
+    latest_available_version: str | None = None
+    last_update_check_at: str | None = None
 
     # Runtime-only (excluded from registry serialization)
     is_running: bool = field(default=False, repr=False)
@@ -282,6 +303,9 @@ class InstalledPlugin:
             "auto_start": self.auto_start,
             "installed_at": self.installed_at,
             "last_health_check": self.last_health_check,
+            "restart_on_crash": self.restart_on_crash,
+            "latest_available_version": self.latest_available_version,
+            "last_update_check_at": self.last_update_check_at,
         }
 
     def to_api_dict(self) -> dict[str, Any]:
@@ -322,6 +346,11 @@ class PluginManager:
         self._processes: dict[str, subprocess.Popen] = {}
         self._stop_event = asyncio.Event()
         self._health_task: asyncio.Task | None = None
+        # Auto-respawn bookkeeping (transient — never persisted).
+        # Resets when a plugin reports healthy; capped to avoid hot
+        # restart loops when the bundle is fundamentally broken.
+        self._crash_attempts: dict[str, int] = {}
+        self._last_crash_attempt_at: dict[str, float] = {}
         self._load_registry()
 
     # ------------------------------------------------------------------ #
@@ -586,7 +615,8 @@ class PluginManager:
                 )
 
     async def health_loop(self) -> None:
-        """Background task — polls each plugin every HEALTH_INTERVAL_S."""
+        """Background task — polls each plugin every HEALTH_INTERVAL_S
+        and auto-respawns crashed sidecars (when restart_on_crash=true)."""
         logger.info("Plugin health loop started (interval=%.1fs)", HEALTH_INTERVAL_S)
         try:
             while not self._stop_event.is_set():
@@ -599,6 +629,14 @@ class PluginManager:
                             if plugin:
                                 plugin.is_running = h.healthy
                                 plugin.last_health_check = h.last_check
+                                if h.healthy:
+                                    # Reset crash counter on success so
+                                    # transient blips don't permanently
+                                    # consume our retry budget.
+                                    self._crash_attempts.pop(pid, None)
+                                    self._last_crash_attempt_at.pop(pid, None)
+                        if not h.healthy:
+                            self._maybe_respawn(pid)
                     except Exception as e:
                         logger.error("health check error for %s: %s", pid, e)
 
@@ -617,6 +655,61 @@ class PluginManager:
         except asyncio.CancelledError:
             logger.info("Plugin health loop cancelled")
             raise
+
+    def _maybe_respawn(self, plugin_id: str) -> None:
+        """Auto-restart a crashed sidecar within the retry budget.
+        Called from the health loop when a plugin reports unhealthy.
+
+        Conservative — only respawns when:
+          - restart_on_crash is true (default for installed plugins,
+            irrelevant for dev-mode entries)
+          - we own the executable (executable != None)
+          - the tracked process is actually dead (unhealthy via TCP
+            but PID still alive could be a slow startup, not a crash)
+          - retry budget not exhausted (MAX_RESPAWN_ATTEMPTS)
+          - enough time has passed since the last attempt (linear
+            backoff: attempt N waits ≥ N*MIN_RESPAWN_GAP_S seconds)
+        """
+        with self._lock:
+            plugin = self._plugins.get(plugin_id)
+            proc = self._processes.get(plugin_id)
+            count = self._crash_attempts.get(plugin_id, 0)
+            last = self._last_crash_attempt_at.get(plugin_id, 0.0)
+
+        if plugin is None or not plugin.restart_on_crash:
+            return
+        if plugin.executable is None or plugin.install_dir is None:
+            return  # dev-mode — we don't own the process
+
+        # Distinguish "crashed" from "started but not responding yet".
+        # If the tracked process is still alive, the sidecar is just
+        # slow to come up — don't kill it to start over.
+        if proc is not None and proc.poll() is None:
+            return
+
+        if count >= MAX_RESPAWN_ATTEMPTS:
+            # Already tried our budget. Stay Stopped until the user
+            # manually clicks Restart, which resets the counter via
+            # restart()'s ownership of the path.
+            return
+
+        elapsed = time.monotonic() - last
+        # attempt 1: wait ≥ 5s, attempt 2: ≥ 10s, attempt 3: ≥ 15s, …
+        if elapsed < MIN_RESPAWN_GAP_S * (count + 1):
+            return
+
+        with self._lock:
+            self._crash_attempts[plugin_id] = count + 1
+            self._last_crash_attempt_at[plugin_id] = time.monotonic()
+
+        logger.info(
+            "Auto-respawning %s (attempt %d/%d)",
+            plugin_id, count + 1, MAX_RESPAWN_ATTEMPTS,
+        )
+        try:
+            self.start(plugin_id)
+        except Exception as e:
+            logger.error("Auto-respawn failed for %s: %s", plugin_id, e)
 
     def stop_health_loop(self) -> None:
         self._stop_event.set()
@@ -999,7 +1092,13 @@ class PluginManager:
         self, plugin_id: str | None = None
     ) -> dict[str, str | None]:
         """Hit GitHub for the latest release tag of each installed
-        plugin. Returns {plugin_id: latest_version_or_None_if_current}."""
+        plugin. Returns {plugin_id: latest_version_or_None_if_current}.
+
+        Also caches the result on each InstalledPlugin (latest_available_version
+        + last_update_check_at) and persists the registry. The Plugins
+        tab reads the cached fields off /api/plugins so it doesn't have
+        to wait on GitHub for every render.
+        """
         with self._lock:
             if plugin_id is not None:
                 installed = (
@@ -1012,6 +1111,11 @@ class PluginManager:
 
         out: dict[str, str | None] = {}
         for plugin in installed:
+            # Skip dev-mode entries — the "version" is just "dev", no
+            # release to compare against.
+            if plugin.executable is None:
+                out[plugin.id] = None
+                continue
             try:
                 market = self._market_entry(plugin.id)
             except ValueError:
@@ -1022,12 +1126,34 @@ class PluginManager:
                     market["github_repo"], "latest"
                 )
                 latest = release["tag_name"].lstrip("v")
-                out[plugin.id] = latest if latest != plugin.version else None
+                # Only flag as available if it's strictly different
+                # from the installed version. We don't try to do
+                # "is newer" semver math here — that's enough false
+                # positives prevented for the common case.
+                avail = latest if latest != plugin.version else None
+                out[plugin.id] = avail
+                with self._lock:
+                    p = self._plugins.get(plugin.id)
+                    if p:
+                        p.latest_available_version = avail
+                        p.last_update_check_at = _utc_now()
             except Exception as e:
                 logger.warning(
                     "check_updates failed for %s: %s", plugin.id, e
                 )
                 out[plugin.id] = None
+                # Still update last_update_check_at so the UI can show
+                # "tried but failed". Leave latest_available_version
+                # at whatever was previously cached.
+                with self._lock:
+                    p = self._plugins.get(plugin.id)
+                    if p:
+                        p.last_update_check_at = _utc_now()
+
+        try:
+            self._save_registry()
+        except Exception as e:
+            logger.error("Failed to persist update-check cache: %s", e)
         return out
 
     # ------------------------------------------------------------------ #

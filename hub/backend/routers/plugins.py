@@ -306,9 +306,34 @@ async def health(plugin_id: str) -> dict[str, Any]:
 async def check_updates(
     plugin_id: str | None = Query(default=None),
 ) -> dict[str, str | None]:
-    """Phase 0: returns {pid: None} for everything (no update available).
-    Phase 5 hits GitHub releases."""
+    """Hit GitHub for the latest release tag of each installed plugin.
+    Returns {plugin_id: latest_version_or_None_if_current}. Synchronous —
+    callers wait on the GitHub round-trip.
+
+    Side effect: caches the result on each plugin (latest_available_version
+    + last_update_check_at) so the Plugins tab can show "Update available"
+    without re-querying.
+    """
     return await get_manager().check_updates(plugin_id)
+
+
+@router.post("/check-updates")
+async def check_updates_refresh(
+    plugin_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """Manual "Check for updates now" — same as GET but POST-shaped so
+    the UI's intent (refresh the cache) is explicit. Wired to the
+    Plugins tab's "Check for updates" button. Returns the same
+    {plugin_id: latest_or_None} map."""
+    result = await get_manager().check_updates(plugin_id)
+    return {"ok": True, "checked_at": _utc_now(), "result": result}
+
+
+def _utc_now() -> str:
+    """Local copy to avoid pulling the helper out of plugin_manager
+    just for one timestamp."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @router.get("/{plugin_id}")

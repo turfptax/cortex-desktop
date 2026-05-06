@@ -15,6 +15,13 @@ export interface InstalledPlugin {
   auto_start: boolean
   installed_at: string
   last_health_check: string | null
+  /** Auto-respawn on crash. Default true for installed plugins;
+   * irrelevant for dev-mode entries. */
+  restart_on_crash?: boolean
+  /** Cached from the periodic + manual update checks. Non-null
+   * means an upgrade is available to that version. */
+  latest_available_version?: string | null
+  last_update_check_at?: string | null
   is_running: boolean
   is_dev_mode: boolean
 }
