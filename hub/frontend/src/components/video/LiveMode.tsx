@@ -3,7 +3,9 @@ import {
   liveStart,
   liveStop,
   liveWsUrl,
+  listAudioDevices,
   listCameras,
+  type AudioDevice,
   type CameraInfo,
   type LiveEvent,
 } from '../../lib/videoApi'
@@ -42,6 +44,23 @@ interface LiveStats {
   elapsed_s: number
 }
 
+interface AudioLevel {
+  rms: number
+  peak: number
+}
+
+type TranscribeState =
+  | { kind: 'none' }
+  | { kind: 'running'; message?: string }
+  | { kind: 'complete'; segment_count: number; scenes_with_audio: number }
+  | { kind: 'skipped'; reason?: string }
+  | { kind: 'failed'; error: string }
+
+/** Setup-form value for the audio source dropdown. Mirrors the
+ * cortex-vision contract: null = video-only, "desktop" = WASAPI
+ * loopback, number = sounddevice index. */
+type AudioSourceChoice = null | 'desktop' | number
+
 type Phase = 'idle' | 'starting' | 'running' | 'stopping' | 'stopped' | 'error'
 
 export function LiveMode() {
@@ -51,6 +70,12 @@ export function LiveMode() {
   const [cameraIndex, setCameraIndex] = useState(0)
   const [resolution, setResolution] = useState<[number, number]>([384, 216])
   const [pushToOverseer, setPushToOverseer] = useState(true)
+  // Phase 7 audio capture (cortex-vision v0.4.0+)
+  const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([])
+  const [audioSource, setAudioSource] = useState<AudioSourceChoice>('desktop')
+  const [transcribeAudio, setTranscribeAudio] = useState(false)
+  const [audioLevel, setAudioLevel] = useState<AudioLevel | null>(null)
+  const [transcribe, setTranscribe] = useState<TranscribeState>({ kind: 'none' })
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [scenes, setScenes] = useState<Map<number, SceneState>>(new Map())
   const [stats, setStats] = useState<LiveStats | null>(null)
@@ -77,6 +102,16 @@ export function LiveMode() {
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+      })
+    // Audio device list — best-effort. Older sidecars (pre-v0.4.0)
+    // don't expose this endpoint; on 404 we silently keep an empty
+    // device list and the picker falls back to a sensible default.
+    listAudioDevices()
+      .then((list) => {
+        if (!cancelled) setAudioDevices(list)
+      })
+      .catch(() => {
+        /* sidecar may not support audio yet — fine */
       })
     return () => {
       cancelled = true
@@ -192,12 +227,55 @@ export function LiveMode() {
       }
       case 'stopped':
         setPhase('stopped')
-        closeSocket()
+        // Don't closeSocket() yet — transcription events arrive AFTER
+        // stopped on cortex-vision v0.4.0+. We close once the
+        // transcription terminal event lands, or immediately if no
+        // transcription was requested.
+        if (!transcribeAudio) {
+          closeSocket()
+        }
         break
       case 'error':
         setError((event as { message: string }).message ?? 'Unknown error')
         setPhase('error')
         break
+      case 'audio_level': {
+        const e = event as Extract<LiveEvent, { type: 'audio_level' }>
+        // Always overwrite — we don't accumulate audio levels, just
+        // surface the latest tick to the meter.
+        setAudioLevel({ rms: e.rms ?? 0, peak: e.peak ?? 0 })
+        break
+      }
+      case 'transcribing': {
+        const e = event as Extract<LiveEvent, { type: 'transcribing' }>
+        setTranscribe({ kind: 'running', message: e.message })
+        break
+      }
+      case 'transcribed': {
+        const e = event as Extract<LiveEvent, { type: 'transcribed' }>
+        setTranscribe({
+          kind: 'complete',
+          segment_count: e.segment_count ?? 0,
+          scenes_with_audio: e.scenes_with_audio ?? 0,
+        })
+        closeSocket()
+        break
+      }
+      case 'transcribe_skipped': {
+        const e = event as Extract<LiveEvent, { type: 'transcribe_skipped' }>
+        setTranscribe({ kind: 'skipped', reason: e.reason })
+        closeSocket()
+        break
+      }
+      case 'transcribe_failed': {
+        const e = event as Extract<LiveEvent, { type: 'transcribe_failed' }>
+        setTranscribe({
+          kind: 'failed',
+          error: e.error || e.message || 'Transcription failed',
+        })
+        closeSocket()
+        break
+      }
       default:
         // Forward-compatible: ignore unknown event types
         break
@@ -209,10 +287,14 @@ export function LiveMode() {
     setPhase('starting')
     setScenes(new Map())
     setStats(null)
+    setAudioLevel(null)
+    setTranscribe({ kind: 'none' })
     try {
       await liveStart({
         camera_index: cameraIndex,
         resolution,
+        audio_source: audioSource,
+        transcribe_audio: transcribeAudio,
         // The push_to_overseer flag isn't accepted by /live/start in
         // Phase 4 — the bridge picks live sessions up via polling per
         // cortex-vision's bridge contract. Toggle is rendered for the
@@ -252,6 +334,8 @@ export function LiveMode() {
     setSessionId(null)
     setScenes(new Map())
     setStats(null)
+    setAudioLevel(null)
+    setTranscribe({ kind: 'none' })
   }
 
   const sceneList = Array.from(scenes.values()).sort(
@@ -292,6 +376,11 @@ export function LiveMode() {
           setResolution={setResolution}
           pushToOverseer={pushToOverseer}
           setPushToOverseer={setPushToOverseer}
+          audioDevices={audioDevices}
+          audioSource={audioSource}
+          setAudioSource={setAudioSource}
+          transcribeAudio={transcribeAudio}
+          setTranscribeAudio={setTranscribeAudio}
           onStart={handleStart}
         />
       )}
@@ -312,7 +401,10 @@ export function LiveMode() {
             stats={stats}
             onStop={handleStop}
             onReset={handleReset}
+            audioLevel={audioLevel}
+            audioEnabled={audioSource !== null}
           />
+          <TranscribeBanner state={transcribe} />
           <SceneGrid scenes={sceneList} />
         </>
       )}
@@ -350,6 +442,11 @@ function SetupCard({
   setResolution,
   pushToOverseer,
   setPushToOverseer,
+  audioDevices,
+  audioSource,
+  setAudioSource,
+  transcribeAudio,
+  setTranscribeAudio,
   onStart,
 }: {
   cameras: CameraInfo[]
@@ -359,6 +456,11 @@ function SetupCard({
   setResolution: (r: [number, number]) => void
   pushToOverseer: boolean
   setPushToOverseer: (b: boolean) => void
+  audioDevices: AudioDevice[]
+  audioSource: AudioSourceChoice
+  setAudioSource: (s: AudioSourceChoice) => void
+  transcribeAudio: boolean
+  setTranscribeAudio: (b: boolean) => void
   onStart: () => void
 }) {
   const resOptions: Array<[string, [number, number]]> = [
@@ -433,6 +535,45 @@ function SetupCard({
           </select>
         </div>
 
+        <div>
+          <label className="text-xs uppercase tracking-wide text-text-muted block mb-1">
+            Audio source
+          </label>
+          <select
+            value={audioSourceToOption(audioSource)}
+            onChange={(e) => setAudioSource(audioSourceFromOption(e.target.value))}
+            className="w-full px-3 py-2 text-sm rounded-lg bg-surface-secondary border border-border text-text-primary focus:border-accent focus:outline-none"
+          >
+            <option value="null">None (video only)</option>
+            <option value="desktop">Desktop audio (WASAPI loopback)</option>
+            {audioDevices
+              .filter((d) => d.kind !== 'desktop' && typeof d.index === 'number')
+              .map((d) => (
+                <option key={`idx-${d.index}`} value={`idx-${d.index}`}>
+                  {formatAudioDeviceLabel(d)}
+                </option>
+              ))}
+          </select>
+          <p className="text-[11px] text-text-muted mt-1">
+            Desktop audio captures whatever's playing on your system.
+            Pick a real input for a microphone or line-in source.
+          </p>
+        </div>
+
+        <label className="flex items-center gap-2 text-sm text-text-secondary cursor-pointer">
+          <input
+            type="checkbox"
+            checked={transcribeAudio}
+            disabled={audioSource === null}
+            onChange={(e) => setTranscribeAudio(e.target.checked)}
+            className="w-4 h-4 rounded border-border accent-accent cursor-pointer disabled:opacity-50"
+          />
+          <span className={audioSource === null ? 'opacity-50' : ''}>
+            Transcribe audio after Stop (runs whisper, adds a few seconds
+            per minute of capture)
+          </span>
+        </label>
+
         <label className="flex items-center gap-2 text-sm text-text-secondary cursor-pointer">
           <input
             type="checkbox"
@@ -482,12 +623,16 @@ function RunningHeader({
   stats,
   onStop,
   onReset,
+  audioLevel,
+  audioEnabled,
 }: {
   phase: Phase
   sessionId: string | null
   stats: LiveStats | null
   onStop: () => void
   onReset: () => void
+  audioLevel: AudioLevel | null
+  audioEnabled: boolean
 }) {
   const live = phase === 'running'
   return (
@@ -540,6 +685,12 @@ function RunningHeader({
           <Stat label="Frames" value={stats.frames.toLocaleString()} />
           <Stat label="Scenes" value={String(stats.scene_count)} />
           <Stat label="Elapsed" value={fmtElapsed(stats.elapsed_s)} />
+        </div>
+      )}
+
+      {audioEnabled && (
+        <div className="mt-3">
+          <AudioMeter level={audioLevel} live={phase === 'running'} />
         </div>
       )}
     </div>
@@ -697,6 +848,129 @@ function parseStartError(e: unknown): string {
     /* not json; fall through */
   }
   return msg
+}
+
+/** Format an audio device for the picker. Falls back gracefully when
+ * cortex-vision omits sample rate / channels (older sidecars). */
+function formatAudioDeviceLabel(d: AudioDevice): string {
+  const parts: string[] = [d.name || `Input ${d.index}`]
+  if (typeof d.channels === 'number') parts.push(`${d.channels}ch`)
+  if (typeof d.default_sample_rate === 'number') {
+    parts.push(`${Math.round(d.default_sample_rate / 1000)}kHz`)
+  }
+  return parts.join(' · ')
+}
+
+/** Marshal AudioSourceChoice to a string suitable for <select value>.
+ * The dropdown uses string values: "null", "desktop", or "idx-N". */
+function audioSourceToOption(c: AudioSourceChoice): string {
+  if (c === null) return 'null'
+  if (c === 'desktop') return 'desktop'
+  return `idx-${c}`
+}
+
+function audioSourceFromOption(v: string): AudioSourceChoice {
+  if (v === 'null') return null
+  if (v === 'desktop') return 'desktop'
+  if (v.startsWith('idx-')) return Number(v.slice(4))
+  return null
+}
+
+/** Audio level meter — RMS as the main fill, peak as a thin marker.
+ * Updates at the rate of the audio_level events (~10 Hz from the
+ * sidecar). isolates re-render cost: only this component re-renders
+ * on each level update; the parent wraps it in a stable host. */
+function AudioMeter({
+  level,
+  live,
+}: {
+  level: AudioLevel | null
+  live: boolean
+}) {
+  const rmsPct = Math.min(100, Math.max(0, (level?.rms ?? 0) * 100))
+  const peakPct = Math.min(100, Math.max(0, (level?.peak ?? 0) * 100))
+  // Color-code: green at low/mid, amber near clip, red at clip
+  const fillColor =
+    rmsPct > 90
+      ? 'bg-error'
+      : rmsPct > 70
+        ? 'bg-amber-500'
+        : 'bg-success'
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <span className="text-[10px] uppercase tracking-wide text-text-muted">
+          Audio
+        </span>
+        <span className="text-[10px] font-mono text-text-muted">
+          {level ? `rms ${level.rms.toFixed(2)} · peak ${level.peak.toFixed(2)}` : '— silent —'}
+        </span>
+      </div>
+      <div className="relative h-2 bg-surface-tertiary rounded-full overflow-hidden">
+        <div
+          className={`h-full ${fillColor} ${live ? 'transition-[width] duration-75' : ''}`}
+          style={{ width: `${rmsPct}%` }}
+        />
+        {peakPct > 0 && (
+          <div
+            className="absolute top-0 h-full w-0.5 bg-text-primary/70"
+            style={{ left: `calc(${peakPct}% - 1px)` }}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Surface for the post-Stop transcription lifecycle. Only renders
+ * when there's something to say — silent during the regular
+ * running phase. */
+function TranscribeBanner({ state }: { state: TranscribeState }) {
+  if (state.kind === 'none') return null
+  if (state.kind === 'running') {
+    return (
+      <div className="bg-accent/10 border border-accent/30 rounded-lg p-3 flex items-center gap-3">
+        <span className="w-2.5 h-2.5 rounded-full bg-accent animate-pulse" />
+        <div>
+          <p className="text-sm font-semibold text-accent-hover">
+            Transcribing audio…
+          </p>
+          <p className="text-xs text-text-muted mt-0.5">
+            {state.message ??
+              'Running whisper on the captured audio. Adds a few seconds per minute of session.'}
+          </p>
+        </div>
+      </div>
+    )
+  }
+  if (state.kind === 'complete') {
+    return (
+      <div className="bg-success/10 border border-success/30 rounded-lg p-3">
+        <p className="text-sm font-semibold text-success">
+          Transcribed: {state.segment_count} segment
+          {state.segment_count === 1 ? '' : 's'}
+          {state.scenes_with_audio > 0 &&
+            ` matched to ${state.scenes_with_audio} scene${state.scenes_with_audio === 1 ? '' : 's'}`}
+        </p>
+      </div>
+    )
+  }
+  if (state.kind === 'skipped') {
+    return (
+      <div className="bg-text-muted/10 border border-border rounded-lg p-3 text-xs text-text-muted">
+        Transcription skipped{state.reason ? `: ${state.reason}` : ''}.
+      </div>
+    )
+  }
+  // failed
+  return (
+    <div className="bg-error/10 border border-error/30 rounded-lg p-3">
+      <p className="text-sm font-semibold text-error">Transcription failed</p>
+      <p className="text-xs text-error/80 mt-0.5 whitespace-pre-wrap">
+        {state.error}
+      </p>
+    </div>
+  )
 }
 
 function fmtElapsed(s: number): string {
