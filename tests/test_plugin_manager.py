@@ -415,6 +415,136 @@ def test_uninstall_preserves_registry_when_rmtree_blocked(
     assert mgr.get("cortex-vision") is not None
 
 
+def test_maybe_respawn_starts_dead_managed_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a sidecar dies and restart_on_crash=True, the next health
+    tick triggers a restart."""
+    import services.plugin_manager as pm_mod
+
+    mgr = pm_mod.PluginManager(registry_path=tmp_path / "registry.json")
+    mgr.upsert(pm_mod.InstalledPlugin(
+        id="cortex-vision", version="0.2.0",
+        install_dir=str(tmp_path), executable="cortex-vision.exe",
+        port=8004, restart_on_crash=True,
+    ))
+
+    start_calls: list[str] = []
+    monkeypatch.setattr(
+        pm_mod.PluginManager, "start",
+        lambda self, pid: start_calls.append(pid),
+    )
+
+    mgr._maybe_respawn("cortex-vision")
+    assert start_calls == ["cortex-vision"]
+    assert mgr._crash_attempts["cortex-vision"] == 1
+
+
+def test_maybe_respawn_skips_dev_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dev-mode entries (executable=None) are externally managed —
+    we never try to respawn them, even if restart_on_crash is True."""
+    import services.plugin_manager as pm_mod
+
+    mgr = pm_mod.PluginManager(registry_path=tmp_path / "registry.json")
+    mgr.upsert(pm_mod.InstalledPlugin(
+        id="cortex-vision", version="dev",
+        install_dir=None, executable=None,
+        port=8004, restart_on_crash=True,
+    ))
+
+    start_calls: list[str] = []
+    monkeypatch.setattr(
+        pm_mod.PluginManager, "start",
+        lambda self, pid: start_calls.append(pid),
+    )
+
+    mgr._maybe_respawn("cortex-vision")
+    assert start_calls == []
+
+
+def test_maybe_respawn_caps_at_max_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After MAX_RESPAWN_ATTEMPTS consecutive failures, give up so a
+    permanently-broken bundle doesn't burn CPU on a hot loop."""
+    import services.plugin_manager as pm_mod
+
+    mgr = pm_mod.PluginManager(registry_path=tmp_path / "registry.json")
+    mgr.upsert(pm_mod.InstalledPlugin(
+        id="cortex-vision", version="0.2.0",
+        install_dir=str(tmp_path), executable="cortex-vision.exe",
+        port=8004, restart_on_crash=True,
+    ))
+    monkeypatch.setattr(pm_mod.PluginManager, "start", lambda self, pid: None)
+    # Bypass the backoff timer so the test runs fast
+    monkeypatch.setattr(pm_mod, "MIN_RESPAWN_GAP_S", 0.0)
+
+    for _ in range(pm_mod.MAX_RESPAWN_ATTEMPTS + 3):
+        mgr._maybe_respawn("cortex-vision")
+
+    # Counter caps at MAX, doesn't keep growing
+    assert mgr._crash_attempts["cortex-vision"] == pm_mod.MAX_RESPAWN_ATTEMPTS
+
+
+def test_check_updates_caches_on_plugin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """check_updates() must populate latest_available_version and
+    last_update_check_at on each plugin so the UI can show "Update
+    available" without re-querying GitHub on every render."""
+    import services.plugin_manager as pm_mod
+
+    mgr = pm_mod.PluginManager(registry_path=tmp_path / "registry.json")
+    mgr.upsert(pm_mod.InstalledPlugin(
+        id="cortex-vision", version="0.2.0",
+        install_dir=str(tmp_path), executable="cortex-vision.exe",
+        port=8004,
+    ))
+
+    async def fake_release(self, repo, version):
+        return {"tag_name": "v0.3.0", "assets": []}
+    monkeypatch.setattr(pm_mod.PluginManager, "_fetch_release", fake_release)
+
+    result = asyncio.run(mgr.check_updates())
+    assert result == {"cortex-vision": "0.3.0"}
+
+    plugin = mgr.get("cortex-vision")
+    assert plugin is not None
+    assert plugin.latest_available_version == "0.3.0"
+    assert plugin.last_update_check_at is not None
+
+
+def test_check_updates_returns_none_when_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the GitHub latest matches the installed version, the
+    map value is None (caller-friendly: bool(None) => no update)
+    and the cached field clears so a stale 'update available' badge
+    from a previous check doesn't linger after the user updated."""
+    import services.plugin_manager as pm_mod
+
+    mgr = pm_mod.PluginManager(registry_path=tmp_path / "registry.json")
+    mgr.upsert(pm_mod.InstalledPlugin(
+        id="cortex-vision", version="0.3.0",
+        install_dir=str(tmp_path), executable="cortex-vision.exe",
+        port=8004,
+        latest_available_version="0.3.0",  # stale from before
+    ))
+
+    async def fake_release(self, repo, version):
+        return {"tag_name": "v0.3.0", "assets": []}
+    monkeypatch.setattr(pm_mod.PluginManager, "_fetch_release", fake_release)
+
+    result = asyncio.run(mgr.check_updates())
+    assert result == {"cortex-vision": None}
+
+    plugin = mgr.get("cortex-vision")
+    assert plugin is not None
+    assert plugin.latest_available_version is None
+
+
 def test_uninstall_keeps_user_data_skips_rmtree(
     tmp_path: Path,
 ) -> None:

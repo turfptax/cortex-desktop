@@ -26,6 +26,7 @@ export function PluginsTab() {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [configuringId, setConfiguringId] = useState<string | null>(null)
+  const [checkingUpdates, setCheckingUpdates] = useState(false)
 
   useEffect(() => {
     apiFetch<MarketplacePlugin[]>('/plugins/marketplace')
@@ -142,14 +143,105 @@ export function PluginsTab() {
     setBusyId(null)
   }
 
+  const handleUpdate = async (id: string) => {
+    setBusyId(id)
+    setActionMessage(`Updating ${id}… downloading the new bundle, verifying, swapping, restarting. 30-90 seconds.`)
+    const ctrl = new AbortController()
+    const timeoutId = window.setTimeout(() => ctrl.abort(), 5 * 60 * 1000)
+    try {
+      const r = await fetch(`/api/plugins/${id}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: ctrl.signal,
+      })
+      const text = await r.text()
+      if (!r.ok) {
+        let nice = text
+        try {
+          const parsed = JSON.parse(text)
+          nice =
+            (typeof parsed.detail === 'string' && parsed.detail) ||
+            (typeof parsed.detail?.message === 'string' && parsed.detail.message) ||
+            text
+        } catch {
+          /* leave nice = text */
+        }
+        throw new Error(`Update failed (HTTP ${r.status}): ${nice}`)
+      }
+      setActionMessage(
+        `Updated ${id}. The new version should be Running within 5 seconds.`,
+      )
+      await refresh()
+    } catch (e) {
+      const msg =
+        e instanceof Error && e.name === 'AbortError'
+          ? `Update timed out after 5 minutes.`
+          : e instanceof Error
+            ? e.message
+            : String(e)
+      setActionMessage(msg)
+    } finally {
+      window.clearTimeout(timeoutId)
+      setBusyId(null)
+    }
+  }
+
+  const handleCheckUpdates = async () => {
+    setCheckingUpdates(true)
+    setActionMessage(null)
+    try {
+      const res = await apiFetch<{
+        ok: boolean
+        checked_at: string
+        result: Record<string, string | null>
+      }>('/plugins/check-updates', { method: 'POST' })
+      const available = Object.entries(res.result).filter(
+        ([, v]) => v !== null,
+      )
+      if (available.length === 0) {
+        setActionMessage(
+          `Checked at ${new Date(res.checked_at).toLocaleTimeString()} — all plugins are up to date.`,
+        )
+      } else {
+        setActionMessage(
+          `Checked at ${new Date(res.checked_at).toLocaleTimeString()} — updates available: ${available
+            .map(([id, v]) => `${id} → v${v}`)
+            .join(', ')}`,
+        )
+      }
+      await refresh()
+    } catch (e) {
+      setActionMessage(
+        `Update check failed: ${e instanceof Error ? e.message : String(e)}`,
+      )
+    } finally {
+      setCheckingUpdates(false)
+    }
+  }
+
   return (
     <div className="bg-surface rounded-xl p-5 border border-border">
-      <div className="mb-4">
-        <h2 className="text-base font-semibold text-text-primary">Plugins</h2>
-        <p className="text-xs text-text-muted mt-0.5">
-          Sidecar services that extend Cortex Hub. Each plugin runs as
-          its own process and is proxied through the Hub.
-        </p>
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold text-text-primary">Plugins</h2>
+          <p className="text-xs text-text-muted mt-0.5">
+            Sidecar services that extend Cortex Hub. Each plugin runs as
+            its own process and is proxied through the Hub.
+          </p>
+        </div>
+        {plugins.length > 0 && (
+          <button
+            onClick={handleCheckUpdates}
+            disabled={checkingUpdates}
+            title={
+              "Hits GitHub for the latest release of each installed plugin. " +
+              "Also runs once on Hub startup; this button is a manual refresh."
+            }
+            className="px-3 py-1.5 text-xs rounded border border-border text-text-secondary hover:bg-surface-tertiary disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
+          >
+            {checkingUpdates ? 'Checking…' : 'Check for updates'}
+          </button>
+        )}
       </div>
 
       {loading && (
@@ -179,6 +271,7 @@ export function PluginsTab() {
                 isConfiguring={configuringId === p.id}
                 onRestart={() => handleRestart(p.id)}
                 onUninstall={() => handleUninstall(p.id)}
+                onUpdate={() => handleUpdate(p.id)}
                 onToggleConfigure={() =>
                   setConfiguringId(configuringId === p.id ? null : p.id)
                 }
@@ -227,6 +320,7 @@ function PluginRow({
   isConfiguring,
   onRestart,
   onUninstall,
+  onUpdate,
   onToggleConfigure,
 }: {
   plugin: InstalledPlugin
@@ -235,6 +329,7 @@ function PluginRow({
   isConfiguring: boolean
   onRestart: () => void
   onUninstall: () => void
+  onUpdate: () => void
   onToggleConfigure: () => void
 }) {
   // Dev mode = no managed executable (registered via dev-register or
@@ -251,6 +346,9 @@ function PluginRow({
   const lastCheck = plugin.last_health_check
     ? new Date(plugin.last_health_check).toLocaleTimeString()
     : '—'
+  const hasUpdate =
+    plugin.latest_available_version != null &&
+    plugin.latest_available_version !== plugin.version
 
   return (
     <div className="bg-surface-secondary rounded-lg p-3 border border-border">
@@ -269,12 +367,29 @@ function PluginRow({
                 DEV
               </span>
             )}
+            {hasUpdate && (
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded bg-success/15 text-success font-semibold"
+                title="A newer version is available on GitHub. Click Update on the row's Restart button menu (TBD) or use the Plugins API."
+              >
+                ↑ v{plugin.latest_available_version}
+              </span>
+            )}
           </div>
           <p className="text-xs text-text-muted mt-1">
             {status} · last health: {lastCheck} · {plugin.host}:{plugin.port}
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {hasUpdate && !isDevMode && (
+            <button
+              onClick={onUpdate}
+              disabled={busy}
+              className="px-2 py-1 text-xs rounded border border-success/50 bg-success/10 text-success hover:bg-success/20 disabled:opacity-50 cursor-pointer"
+            >
+              Update to v{plugin.latest_available_version}
+            </button>
+          )}
           {configurable && (
             <button
               onClick={onToggleConfigure}

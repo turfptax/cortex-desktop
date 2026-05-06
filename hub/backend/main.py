@@ -129,6 +129,21 @@ async def _start_plugins() -> None:
 
     _health_task = asyncio.create_task(manager.health_loop())
 
+    # Once-per-launch update check. Fire-and-forget so a slow GitHub
+    # response doesn't delay the Hub coming up. Result lands in each
+    # plugin's latest_available_version field, which the Plugins tab
+    # reads off /api/plugins.
+    async def _initial_check_updates() -> None:
+        try:
+            result = await manager.check_updates()
+            avail = {pid: v for pid, v in result.items() if v}
+            if avail:
+                logger.info("Plugin updates available: %s", avail)
+        except Exception as exc:
+            logger.warning("Initial check_updates failed: %s", exc)
+
+    asyncio.create_task(_initial_check_updates())
+
     # Video overseer bridge — polls cortex-vision for completed-but-
     # unpushed sessions and forwards each as a Pi note. Idempotent and
     # self-healing; safe to start unconditionally regardless of whether
