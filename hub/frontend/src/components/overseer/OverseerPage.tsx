@@ -1284,8 +1284,13 @@ export function OverseerPage() {
           )}
         </Card>
 
-        {/* Imports — visual refresh in Polish CP3 */}
-        <Card title="Imported Claude Sessions">
+        {/* Imports — visual refresh in Polish CP3.
+            Renamed from "Imported Claude Sessions" once the historical
+            ChatGPT bulk import landed (1,728 sessions); the panel now
+            covers any AI conversation source. The Scan flow remains
+            Claude-Code specific (~/.claude/projects/) — other sources
+            come in via direct import paths. */}
+        <Card title="Imported AI Conversations">
           {/* Top action row + summary stat-line */}
           <div className="flex items-center gap-2 mb-4 flex-wrap">
             <button
@@ -1328,6 +1333,10 @@ export function OverseerPage() {
               Scan to see local Claude Code sessions on this machine.
               The Pi will hash them, mark which are already imported, and let
               you pick which new ones to upload.
+              <div className="mt-2 text-[11px] text-text-muted/70">
+                Other sources (ChatGPT, etc.) come in via direct import paths
+                and appear in the table below tagged with their source.
+              </div>
             </div>
           )}
 
@@ -1503,7 +1512,12 @@ export function OverseerPage() {
                   {imports.map((i) => (
                     <tr key={i.id} className="border-t border-border">
                       <td className="p-2 text-text-primary truncate max-w-xs">
-                        {i.project || '(unknown)'}
+                        <div className="flex items-center gap-1.5">
+                          <SourceBadge source={i.source} />
+                          <span className="truncate">
+                            {i.project || '(unknown)'}
+                          </span>
+                        </div>
                       </td>
                       <td className="p-2 text-text-muted font-mono">
                         {i.id.split(':')[1]?.slice(0, 8) || i.id}
@@ -1969,6 +1983,40 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
       <h3 className="text-sm font-semibold text-text-primary mb-3">{title}</h3>
       {children}
     </section>
+  )
+}
+
+// Color-coded pill for the import row's source.  Compact (no text on
+// the pill itself — the abbreviation lives in the title attribute) so
+// it sits inline with the project name without crowding the row.
+//   claude-code → orange (Anthropic)
+//   chatgpt     → green  (OpenAI)
+//   other       → gray   (forward-compatible for future sources)
+function SourceBadge({ source }: { source: string }) {
+  const cfg: Record<string, { label: string; cls: string; full: string }> = {
+    'claude-code': {
+      label: 'CC',
+      cls: 'bg-orange-500/15 text-orange-400 border-orange-500/30',
+      full: 'Claude Code',
+    },
+    'chatgpt': {
+      label: 'GPT',
+      cls: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+      full: 'ChatGPT',
+    },
+  }
+  const c = cfg[source] || {
+    label: (source || '?').slice(0, 3).toUpperCase(),
+    cls: 'bg-text-muted/15 text-text-muted border-border',
+    full: source || 'unknown source',
+  }
+  return (
+    <span
+      title={c.full}
+      className={`inline-flex shrink-0 items-center justify-center text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border ${c.cls}`}
+    >
+      {c.label}
+    </span>
   )
 }
 
