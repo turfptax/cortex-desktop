@@ -21,13 +21,18 @@ itself is an asyncio task that calls into thread-safe helpers.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import uuid
+import zipfile
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,13 +51,27 @@ HEALTH_INTERVAL_S = 5.0
 HEALTH_TIMEOUT_S = 2.0
 GRACEFUL_STOP_TIMEOUT_S = 5.0
 
+# Install / update timeouts. Bundles are 50-150 MB so the connect
+# timeout stays tight (the server should respond fast) but the read
+# timeout has to span the whole download.
+GITHUB_API_TIMEOUT_S = 15.0
+DOWNLOAD_TIMEOUT_S = 600.0          # 10 minutes for big zips
+DOWNLOAD_CHUNK_SIZE = 1 << 16       # 64 KB
+
 # Reserved port range for plugins
 PLUGIN_PORT_RANGE = range(8004, 8100)
 
-# Marketplace (Phase 0: hardcoded; Phase 5 will fetch from a registry).
-# `default_port` is what dev-register uses when the user clicks "Register
-# dev sidecar" without specifying a port — pulled from each plugin's
-# plugin.json manifest at the time it was added.
+# Marketplace (Phase 0: hardcoded; future: fetched from a registry JSON
+# hosted on GitHub Pages).
+#
+# Per-entry fields the install path uses:
+#   - github_repo:    "<owner>/<repo>" — the GitHub release source
+#   - default_port:   what dev-register and install both register
+#   - default_variant: which release-asset variant to download by default
+#   - asset_pattern:  format string applied with {id, version, variant}
+#                     to produce the expected zip asset filename
+#   - executable_name: the .exe inside the extracted bundle that
+#                     start() spawns
 MARKETPLACE: list[dict[str, Any]] = [
     {
         "id": "cortex-vision",
@@ -65,6 +84,9 @@ MARKETPLACE: list[dict[str, Any]] = [
             "https://raw.githubusercontent.com/turfptax/cortex-vision/main/plugin.json"
         ),
         "default_port": 8004,
+        "default_variant": "cpu",
+        "asset_pattern": "{id}-{version}-windows-{variant}.zip",
+        "executable_name": "cortex-vision.exe",
     },
 ]
 
@@ -479,52 +501,314 @@ class PluginManager:
         self._stop_event.set()
 
     # ------------------------------------------------------------------ #
-    # Install / update / uninstall (Phase 0 stubs; real impl in Phase 5)  #
+    # Install / update / uninstall (real GitHub-release plumbing).        #
+    #                                                                     #
+    # Flow:                                                               #
+    #   1. Resolve marketplace entry + variant                            #
+    #   2. GET /repos/<owner>/<repo>/releases/(latest|tags/v<version>)    #
+    #   3. Find <id>-<version>-windows-<variant>.zip + .sha256 sibling   #
+    #   4. Download to %TEMP%, verify SHA256                              #
+    #   5. Stop existing process, back up existing install_dir            #
+    #   6. Extract to %APPDATA%/Cortex/plugins/<id>/                     #
+    #   7. Update registry, start the process                             #
+    #   8. On any failure: roll back the backup so the previous version   #
+    #      keeps working                                                  #
     # ------------------------------------------------------------------ #
+
+    def _market_entry(self, plugin_id: str) -> dict[str, Any]:
+        for entry in MARKETPLACE:
+            if entry["id"] == plugin_id:
+                return entry
+        raise ValueError(f"Plugin not in marketplace: {plugin_id}")
+
+    async def _fetch_release(
+        self, github_repo: str, version: str
+    ) -> dict[str, Any]:
+        """Fetch a GitHub release. version='latest' or 'X.Y.Z'."""
+        if version == "latest":
+            url = f"https://api.github.com/repos/{github_repo}/releases/latest"
+        else:
+            tag = version if version.startswith("v") else f"v{version}"
+            url = f"https://api.github.com/repos/{github_repo}/releases/tags/{tag}"
+
+        headers = {"Accept": "application/vnd.github+json"}
+        async with httpx.AsyncClient(timeout=GITHUB_API_TIMEOUT_S) as client:
+            r = await client.get(url, headers=headers)
+            if r.status_code == 404:
+                raise FileNotFoundError(
+                    f"GitHub release not found: {github_repo} version={version}"
+                )
+            r.raise_for_status()
+            return r.json()
+
+    @staticmethod
+    def _find_asset(
+        release: dict[str, Any], name: str
+    ) -> dict[str, Any] | None:
+        for a in release.get("assets", []):
+            if a.get("name") == name:
+                return a
+        return None
+
+    async def _download_to(self, url: str, dest: Path) -> None:
+        """Stream a download to dest. Caller owns the dest dir."""
+        timeout = httpx.Timeout(DOWNLOAD_TIMEOUT_S, connect=10.0)
+        async with httpx.AsyncClient(
+            timeout=timeout, follow_redirects=True
+        ) as client:
+            async with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                with open(dest, "wb") as f:
+                    async for chunk in resp.aiter_bytes(DOWNLOAD_CHUNK_SIZE):
+                        f.write(chunk)
+
+    async def _fetch_sha256(self, url: str) -> str:
+        """Fetch a .sha256 file and return the hex digest. Format
+        produced by `sha256sum`: '<hex>  <filename>\\n'."""
+        timeout = httpx.Timeout(60.0, connect=10.0)
+        async with httpx.AsyncClient(
+            timeout=timeout, follow_redirects=True
+        ) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            text = r.text.strip()
+            return text.split()[0].lower() if text else ""
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 16), b""):
+                h.update(chunk)
+        return h.hexdigest().lower()
 
     async def install(
         self,
         plugin_id: str,
-        variant: str = "auto",
+        variant: str | None = None,
         version: str = "latest",
     ) -> InstalledPlugin:
-        """Phase 0: not implemented. Use registry.json hand-edit + dev mode.
+        """Download, verify, extract, and start a plugin sidecar."""
+        market = self._market_entry(plugin_id)
+        variant = variant or market.get("default_variant", "cpu")
 
-        Phase 5 will:
-          1. Look up plugin_id in MARKETPLACE
-          2. Resolve `version` (latest = newest GitHub release)
-          3. Pick a release asset matching `variant` + platform
-          4. Download + checksum + extract to install_dir
-          5. Write registry entry, then start()
-        """
-        raise NotImplementedError(
-            "Plugin install lands in Phase 5. For Phase 0, hand-edit "
-            f"{self.registry_path} or run the sidecar yourself in dev mode."
+        if sys.platform != "win32":
+            raise RuntimeError(
+                "Plugin install currently supports Windows only — the "
+                "release assets are windows-x64 zips. PRs welcome for "
+                "macOS/Linux variants."
+            )
+
+        # 1. Resolve release + asset
+        logger.info("Resolving release %s @ %s", plugin_id, version)
+        release = await self._fetch_release(market["github_repo"], version)
+        actual_version = release["tag_name"].lstrip("v")
+        asset_pattern = market.get(
+            "asset_pattern", "{id}-{version}-windows-{variant}.zip"
         )
+        asset_name = asset_pattern.format(
+            id=plugin_id, version=actual_version, variant=variant
+        )
+        asset = self._find_asset(release, asset_name)
+        if asset is None:
+            available = [a["name"] for a in release.get("assets", [])]
+            raise FileNotFoundError(
+                f"Asset {asset_name!r} not in release v{actual_version}. "
+                f"Available: {available}"
+            )
+        sha_asset = self._find_asset(release, f"{asset_name}.sha256")
+
+        # 2. Download to a unique temp dir we own
+        tmp_dir = Path(tempfile.gettempdir()) / (
+            f"cortex-install-{plugin_id}-{uuid.uuid4().hex[:8]}"
+        )
+        tmp_dir.mkdir(parents=True)
+        zip_path = tmp_dir / asset_name
+        logger.info(
+            "Downloading %s (%.1f MB) -> %s",
+            asset_name, asset.get("size", 0) / 1e6, zip_path,
+        )
+
+        try:
+            await self._download_to(asset["browser_download_url"], zip_path)
+
+            # 3. Verify SHA256 if a sibling .sha256 file exists
+            if sha_asset is not None:
+                expected = await self._fetch_sha256(
+                    sha_asset["browser_download_url"]
+                )
+                actual = self._sha256_file(zip_path)
+                if expected and expected != actual:
+                    raise ValueError(
+                        f"SHA256 mismatch for {asset_name}: "
+                        f"expected {expected}, got {actual}"
+                    )
+                logger.info("SHA256 verified")
+            else:
+                logger.warning(
+                    "No .sha256 sibling for %s — proceeding without "
+                    "checksum verification", asset_name,
+                )
+
+            # 4. Stop the existing managed process so the .exe isn't held
+            #    open while we replace it. No-op for dev-mode entries.
+            if self.get(plugin_id) is not None:
+                try:
+                    self.stop(plugin_id, graceful=True)
+                except Exception as e:
+                    logger.warning(
+                        "Pre-install stop failed for %s: %s", plugin_id, e
+                    )
+
+            # 5. Back up existing install dir so we can roll back if
+            #    extraction fails midway. The backup is moved back to
+            #    install_dir on failure; deleted on success.
+            install_dir = self.registry_path.parent / plugin_id
+            backup_dir: Path | None = None
+            if install_dir.exists():
+                backup_dir = install_dir.with_suffix(".bak")
+                if backup_dir.exists():
+                    shutil.rmtree(backup_dir, ignore_errors=True)
+                install_dir.rename(backup_dir)
+
+            try:
+                install_dir.mkdir(parents=True)
+                logger.info("Extracting %s -> %s", asset_name, install_dir)
+                with zipfile.ZipFile(zip_path) as zf:
+                    zf.extractall(install_dir)
+
+                # 6. Locate the executable. Prefer the path
+                #    install_dir/<exe_name>, fall back to a recursive
+                #    search (some bundles nest under a versioned subdir).
+                exe_name = market.get(
+                    "executable_name", f"{plugin_id}.exe"
+                )
+                exe_path = install_dir / exe_name
+                final_install_dir = install_dir
+                if not exe_path.exists():
+                    candidates = list(install_dir.rglob(exe_name))
+                    if not candidates:
+                        raise FileNotFoundError(
+                            f"Executable {exe_name!r} not found anywhere "
+                            f"under {install_dir}"
+                        )
+                    exe_path = candidates[0]
+                    final_install_dir = exe_path.parent
+
+                # 7. Register and (try to) start
+                plugin = InstalledPlugin(
+                    id=plugin_id,
+                    version=actual_version,
+                    variant=variant,
+                    install_dir=str(final_install_dir),
+                    executable=exe_name,
+                    host="127.0.0.1",
+                    port=market.get("default_port", 8004),
+                    auto_start=True,
+                )
+                self.upsert(plugin)
+
+                try:
+                    self.start(plugin_id)
+                except Exception as e:
+                    # Install succeeded; spawn failed (port conflict,
+                    # antivirus, missing system DLL, etc.). Don't roll
+                    # back — the user can fix the conflict and Restart.
+                    logger.warning(
+                        "Installed %s v%s but couldn't start: %s",
+                        plugin_id, actual_version, e,
+                    )
+
+                # 8. Drop backup on success
+                if backup_dir and backup_dir.exists():
+                    shutil.rmtree(backup_dir, ignore_errors=True)
+
+                return plugin
+
+            except Exception:
+                # Roll back: restore the backup if we had one
+                if backup_dir and backup_dir.exists():
+                    if install_dir.exists():
+                        shutil.rmtree(install_dir, ignore_errors=True)
+                    backup_dir.rename(install_dir)
+                raise
+
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     async def update(self, plugin_id: str) -> InstalledPlugin:
-        """Phase 0: not implemented (see install)."""
-        raise NotImplementedError(
-            "Plugin update lands in Phase 5."
-        )
+        """Update to the latest release. Same code path as install — the
+        install flow already handles the existing-installation case
+        (stops old process, backs up old dir, restores on failure)."""
+        return await self.install(plugin_id, version="latest")
 
     def uninstall(
         self, plugin_id: str, keep_user_data: bool = True
     ) -> None:
-        """Stop + deregister. Does not delete install_dir in Phase 0
-        (no install plumbing yet means there's nothing to delete)."""
+        """Stop the process, remove the registry entry, and optionally
+        delete the install dir. User data lives elsewhere (cortex-vision
+        keeps sessions in %APPDATA%/Cortex/video/, separate from the
+        plugin install dir) so keep_user_data only governs the install
+        bytes themselves."""
+        plugin = self.get(plugin_id)
         self.stop(plugin_id, graceful=True)
         self.remove(plugin_id)
-        # Phase 5: if not keep_user_data and install_dir is real, rmtree it.
-        # For Phase 0, registry-only uninstall is enough.
+
+        if not keep_user_data and plugin and plugin.install_dir:
+            install_dir = Path(plugin.install_dir)
+            # Only delete if it's under our managed plugins root — never
+            # rmtree an arbitrary path the registry might claim.
+            plugins_root = self.registry_path.parent
+            try:
+                install_dir.relative_to(plugins_root)
+            except ValueError:
+                logger.warning(
+                    "Refusing to delete %s — not under plugins root %s",
+                    install_dir, plugins_root,
+                )
+                return
+            shutil.rmtree(install_dir, ignore_errors=True)
+            logger.info("Deleted %s", install_dir)
+
+        # Plugin logs (sidecar.log) live under plugins_root/<id>/logs/
+        # which we'd want to clean too, but only if we deleted the
+        # install dir — otherwise we'd be deleting logs the user might
+        # need to debug a stuck process. Skipped for now.
 
     async def check_updates(
         self, plugin_id: str | None = None
     ) -> dict[str, str | None]:
-        """Phase 0: returns {pid: None} for everything. Phase 5 hits GitHub."""
+        """Hit GitHub for the latest release tag of each installed
+        plugin. Returns {plugin_id: latest_version_or_None_if_current}."""
         with self._lock:
-            ids = [plugin_id] if plugin_id else list(self._plugins.keys())
-        return {pid: None for pid in ids}
+            if plugin_id is not None:
+                installed = (
+                    [self._plugins[plugin_id]]
+                    if plugin_id in self._plugins
+                    else []
+                )
+            else:
+                installed = list(self._plugins.values())
+
+        out: dict[str, str | None] = {}
+        for plugin in installed:
+            try:
+                market = self._market_entry(plugin.id)
+            except ValueError:
+                out[plugin.id] = None
+                continue
+            try:
+                release = await self._fetch_release(
+                    market["github_repo"], "latest"
+                )
+                latest = release["tag_name"].lstrip("v")
+                out[plugin.id] = latest if latest != plugin.version else None
+            except Exception as e:
+                logger.warning(
+                    "check_updates failed for %s: %s", plugin.id, e
+                )
+                out[plugin.id] = None
+        return out
 
     # ------------------------------------------------------------------ #
     # Marketplace                                                         #

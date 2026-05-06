@@ -62,21 +62,58 @@ export function PluginsTab() {
 
   const handleInstall = async (id: string) => {
     setBusyId(id)
-    setActionMessage(null)
+    setActionMessage(
+      `Installing ${id}… downloading the bundle from GitHub, ` +
+        `verifying checksum, extracting to %APPDATA%\\Cortex\\plugins\\, ` +
+        `and starting the sidecar. This usually takes 30-90 seconds.`
+    )
+    // Use raw fetch — apiFetch's default headers + envelope are fine,
+    // but the install can take 60-120s and the default fetch timeout
+    // is per-browser; explicit AbortController gives us a known cap.
+    const ctrl = new AbortController()
+    const timeoutId = window.setTimeout(() => ctrl.abort(), 5 * 60 * 1000)
     try {
-      await apiFetch('/plugins/install', {
+      const r = await fetch('/api/plugins/install', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ plugin_id: id }),
+        signal: ctrl.signal,
       })
-      setActionMessage(`Installed ${id}`)
+      const text = await r.text()
+      if (!r.ok) {
+        // Surface the structured detail.message if FastAPI gave us one
+        let nice = text
+        try {
+          const parsed = JSON.parse(text)
+          nice =
+            (typeof parsed.detail === 'string' && parsed.detail) ||
+            (typeof parsed.detail?.message === 'string' && parsed.detail.message) ||
+            text
+        } catch {
+          /* leave nice = text */
+        }
+        throw new Error(`Install failed (HTTP ${r.status}): ${nice}`)
+      }
+      setActionMessage(
+        `Installed ${id}. Sidecar should flip to Running within ` +
+          `5 seconds. If it stays Stopped, check the Plugins logs at ` +
+          `%APPDATA%\\Cortex\\plugins\\${id}\\logs\\ — usually a port ` +
+          `conflict (something else is using the same port) or a ` +
+          `missing system dependency.`
+      )
       await refresh()
     } catch (e) {
-      // Expected: 501 in Phase 0
-      setActionMessage(
-        e instanceof Error ? e.message : String(e)
-      )
+      const msg =
+        e instanceof Error && e.name === 'AbortError'
+          ? `Install timed out after 5 minutes. Bundle download might be slow or stalled.`
+          : e instanceof Error
+            ? e.message
+            : String(e)
+      setActionMessage(msg)
+    } finally {
+      window.clearTimeout(timeoutId)
+      setBusyId(null)
     }
-    setBusyId(null)
   }
 
   const handleDevRegister = async (id: string) => {
@@ -177,10 +214,15 @@ function PluginRow({
   onRestart: () => void
   onUninstall: () => void
 }) {
+  // Dev mode = no managed executable (registered via dev-register or
+  // by hand-editing registry.json). The is_dev_mode runtime flag only
+  // gets set when start() is called, which never happens for
+  // auto_start=false dev entries — so we derive from executable===null.
+  const isDevMode = plugin.executable === null
   const dotColor = plugin.is_running ? 'bg-success' : 'bg-error'
   const status = plugin.is_running
     ? 'Running'
-    : plugin.is_dev_mode
+    : isDevMode
       ? 'Dev mode (sidecar offline)'
       : 'Stopped'
   const lastCheck = plugin.last_health_check
@@ -199,7 +241,7 @@ function PluginRow({
             <span className="text-xs text-text-muted">
               v{plugin.version} · {plugin.variant}
             </span>
-            {plugin.is_dev_mode && (
+            {isDevMode && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent-hover">
                 DEV
               </span>
@@ -210,7 +252,7 @@ function PluginRow({
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {!plugin.is_dev_mode && (
+          {!isDevMode && (
             <button
               onClick={onRestart}
               disabled={busy}
