@@ -64,6 +64,19 @@ jobs:
           path: hub/backend/bin
           key: whisper-cli-${{ runner.os }}-vulkan-${{ hashFiles('scripts/build_whisper_cpp.py') }}
 
+      # whisper.cpp v1.8.x's vulkan-shaders-gen subproject builds via
+      # nested CMake TryCompile dirs that exceed the legacy 260-char
+      # MAX_PATH limit. Enable Windows long paths system-wide AND in git
+      # before the build. The build script also uses a short root
+      # (C:\b\) to belt-and-suspenders this. (See dev.16 build failure.)
+      - name: Enable Windows long paths
+        if: runner.os == 'Windows'
+        run: |
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+            -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
+          git config --system core.longpaths true
+        shell: pwsh
+
       - name: Build whisper.cpp (if cache miss)
         if: steps.whisper-cache.outputs.cache-hit != 'true'
         run: python scripts/build_whisper_cpp.py

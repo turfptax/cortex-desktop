@@ -209,7 +209,27 @@ def main() -> int:
 
     BIN_DIR.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="whispercpp-build-") as td:
+    # Windows MAX_PATH (260 chars) bites whisper.cpp v1.8.x because its
+    # vulkan-shaders-gen subproject nests TryCompile dirs 10+ levels deep
+    # (path tail like vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-
+    # build/CMakeFiles/CMakeScratch/TryCompile-XXXXXX/cmTC_YYYYY.tlog/
+    # link-cvtres.read.1.tlog — easily 200+ chars after the build root).
+    # Default temp root on CI runners is the GitHub Actions user profile
+    # (~60 chars), pushing total path beyond 260 → FileTracker FTK1011.
+    # Use a short root on Windows (C:\b\) to claw back ~50 chars.
+    td_kwargs: dict = {"prefix": "whispercpp-build-"}
+    if is_windows():
+        short_root = Path("C:/b")
+        try:
+            short_root.mkdir(exist_ok=True)
+            td_kwargs = {"prefix": "wc-", "dir": str(short_root)}
+        except (OSError, PermissionError):
+            # If C:\b\ isn't writable (rare on personal dev boxes), fall
+            # back to default temp dir and rely on Windows long-paths
+            # being enabled (CI workflow now sets this).
+            pass
+
+    with tempfile.TemporaryDirectory(**td_kwargs) as td:
         work = Path(td)
         try:
             built, build_flags = build(work)
