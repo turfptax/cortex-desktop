@@ -58,9 +58,16 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
 begin
-  // Kill any running instance before installing
+  // Kill any running CortexHub instance before installing
   Exec('taskkill', '/F /IM ' + '{#MyAppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  // Brief pause for process to fully exit and release file locks
-  Sleep(1000);
+  // Also kill any orphan plugin sidecars the old Hub may have spawned
+  // (e.g. cortex-vision.exe). They hold their own ports but can also
+  // hold file locks if their install path is shared.
+  Exec('taskkill', '/F /IM cortex-vision.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // Wait long enough for the OS to release the TCP listener on
+  // port 8003 (Windows TIME_WAIT can take 5-10s). Without this the
+  // post-install auto-launch races and dies with WinError 10048.
+  // The new app.py also has a wait-for-port loop as a second guard.
+  Sleep(5000);
   Result := '';
 end;
