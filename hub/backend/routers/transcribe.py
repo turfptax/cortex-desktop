@@ -337,6 +337,56 @@ def _start_model_download(model: str) -> bool:
 _PROGRESS_RX = re.compile(r"progress\s*=\s*(\d+)\s*%")
 
 
+# Native Windows fastfail exit codes that mean "the binary itself
+# tripped over an instruction the CPU/runtime won't execute"
+# rather than "the inputs were bad" or "transcription failed
+# normally." If we see one of these we surface a much clearer
+# error than "non-zero exit code."
+#   0xC000001D STATUS_ILLEGAL_INSTRUCTION — usually AVX-512 in a
+#              binary running on a CPU without AVX-512 (e.g.
+#              every Intel hybrid SKU since Alder Lake, most
+#              consumer Ryzens).
+#   0xC0000409 STATUS_STACK_BUFFER_OVERRUN — fastfail / __chkstk
+#              violation. Often a corrupt binary, a bad runtime
+#              DLL, or a Vulkan driver crashing back into the
+#              process. Also seen with some illegal AVX-512
+#              variants depending on Windows/CPU combo.
+#   0xC0000005 STATUS_ACCESS_VIOLATION — null deref / bad pointer.
+#              On Windows subprocess.Popen these come back as
+#              negative integers (Python signs the DWORD).
+_HARD_CRASH_CODES = {
+    0xC000001D: "ILLEGAL_INSTRUCTION",
+    0xC0000409: "STACK_BUFFER_OVERRUN",
+    0xC0000005: "ACCESS_VIOLATION",
+}
+
+
+def _classify_exit_code(code: int) -> str | None:
+    """Return a short tag for the native-fault exit codes we care
+    about, or None for normal non-zero exits. Handles Windows'
+    signed/unsigned DWORD ambiguity (Python returns negative ints
+    for codes ≥ 0x80000000)."""
+    if code is None:
+        return None
+    # Normalize negative-signed DWORD -> unsigned
+    unsigned = code & 0xFFFFFFFF
+    return _HARD_CRASH_CODES.get(unsigned)
+
+
+# Sticky flag: once we've seen a hard native crash on this binary,
+# we stop attempting GPU and run -ng on every subsequent transcription
+# until the Hub restarts. The crash signature is also surfaced via
+# /api/transcribe/status so the UI can show a clear remediation
+# banner. Reset on successful run.
+_runtime_flags_lock = threading.Lock()
+_runtime_flags: dict = {
+    "force_cpu": False,           # set when a crash demoted us to -ng
+    "last_hard_crash": None,      # tag from _classify_exit_code, or None
+    "last_hard_crash_at": None,   # epoch seconds
+    "fallback_succeeded": False,  # True if -ng finished after a GPU crash
+}
+
+
 # Singleton state. Personal-use Hub runs one transcription at a
 # time; concurrent POSTs return 409. Polled by /api/transcribe/status.
 _transcribe_lock = threading.Lock()
@@ -383,22 +433,58 @@ def _reset_transcribe_state(*, model: str, filename: str,
     })
 
 
-def _stream_progress(proc: subprocess.Popen) -> None:
-    """Read whisper-cli's stderr line-by-line and bump
-    _transcribe_state['progress_pct'] when we see a progress line.
-    Runs in the same thread that started the subprocess; returns
-    when the subprocess closes its stderr."""
-    if proc.stderr is None:
-        return
-    for raw in iter(proc.stderr.readline, ""):
-        if not raw:
-            break
-        m = _PROGRESS_RX.search(raw)
-        if m:
-            try:
-                _transcribe_state["progress_pct"] = int(m.group(1))
-            except (ValueError, KeyError):
-                pass
+def _build_whisper_cmd(*, binary: Path, model_path: Path,
+                        audio_path: Path, out_base: Path,
+                        threads: int, force_cpu: bool) -> list[str]:
+    cmd = [
+        str(binary),
+        "-m", str(model_path),
+        "-f", str(audio_path),
+        "-t", str(threads),
+        "-oj",
+        "-of", str(out_base),
+        "-l", "auto",
+        "-pp",                  # print progress (we stream it)
+        "-nt",
+    ]
+    if force_cpu:
+        cmd.append("-ng")       # whisper-cli: disable GPU backend
+    return cmd
+
+
+def _run_whisper_proc(cmd: list[str]) -> tuple[int, str]:
+    """Launch whisper-cli, drain stderr while updating progress,
+    return (returncode, stderr_tail). Reads stderr from a pipe in
+    the same thread, blocking until the child exits. Tail capped
+    at 2000 chars; line buffer trimmed to last 50 lines so a
+    chatty subprocess can't balloon memory."""
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    tail_buf: list[str] = []
+    if proc.stderr is not None:
+        for raw in iter(proc.stderr.readline, ""):
+            if not raw:
+                break
+            tail_buf.append(raw)
+            if len(tail_buf) > 50:
+                tail_buf = tail_buf[-50:]
+            m = _PROGRESS_RX.search(raw)
+            if m:
+                try:
+                    _transcribe_state["progress_pct"] = int(m.group(1))
+                except (ValueError, KeyError):
+                    pass
+    try:
+        proc.wait(timeout=3600)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        raise RuntimeError("whisper-cli timeout after 1 hour")
+    return proc.returncode, "".join(tail_buf)[-2000:]
 
 
 def _transcribe_background(*, upload_path: Path, audio_path: Path,
@@ -420,45 +506,88 @@ def _transcribe_background(*, upload_path: Path, audio_path: Path,
 
         out_base = audio_path.with_suffix("")
         threads = max(1, (os.cpu_count() or 4))
-        cmd = [
-            str(binary),
-            "-m", str(model_path),
-            "-f", str(audio_path),
-            "-t", str(threads),
-            "-oj",
-            "-of", str(out_base),
-            "-l", "auto",
-            "-pp",                  # print progress (we stream it)
-            "-nt",
-        ]
-        log.info("transcribing %s with model %s (background)",
-                 audio_path.name, model_name)
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,              # line-buffered for live progress
+
+        # Decide whether to force CPU on this run. Two paths in:
+        # (a) explicit setting `whisper_force_cpu=True` in config,
+        # (b) sticky runtime flag set by a prior hard crash on the
+        # GPU path during this process lifetime.
+        cfg_force_cpu = bool(getattr(settings, "whisper_force_cpu", False))
+        with _runtime_flags_lock:
+            sticky_force_cpu = _runtime_flags["force_cpu"]
+        force_cpu = cfg_force_cpu or sticky_force_cpu
+
+        cmd = _build_whisper_cmd(
+            binary=binary, model_path=model_path,
+            audio_path=audio_path, out_base=out_base,
+            threads=threads, force_cpu=force_cpu,
         )
-        try:
-            _stream_progress(proc)
-        finally:
-            try:
-                proc.wait(timeout=3600)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+        log.info("transcribing %s with model %s (background)%s",
+                 audio_path.name, model_name,
+                 " [-ng forced]" if force_cpu else "")
+        returncode, stderr_tail = _run_whisper_proc(cmd)
+
+        # Hard-crash retry path: if the GPU run died with a native
+        # fastfail exit code, demote to -ng and try once more. This
+        # rescues the common cases of transient Vulkan-driver
+        # crashes (NVIDIA / AMD post-driver-update).
+        # NOTE: this does NOT rescue an AVX-512-in-binary crash —
+        # CPU mode crashes the same way, since the crash is in
+        # ggml's CPU kernels too. In that case the second run also
+        # fails and we fall through to the clearer error message.
+        if (returncode != 0 and not force_cpu
+                and _classify_exit_code(returncode) is not None):
+            crash_tag = _classify_exit_code(returncode)
+            log.warning(
+                "whisper-cli hard crash (%s, code %d) on GPU path; "
+                "retrying with -ng",
+                crash_tag, returncode)
+            with _runtime_flags_lock:
+                _runtime_flags["last_hard_crash"] = crash_tag
+                _runtime_flags["last_hard_crash_at"] = time.time()
+            cmd = _build_whisper_cmd(
+                binary=binary, model_path=model_path,
+                audio_path=audio_path, out_base=out_base,
+                threads=threads, force_cpu=True,
+            )
+            _transcribe_state["progress_pct"] = 0
+            returncode, stderr_tail = _run_whisper_proc(cmd)
+            if returncode == 0:
+                # CPU fallback worked — pin force_cpu sticky for
+                # the rest of this process so future runs go
+                # straight to CPU.
+                with _runtime_flags_lock:
+                    _runtime_flags["force_cpu"] = True
+                    _runtime_flags["fallback_succeeded"] = True
+                log.info(
+                    "whisper-cli -ng fallback succeeded; pinning "
+                    "force_cpu for remainder of session")
+
+        if returncode != 0:
+            crash_tag = _classify_exit_code(returncode)
+            if crash_tag is not None:
+                with _runtime_flags_lock:
+                    _runtime_flags["last_hard_crash"] = crash_tag
+                    _runtime_flags["last_hard_crash_at"] = time.time()
+                # Both GPU and CPU paths crashed natively — almost
+                # certainly an AVX-512-in-binary issue, a corrupt
+                # whisper-cli, or a missing C++ runtime. Surface a
+                # clear remediation message rather than dumping
+                # stderr.
                 raise RuntimeError(
-                    "whisper-cli timeout after 1 hour")
-        if proc.returncode != 0:
-            stderr_tail = ""
-            if proc.stderr is not None:
-                try:
-                    stderr_tail = proc.stderr.read()[-2000:]
-                except Exception:
-                    pass
+                    "whisper-cli crashed with " + crash_tag
+                    + " (exit 0x{:08X}). This usually means the "
+                    "bundled binary uses CPU instructions your "
+                    "machine doesn't have (e.g. AVX-512 on a "
+                    "modern Intel/AMD desktop). Fix: update the "
+                    "Cortex Hub to v0.18.0-dev.14 or later — that "
+                    "release ships an AVX2-baseline binary that "
+                    "runs on every x86_64 CPU since 2013. "
+                    "Alternatively, reinstall the current Hub to "
+                    "rule out a corrupted binary copy.".format(
+                        returncode & 0xFFFFFFFF))
             raise RuntimeError(
                 "whisper-cli exit {}: {}".format(
-                    proc.returncode, stderr_tail))
+                    returncode, stderr_tail))
 
         json_path = out_base.with_suffix(".json")
         if not json_path.is_file():
@@ -505,70 +634,6 @@ def _transcribe_background(*, upload_path: Path, audio_path: Path,
                 if p.exists():
                     p.unlink()
             tmp_dir.rmdir()
-        except OSError:
-            pass
-
-
-# ── whisper.cpp invocation ──────────────────────────────────────
-
-
-def _run_whisper_cli(*, binary: Path, model_path: Path,
-                     audio_path: Path) -> dict:
-    """Run whisper-cli on a normalized WAV; return parsed JSON.
-
-    whisper-cli's -oj flag writes <input>.json next to the input,
-    with the structured transcription. We pass an explicit -of to
-    control the basename so we know exactly where to read.
-
-    Slice 7 dev.11: explicit -t <cpu_count>. whisper-cli's default
-    is min(cpu_count, 4) — wastes most of a modern CPU. Tory's
-    Task Manager showed 14% CPU utilization on his 16-thread box
-    during a real run; bumping to all available threads typically
-    delivers 2-3× speedup on CPU-only builds (memory bandwidth
-    becomes the limit past ~8 threads, but extra threads don't
-    hurt — whisper.cpp's scheduler tops out gracefully).
-    """
-    out_base = audio_path.with_suffix("")
-    threads = max(1, (os.cpu_count() or 4))
-    cmd = [
-        str(binary),
-        "-m", str(model_path),
-        "-f", str(audio_path),
-        "-t", str(threads),        # all CPU threads (default was 4)
-        "-oj",                     # output JSON
-        "-of", str(out_base),      # output file base (no extension)
-        "-l", "auto",              # language autodetect
-        "-pp",                     # print progress in stderr (visible in logs)
-        "-nt",                     # no timestamps in stdout (cleaner)
-    ]
-    try:
-        subprocess.run(cmd, capture_output=True, check=True,
-                       timeout=3600)
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=500, detail={
-            "error": "whisper_timeout",
-            "message": "Transcription took longer than an hour. "
-                       "The input may be too long for this model "
-                       "to handle in one pass."})
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail={
-            "error": "whisper_failed",
-            "message": "whisper-cli returned a non-zero exit code.",
-            "stderr": (e.stderr or b"").decode(
-                "utf-8", errors="replace")[-2000:],
-        })
-
-    json_path = out_base.with_suffix(".json")
-    if not json_path.is_file():
-        raise HTTPException(status_code=500, detail={
-            "error": "whisper_no_output",
-            "message": "whisper-cli ran but didn't write a JSON file."})
-    try:
-        with open(json_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    finally:
-        try:
-            json_path.unlink()
         except OSError:
             pass
 
@@ -791,6 +856,8 @@ async def transcribe_status():
     binary_info = _binary_marker(binary) if binary else {}
     model_name = _configured_model()
     model_file = _model_path(model_name)
+    with _runtime_flags_lock:
+        runtime_flags = dict(_runtime_flags)
     return {
         "ok": (binary is not None
                and _check_ffmpeg()
@@ -809,6 +876,9 @@ async def transcribe_status():
         #   'idle' | 'queued' | 'normalizing' | 'transcribing'
         #   | 'ready' | 'error'
         "transcribe_state": dict(_transcribe_state),
+        # dev.14: native-fault state. UI surfaces a remediation
+        # banner when last_hard_crash is set.
+        "runtime_flags": runtime_flags,
         "supported_audio_exts": sorted(AUDIO_EXTS),
         "supported_video_exts": sorted(VIDEO_EXTS),
     }
