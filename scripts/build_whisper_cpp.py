@@ -126,13 +126,37 @@ def build(work_dir: Path) -> tuple[Path, list[str]]:
     # whisper.cpp uses CMake; -DBUILD_SHARED_LIBS=OFF keeps the
     # binary self-contained. -DWHISPER_BUILD_EXAMPLES=ON ships
     # the whisper-cli executable.
+    #
+    # GGML_NATIVE=OFF + explicit AVX2 baseline: ggml's default is
+    # `-march=native`, which bakes the build host's full ISA into
+    # the binary. The GitHub Actions Windows runners pool includes
+    # Xeon Platinum SKUs with AVX-512; binaries built there crash
+    # with STATUS_ILLEGAL_INSTRUCTION (0xC000001D) on consumer
+    # Intel CPUs (12th-gen+ Alder/Raptor Lake disabled AVX-512
+    # because the E-cores lack it) and on most AMD Ryzen desktop
+    # parts. Forcing AVX2/FMA/F16C as the baseline gives us a
+    # binary that runs on every x86_64 CPU since Haswell (2013)
+    # at the cost of leaving AVX-512 throughput on the table.
+    # This is the right tradeoff: voice-journal users care about
+    # "it runs", not "it runs 1.3x faster on a 2018 Xeon."
+    # (Found 2026-05-06: dev.13 binary contained ~6900 EVEX-
+    # prefixed instructions, crashed on Tory's i7-14700F.)
     cmake_cfg = [
         "cmake", "-B", str(build_dir), "-S", str(src),
         "-DCMAKE_BUILD_TYPE=Release",
         "-DBUILD_SHARED_LIBS=OFF",
         "-DWHISPER_BUILD_EXAMPLES=ON",
+        "-DGGML_NATIVE=OFF",
+        "-DGGML_AVX=ON",
+        "-DGGML_AVX2=ON",
+        "-DGGML_FMA=ON",
+        "-DGGML_F16C=ON",
+        "-DGGML_AVX512=OFF",
+        "-DGGML_AVX512_VBMI=OFF",
+        "-DGGML_AVX512_VNNI=OFF",
+        "-DGGML_AVX512_BF16=OFF",
     ]
-    flags = ["cpu"]
+    flags = ["cpu", "avx2"]
     if vulkan_sdk_present():
         cmake_cfg.append("-DGGML_VULKAN=ON")
         flags.insert(0, "vulkan")

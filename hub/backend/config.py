@@ -34,6 +34,16 @@ class Settings(BaseSettings):
     # like "small.en" — see Whisper docs).
     whisper_model: str = "large-v3"
 
+    # dev.14: bypass the GPU backend entirely. Lets the user opt
+    # out of Vulkan even when a capable GPU is present — useful
+    # when a driver update is fighting the bundled binary, or
+    # the user has a known-bad GPU/driver combo. The transcribe
+    # router also flips an in-memory sticky flag automatically
+    # when a hard native crash is observed, so this setting is
+    # the persistent escape hatch (the runtime flag resets on
+    # Hub restart).
+    whisper_force_cpu: bool = False
+
     class Config:
         env_prefix = "CORTEX_HUB_"
 

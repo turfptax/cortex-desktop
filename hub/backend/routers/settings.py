@@ -41,6 +41,8 @@ DEFAULT_CONFIG = {
     "auto_open_browser": True,
     "auto_start_daemon": False,
     "first_run": True,
+    "whisper_model": "large-v3",
+    "whisper_force_cpu": False,
 }
 
 
@@ -75,9 +77,13 @@ def _apply_to_env(config: dict):
         "lmstudio_model": "CORTEX_HUB_LMSTUDIO_DEFAULT_MODEL",
         "hub_port": "CORTEX_HUB_PORT",
         "hub_host": "CORTEX_HUB_HOST",
+        "whisper_model": "CORTEX_HUB_WHISPER_MODEL",
+        "whisper_force_cpu": "CORTEX_HUB_WHISPER_FORCE_CPU",
     }
     for key, env_var in env_map.items():
-        if key in config and config[key]:
+        if key in config and config[key] not in (None, ""):
+            # Pydantic BaseSettings parses '1'/'true' as True for
+            # bool fields; stringify uniformly here.
             os.environ[env_var] = str(config[key])
 
 
@@ -102,6 +108,8 @@ class SettingsUpdate(BaseModel):
     hub_port: Optional[int] = None
     auto_open_browser: Optional[bool] = None
     first_run: Optional[bool] = None
+    whisper_model: Optional[str] = None
+    whisper_force_cpu: Optional[bool] = None
 
 
 @router.post("")
@@ -129,6 +137,10 @@ async def save_settings(update: SettingsUpdate):
             settings.pi_password = update.pi_password
         if update.lmstudio_url is not None:
             settings.lmstudio_url = update.lmstudio_url
+        if update.whisper_model is not None:
+            settings.whisper_model = update.whisper_model
+        if update.whisper_force_cpu is not None:
+            settings.whisper_force_cpu = update.whisper_force_cpu
     except Exception:
         pass
 

@@ -172,6 +172,42 @@ interface TranscribeStatusResp {
     error?: string | null
   }
   transcribe_state?: TranscribeStateBlock
+  // dev.14: surfaces native-fault state from the backend so the
+  // UI can render a remediation banner. last_hard_crash is one of
+  // 'ILLEGAL_INSTRUCTION' | 'STACK_BUFFER_OVERRUN' | 'ACCESS_VIOLATION'
+  // when whisper-cli has died with that signature this session.
+  runtime_flags?: {
+    force_cpu: boolean
+    last_hard_crash: string | null
+    last_hard_crash_at: number | null
+    fallback_succeeded: boolean
+  }
+}
+
+// Approximate on-disk size of each GGML model — used in the
+// "downloading model" UI affordance so the user knows whether
+// they're waiting for a 75MB tiny or a 3GB large. Pulled from
+// the HF model files at HuggingFace/ggerganov/whisper.cpp; small
+// drift (a few MB) is fine for a label.
+const MODEL_SIZE_LABELS: Record<string, string> = {
+  'tiny': '~75MB',
+  'tiny.en': '~75MB',
+  'base': '~140MB',
+  'base.en': '~140MB',
+  'small': '~470MB',
+  'small.en': '~470MB',
+  'medium': '~1.5GB',
+  'medium.en': '~1.5GB',
+  'large-v1': '~3GB',
+  'large-v2': '~3GB',
+  'large-v3': '~3GB',
+  'large-v3-turbo': '~1.5GB',
+  'turbo': '~1.5GB',
+  'large': '~3GB',
+}
+
+function modelSizeLabel(model: string): string {
+  return MODEL_SIZE_LABELS[model] || ''
 }
 
 function HumanJournalSection() {
@@ -189,6 +225,19 @@ function HumanJournalSection() {
   const [transcribePct, setTranscribePct] = useState<number>(0)
   const [downloadProgress, setDownloadProgress] = useState<{
     bytes: number; total: number
+  } | null>(null)
+  // dev.14: pulled from /api/transcribe/status so the UI labels
+  // ("Downloading large-v3 model… ~3GB") match the actual configured
+  // model instead of hardcoding "large-v3" / "3GB". Empty string
+  // until the first status fetch lands.
+  const [activeModel, setActiveModel] = useState<string>('')
+  // dev.14: hard-crash banner. When the backend has seen a native
+  // fault from whisper-cli (illegal instruction / stack overrun /
+  // AV) we render a persistent banner with remediation steps. The
+  // backend keeps this set across runs in this Hub process; it
+  // resets on Hub restart or on a successful run after fallback.
+  const [hardCrash, setHardCrash] = useState<{
+    signature: string; fallbackSucceeded: boolean
   } | null>(null)
   const pendingFileRef = useRef<File | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -211,6 +260,9 @@ function HumanJournalSection() {
   // during a long whisper-cli run). If so, rebind the polling
   // loop so the percentage display picks up where it left off
   // and the transcript still lands when the run finishes.
+  // Also: pull the configured model name + any sticky hard-crash
+  // signature so the model-download UI labels match config and
+  // the remediation banner renders if a prior run died natively.
   useEffect(() => {
     let cancelled = false
     void (async () => {
@@ -218,6 +270,14 @@ function HumanJournalSection() {
         const s = await fetch('/api/transcribe/status').then(
           (r) => r.json() as Promise<TranscribeStatusResp>)
         if (cancelled) return
+        if (s?.model) setActiveModel(s.model)
+        const rf = s?.runtime_flags
+        if (rf?.last_hard_crash) {
+          setHardCrash({
+            signature: rf.last_hard_crash,
+            fallbackSucceeded: !!rf.fallback_succeeded,
+          })
+        }
         const ts = s?.transcribe_state
         if (ts && ts.in_progress) {
           setTranscribePct(ts.progress_pct || 0)
@@ -281,6 +341,13 @@ function HumanJournalSection() {
       try {
         const s = await fetch('/api/transcribe/status').then(
           (r) => r.json() as Promise<TranscribeStatusResp>)
+        const rf = s?.runtime_flags
+        if (rf?.last_hard_crash) {
+          setHardCrash({
+            signature: rf.last_hard_crash,
+            fallbackSucceeded: !!rf.fallback_succeeded,
+          })
+        }
         const ts = s?.transcribe_state
         if (!ts) {
           setTranscribeStage(null)
@@ -475,12 +542,18 @@ function HumanJournalSection() {
                     ? `Transcribing locally with whisper.cpp… ${transcribePct}%`
                     : 'Transcribing locally with whisper.cpp…')
                 : transcribeStage === 'downloading-model'
-                  ? (downloadProgress && downloadProgress.total
-                      ? `Downloading large-v3 model (${
-                          Math.round(downloadProgress.bytes /
-                                     downloadProgress.total * 100)
-                        }% — one-time setup, ~3GB)…`
-                      : 'Downloading large-v3 model — one-time setup, ~3GB…')
+                  ? (() => {
+                      const m = activeModel || 'whisper'
+                      const sz = modelSizeLabel(activeModel)
+                      const sizeSuffix = sz ? `, ${sz}` : ''
+                      if (downloadProgress && downloadProgress.total) {
+                        const pct = Math.round(
+                          downloadProgress.bytes /
+                          downloadProgress.total * 100)
+                        return `Downloading ${m} model (${pct}% — one-time setup${sizeSuffix})…`
+                      }
+                      return `Downloading ${m} model — one-time setup${sizeSuffix}…`
+                    })()
                   : "What's on your mind? (Cmd/Ctrl+Enter to save)"
           }
           rows={3}
@@ -530,6 +603,30 @@ function HumanJournalSection() {
             {entries.length} entr{entries.length === 1 ? 'y' : 'ies'} total
           </span>
         </div>
+        {/* dev.14: hard-crash remediation banner. Sticky for the
+            session — only goes away on Hub restart or successful
+            run after fallback. Distinct color from the dismissable
+            error banner so the user can tell them apart. */}
+        {hardCrash && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 leading-relaxed">
+            <div className="font-medium mb-1">
+              Voice transcription hit a CPU-instruction crash
+              ({hardCrash.signature})
+            </div>
+            <div className="text-amber-200/80">
+              {hardCrash.fallbackSucceeded
+                ? "The Hub fell back to CPU-only mode and the run succeeded. Future transcriptions in this session will skip the GPU."
+                : "The bundled whisper-cli binary uses CPU instructions your machine doesn't support (most often AVX-512 on Intel 12th-gen+ or consumer Ryzen). Update the Hub to v0.18.0-dev.14 or later — that release ships an AVX2-baseline binary that runs everywhere."}
+            </div>
+            <button
+              onClick={() => setHardCrash(null)}
+              className="mt-1 text-[10px] uppercase tracking-wider text-amber-300/70 hover:text-amber-300 cursor-pointer"
+              title="Dismiss"
+            >
+              dismiss
+            </button>
+          </div>
+        )}
         {/* Multi-line error banner. Renders setup instructions
             (e.g. install commands) without truncation. */}
         {error && (
