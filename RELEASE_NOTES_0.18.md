@@ -161,6 +161,39 @@ cortex-vision v0.4.0 added audio. Frontend wired:
 | v0.18.0-dev.11 | 2026-05-05 | auto-respawn + update detection cadence |
 | v0.18.0-dev.12 | 2026-05-06 | Live mode audio capture (cortex-vision v0.4.0 contract) |
 | v0.18.0-dev.13 | 2026-05-06 | Cross-source labeling on imports panel |
+| v0.18.0-dev.20 | 2026-05-07 | Slice 8 Phase 2: overseer chat file uploads |
+
+### dev.20 — Overseer chat file uploads (text + image + pdf)
+
+The overseer chat surface accepts attachments. Multipart upload at
+the Hub (`POST /api/overseer/chat/upload`, max 10 files, 5MB each,
+type-allowlisted) forwards each file to the Pi via the existing
+`/files/uploads` endpoint and returns refs that the frontend then
+submits with the next chat call. The Pi reads bytes off disk and
+either inlines text/pdf into the user prompt or builds an
+OpenAI-compat multimodal content block for images. New
+`chat_message_files` table on `overseer.db` keeps attachment refs
+FK'd to the user turn so chat history re-renders badges after a
+reload.
+
+UX: paperclip button next to the textarea, drag-drop anywhere over
+the composer area, pending chips above the input (image thumbs /
+TXT/PDF/FILE badges) with × to remove, auto-scroll-to-bottom that
+respects manual scroll-up, "Add a question, or send the files
+alone…" hint when files are queued. Send blocks while uploads are
+in flight.
+
+Pairs with cortex-core commit `f34c3cd` (Slice 8 Phase 2 backend).
+
+Verification (this dev tag pre-soak):
+* curl text → Opus 4.7 quoted the exact unique token from the file
+* curl 256×256 PNG → Opus identified the precise hex `#FF8C00`
+* browser end-to-end: paperclip → upload → chat → reply rendered
+  with attachment badge in the bubble; text-only and image both
+  observed working
+
+Streaming (Slice C / dev.21) and chat polish (regenerate / continue
+/ syntax highlighting — Slice D / dev.22) still queued.
 
 ---
 

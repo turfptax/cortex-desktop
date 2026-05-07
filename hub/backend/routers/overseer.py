@@ -24,13 +24,15 @@ of the Desktop conversation history.)
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import mimetypes
 import os
 import time
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from config import settings
@@ -204,8 +206,21 @@ async def list_rollups(project: str = "", limit: int = 100):
         "overseer", "GET", "/rollups", payload)
 
 
+class ChatAttachmentRef(BaseModel):
+    """Slice 8: one attachment ref echoed back from /chat/upload and
+    submitted with /chat. The Pi reads bytes from pi_path itself; this
+    struct just carries the metadata + filesystem pointer."""
+    filename: str
+    mime_type: str = ""
+    size: int = 0
+    pi_path: str
+    file_id: int | None = None
+    sha256: str = ""
+    kind: str = "other"           # image | text | pdf | other
+
+
 class ChatRequest(BaseModel):
-    message: str
+    message: str = ""
     backend: str | None = None
     # dev.19: max_tokens is Optional and defaults to None. When the
     # frontend omits it, req.dict(exclude_none=True) skips the field
@@ -215,14 +230,167 @@ class ChatRequest(BaseModel):
     # explicit value to clamp shorter (e.g. for cheap heartbeat pings).
     max_tokens: int | None = None
     temperature: float = 0.7
+    # Slice 8: file attachments. Each entry must have come back from
+    # POST /chat/upload (the Pi has the bytes on disk under uploads/).
+    attachments: list[ChatAttachmentRef] | None = None
 
 
 @router.post("/chat")
 async def chat(req: ChatRequest):
     return await pi_client.plugin_call(
         "overseer", "POST", "/chat", req.dict(exclude_none=True),
-        timeout=120.0,
+        timeout=180.0,    # bumped from 120s — vision turns add latency
     )
+
+
+# ── Slice 8: chat file attachments ──────────────────────────────
+#
+# Two-step upload contract:
+#   1. Frontend POSTs multipart files to /api/overseer/chat/upload
+#      (this endpoint). Hub validates type+size, hashes, forwards each
+#      to the Pi's /files/uploads (raw body, 100MB cap) tagged
+#      'chat-attachment,overseer'. Returns a list of ChatAttachmentRefs.
+#   2. Frontend POSTs /api/overseer/chat with `attachments` populated
+#      from step 1. Pi reads bytes off disk, inlines text/pdf, builds
+#      multimodal content blocks for images.
+#
+# We can't inline the bytes in the chat JSON body — the Pi's plugin
+# route layer caps body at 1MB, and we want 5MB-per-file images. The
+# /files/uploads endpoint is the existing well-trodden path (same one
+# Claude Code session imports use) and it already streams to disk.
+
+_CHAT_UPLOAD_MAX_BYTES = 5 * 1024 * 1024     # 5MB per file
+_CHAT_UPLOAD_MAX_FILES = 10
+_CHAT_UPLOAD_TIMEOUT_S = 60.0
+
+# Accepted extensions. Mirrored on the Pi (chat.py classify_attachment_kind).
+# Anything outside this set is rejected here to keep junk off disk.
+_CHAT_TEXT_EXTS = {
+    ".txt", ".md", ".py", ".js", ".ts", ".tsx", ".jsx",
+    ".json", ".yaml", ".yml", ".csv", ".log", ".html",
+    ".css", ".sh", ".sql", ".toml", ".ini", ".env",
+}
+_CHAT_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_CHAT_PDF_EXTS = {".pdf"}
+_CHAT_ALLOWED_EXTS = (
+    _CHAT_TEXT_EXTS | _CHAT_IMAGE_EXTS | _CHAT_PDF_EXTS
+)
+
+
+def _classify_kind(filename: str, mime_type: str) -> str:
+    ext = os.path.splitext(filename.lower())[1]
+    mt = (mime_type or "").lower()
+    if ext in _CHAT_IMAGE_EXTS or mt.startswith("image/"):
+        return "image"
+    if ext in _CHAT_PDF_EXTS or mt == "application/pdf":
+        return "pdf"
+    if ext in _CHAT_TEXT_EXTS or mt.startswith("text/"):
+        return "text"
+    return "other"
+
+
+async def _upload_chat_attachment_to_pi(
+        *, body: bytes, filename: str, mime_type: str,
+        sha256: str) -> dict:
+    """POST /files/uploads on the Pi with the file body. Same shape as
+    the Claude Code import flow but with chat-specific tags so the
+    overseer tab's Imports panel doesn't pick these up."""
+    url = "{}/files/uploads".format(settings.pi_base_url)
+    headers = _pi_headers()
+    headers["Content-Type"] = "application/octet-stream"
+    headers["X-Filename"] = filename
+    headers["X-Description"] = "Overseer chat attachment"
+    headers["X-Tags"] = "chat-attachment,overseer"
+    async with httpx.AsyncClient(timeout=_CHAT_UPLOAD_TIMEOUT_S) as client:
+        resp = await client.post(url, content=body, headers=headers)
+        resp.raise_for_status()
+        out = resp.json()
+    return {
+        "filename": out.get("filename") or filename,
+        "size": out.get("size") or len(body),
+        "pi_path": out.get("path") or "",
+        "file_id": out.get("file_id"),
+        "sha256": sha256,
+        "mime_type": mime_type,
+        "kind": _classify_kind(out.get("filename") or filename, mime_type),
+    }
+
+
+@router.post("/chat/upload")
+async def chat_upload(files: list[UploadFile] = File(...)):
+    """Validate + forward chat attachments to the Pi.
+
+    Multipart form field name: `files`. One or more files, max 10,
+    max 5MB each, restricted to image/text/pdf extensions. Returns
+    `{ok, attachments: [ChatAttachmentRef, ...], rejected: [...]}` —
+    rejected entries have `error` populated so the UI can surface why.
+    """
+    if not files:
+        raise HTTPException(400, "no files in upload")
+    if len(files) > _CHAT_UPLOAD_MAX_FILES:
+        raise HTTPException(
+            400, "too many files (max {})".format(_CHAT_UPLOAD_MAX_FILES))
+
+    accepted: list[dict] = []
+    rejected: list[dict] = []
+
+    for upload in files:
+        original = upload.filename or "unnamed"
+        ext = os.path.splitext(original.lower())[1]
+        # Read body once; we both hash and forward it.
+        body = await upload.read()
+        size = len(body)
+        if ext not in _CHAT_ALLOWED_EXTS:
+            rejected.append({
+                "filename": original, "size": size,
+                "error": "unsupported file type ({})".format(ext or "no ext"),
+            })
+            continue
+        if size == 0:
+            rejected.append({
+                "filename": original, "size": 0,
+                "error": "empty file",
+            })
+            continue
+        if size > _CHAT_UPLOAD_MAX_BYTES:
+            rejected.append({
+                "filename": original, "size": size,
+                "error": "too large (limit {}MB, got {} bytes)".format(
+                    _CHAT_UPLOAD_MAX_BYTES // (1024 * 1024), size),
+            })
+            continue
+
+        mime = (upload.content_type
+                or mimetypes.guess_type(original)[0]
+                or "application/octet-stream")
+        sha = hashlib.sha256(body).hexdigest()
+        try:
+            ref = await _upload_chat_attachment_to_pi(
+                body=body, filename=original,
+                mime_type=mime, sha256=sha,
+            )
+            accepted.append(ref)
+        except httpx.HTTPError as e:
+            rejected.append({
+                "filename": original, "size": size,
+                "error": "Pi upload failed: {}".format(str(e)[:200]),
+            })
+        except Exception as e:
+            log.exception("chat upload failed")
+            rejected.append({
+                "filename": original, "size": size,
+                "error": "unexpected error: {}".format(str(e)[:200]),
+            })
+
+    return {
+        "ok": True,
+        "attachments": accepted,
+        "rejected": rejected,
+        "counts": {
+            "uploaded": len(accepted),
+            "rejected": len(rejected),
+        },
+    }
 
 
 @router.get("/chat/history")

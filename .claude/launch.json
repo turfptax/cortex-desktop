@@ -7,6 +7,22 @@
       "runtimeArgs": ["run", "dev"],
       "port": 5173,
       "cwd": "hub/frontend"
+    },
+    {
+      "name": "cortex-desktop-backend",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8003", "--reload"],
+      "port": 8003,
+      "cwd": "hub/backend"
+    },
+    {
+      "comment": "Stop the installed Hub first (it binds 8003) or set VITE_API_TARGET to a non-default port.",
+      "name": "cortex-desktop-backend-alt",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8014", "--reload"],
+      "port": 8014,
+      "cwd": "hub/backend",
+      "env": { "VITE_API_TARGET": "http://localhost:8014" }
     }
   ]
 }
