@@ -207,12 +207,13 @@ async def list_rollups(project: str = "", limit: int = 100):
 class ChatRequest(BaseModel):
     message: str
     backend: str | None = None
-    # dev.18: bumped from 800 -> 8000. The 800-token cap was truncating
-    # mid-paragraph on essay-length responses (Tory's catalog of things
-    # he wanted tracked got cut off mid-list, structured insight blocks
-    # got cut off mid-JSON). 8000 is generous default; Pi ceiling is
-    # 32000 for callers that explicitly need more.
-    max_tokens: int = 8000
+    # dev.19: max_tokens is Optional and defaults to None. When the
+    # frontend omits it, req.dict(exclude_none=True) skips the field
+    # and the Pi-side handler uses ITS default (now 64000 — effectively
+    # the model's output max for Opus 4.7). The Hub no longer dictates
+    # a cap on overseer chat replies. Callers may still pass an
+    # explicit value to clamp shorter (e.g. for cheap heartbeat pings).
+    max_tokens: int | None = None
     temperature: float = 0.7
 
 
