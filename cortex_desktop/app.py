@@ -78,6 +78,33 @@ def _find_frontend_dist() -> str:
     return ""  # No frontend dist found — API-only mode
 
 
+def _wait_port_free(host: str, port: int, timeout_s: int = 30) -> bool:
+    """Block until `port` is bindable on `host`, or timeout elapses.
+
+    The installer (installer.iss PrepareToInstall) taskkills the old
+    CortexHub.exe before replacing files, but Windows can hold a TCP
+    listener in TIME_WAIT for tens of seconds after the owner process
+    exits — long enough that an immediate uvicorn.bind() races and
+    fails with WinError 10048. That manifested as "Hub never starts"
+    on dev.14.
+
+    Polling-bind once per second up to `timeout_s` is the safe fix:
+    we only proceed when the OS will actually let us own the port.
+    Returns True if the port was free within the window.
+    """
+    import socket
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((host, port))
+            return True
+        except OSError:
+            time.sleep(1.0)
+    return False
+
+
 def _start_server(host: str, port: int, backend_dir: str, static_dir: str):
     """Start uvicorn in the current thread."""
     import uvicorn
@@ -100,6 +127,22 @@ def _start_server(host: str, port: int, backend_dir: str, static_dir: str):
     # We also need to set the working directory so relative paths work.
     original_cwd = os.getcwd()
     os.chdir(backend_dir)
+
+    # Slice 0.18.0-dev.15: wait for port to actually be free before
+    # uvicorn binds. Without this the post-installer auto-launch can
+    # race the OS releasing the previous listener and die with
+    # WinError 10048. See _wait_port_free for full context.
+    if not _wait_port_free(host, port, timeout_s=30):
+        print(
+            f"[cortex-desktop] FATAL: port {host}:{port} still in use "
+            f"after 30s — refusing to start uvicorn (would crash). "
+            f"Another CortexHub instance may still be running; close it "
+            f"from the system tray and relaunch.",
+            file=sys.stderr,
+        )
+        # Exit cleanly so the tray app surfaces the failure rather than
+        # leaving a half-alive process.
+        os._exit(1)
 
     uvicorn.run(
         "main:app",
