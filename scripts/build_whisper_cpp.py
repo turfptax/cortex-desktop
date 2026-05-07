@@ -48,7 +48,7 @@ from pathlib import Path
 
 # Bump this to update whisper.cpp. Pick a tag from:
 #   https://github.com/ggerganov/whisper.cpp/tags
-WHISPER_CPP_TAG = "v1.7.4"
+WHISPER_CPP_TAG = "v1.8.4"
 WHISPER_CPP_REPO = "https://github.com/ggerganov/whisper.cpp.git"
 
 
