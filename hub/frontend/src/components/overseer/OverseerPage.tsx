@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../../lib/api'
 import { ExplorerPanel, type GraphResp } from './ExplorerPanel'
 import { ProjectsTab } from './ProjectsTab'
@@ -223,6 +223,35 @@ interface LlmStatsResp {
   period_days?: number
 }
 
+// Slice 8: file attachments on chat
+type ChatAttachmentKind = 'image' | 'text' | 'pdf' | 'other'
+
+interface ChatAttachmentRef {
+  // Returned from POST /api/overseer/chat/upload and submitted back
+  // with POST /api/overseer/chat. The Pi reads bytes from pi_path.
+  filename: string
+  mime_type: string
+  size: number
+  pi_path: string
+  file_id?: number | null
+  sha256?: string
+  kind?: ChatAttachmentKind
+}
+
+interface ChatStoredAttachment {
+  // Shape returned by Pi on /chat/history per message (chat_message_files row)
+  id: number
+  chat_message_id: number
+  filename: string
+  mime_type: string
+  size_bytes: number
+  kind: ChatAttachmentKind
+  pi_path: string
+  file_id: number
+  sha256: string
+  created_at?: string
+}
+
 interface ChatMessage {
   id: number
   role: 'user' | 'assistant' | 'system'
@@ -232,6 +261,7 @@ interface ChatMessage {
   model?: string
   latency_ms?: number
   cost_usd?: number
+  attachments?: ChatStoredAttachment[]   // Slice 8
 }
 
 interface ChatHistoryResp {
@@ -248,6 +278,61 @@ interface ChatSendResp {
   latency_ms?: number
   cost_usd?: number
   error?: string
+  attachments?: ChatStoredAttachment[]   // Slice 8
+}
+
+interface ChatUploadResp {
+  ok: boolean
+  attachments: ChatAttachmentRef[]
+  rejected: { filename: string; size: number; error: string }[]
+  counts: { uploaded: number; rejected: number }
+}
+
+// Local state for a file that the user has dropped/picked but hasn't
+// sent yet. Lifecycle: queued → uploading → ready (with `ref`) → sent.
+// On error, stays in the composer with `error` set so the user can
+// retry or remove it.
+type PendingAttachmentStatus = 'queued' | 'uploading' | 'ready' | 'error'
+
+interface PendingAttachment {
+  localId: string
+  file: File
+  filename: string
+  size: number
+  mime_type: string
+  status: PendingAttachmentStatus
+  previewUrl?: string                   // ObjectURL for images, revoked on remove
+  ref?: ChatAttachmentRef               // populated once upload succeeds
+  error?: string
+}
+
+// Mirror the Hub-side allowlist (hub/backend/routers/overseer.py).
+const CHAT_MAX_FILES = 10
+const CHAT_MAX_FILE_BYTES = 5 * 1024 * 1024
+const CHAT_ALLOWED_EXTS = new Set([
+  '.txt', '.md', '.py', '.js', '.ts', '.tsx', '.jsx',
+  '.json', '.yaml', '.yml', '.csv', '.log', '.html',
+  '.css', '.sh', '.sql', '.toml', '.ini', '.env',
+  '.png', '.jpg', '.jpeg', '.webp', '.gif', '.pdf',
+])
+
+function fileExt(name: string): string {
+  const ix = name.lastIndexOf('.')
+  return ix < 0 ? '' : name.slice(ix).toLowerCase()
+}
+
+function classifyKind(name: string, mime: string): ChatAttachmentKind {
+  const ext = fileExt(name)
+  if (mime.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(ext)) return 'image'
+  if (mime === 'application/pdf' || ext === '.pdf') return 'pdf'
+  if (mime.startsWith('text/') || CHAT_ALLOWED_EXTS.has(ext)) return 'text'
+  return 'other'
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
 interface NotificationRow {
@@ -495,6 +580,8 @@ export function OverseerPage() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatInput, setChatInput] = useState<string>('')
   const [chatSending, setChatSending] = useState<boolean>(false)
+  // Slice 8: pending file attachments queued in the composer
+  const [chatPending, setChatPending] = useState<PendingAttachment[]>([])
   const [notifications, setNotifications] = useState<NotificationRow[]>([])
   const [notificationsUnread, setNotificationsUnread] = useState<number>(0)
   const [budget, setBudget] = useState<BudgetSnapshot | null>(null)
@@ -734,29 +821,202 @@ export function OverseerPage() {
     if (tab === 'explorer' && !graph) refreshGraph()
   }, [tab])
 
+  // Slice 8: validate one File against the local mirror of the Hub's
+  // allowlist. Returns an error string on rejection or null if OK.
+  const validatePending = (f: File): string | null => {
+    const ext = fileExt(f.name)
+    if (!CHAT_ALLOWED_EXTS.has(ext)) {
+      return `unsupported file type (${ext || 'no extension'})`
+    }
+    if (f.size === 0) return 'empty file'
+    if (f.size > CHAT_MAX_FILE_BYTES) {
+      return `too large (${formatBytes(f.size)} > ${formatBytes(CHAT_MAX_FILE_BYTES)})`
+    }
+    return null
+  }
+
+  // Slice 8: enqueue dropped/picked files. Filters out anything that
+  // would push past CHAT_MAX_FILES — the rejected files become inline
+  // error messages so the user knows why some didn't take.
+  const handleAddPendingFiles = (files: FileList | File[]) => {
+    const list = Array.from(files)
+    if (!list.length) return
+    setError('')
+    setChatPending((prev) => {
+      const room = CHAT_MAX_FILES - prev.length
+      if (room <= 0) {
+        setError(`Already at max ${CHAT_MAX_FILES} attachments — remove one to add more.`)
+        return prev
+      }
+      const incoming: PendingAttachment[] = []
+      for (const f of list.slice(0, room)) {
+        const err = validatePending(f)
+        const kind = classifyKind(f.name, f.type)
+        const previewUrl = (kind === 'image' && !err) ? URL.createObjectURL(f) : undefined
+        incoming.push({
+          localId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          file: f,
+          filename: f.name,
+          size: f.size,
+          mime_type: f.type || '',
+          status: err ? 'error' : 'queued',
+          previewUrl,
+          error: err || undefined,
+        })
+      }
+      if (list.length > room) {
+        setError(`Only added ${room} files — ${list.length - room} skipped because the cap is ${CHAT_MAX_FILES}.`)
+      }
+      return [...prev, ...incoming]
+    })
+  }
+
+  const handleRemovePending = (localId: string) => {
+    setChatPending((prev) => {
+      const target = prev.find((p) => p.localId === localId)
+      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl)
+      return prev.filter((p) => p.localId !== localId)
+    })
+  }
+
+  // Upload the queued (and not-yet-uploaded, not-error) attachments
+  // to the Hub via multipart. Returns the list of refs that succeeded
+  // and mutates pending state to reflect upload status. Anything that
+  // came back rejected from the Hub is marked with an error so the
+  // user can see why it didn't ship.
+  const uploadPendingAttachments = async (): Promise<ChatAttachmentRef[]> => {
+    const toUpload = chatPending.filter(
+      (p) => p.status === 'queued' && !p.error,
+    )
+    const ready = chatPending.filter((p) => p.status === 'ready' && p.ref)
+    if (toUpload.length === 0) {
+      return ready.map((p) => p.ref!).filter(Boolean)
+    }
+    // Mark uploading
+    setChatPending((prev) =>
+      prev.map((p) => (toUpload.find((t) => t.localId === p.localId)
+        ? { ...p, status: 'uploading' as const } : p)),
+    )
+    const fd = new FormData()
+    for (const p of toUpload) fd.append('files', p.file, p.filename)
+    let resp: Response
+    try {
+      resp = await fetch('/api/overseer/chat/upload', {
+        method: 'POST', body: fd,
+      })
+    } catch (e: any) {
+      setChatPending((prev) =>
+        prev.map((p) => (toUpload.find((t) => t.localId === p.localId)
+          ? { ...p, status: 'error' as const, error: 'network: ' + (e?.message || e) }
+          : p)),
+      )
+      throw new Error('Upload network failure')
+    }
+    if (!resp.ok) {
+      const body = await resp.text()
+      setChatPending((prev) =>
+        prev.map((p) => (toUpload.find((t) => t.localId === p.localId)
+          ? { ...p, status: 'error' as const, error: `HTTP ${resp.status}: ${body.slice(0, 120)}` }
+          : p)),
+      )
+      throw new Error(`Upload failed: HTTP ${resp.status}`)
+    }
+    const data: ChatUploadResp = await resp.json()
+    // Map server-returned attachments back to pending entries by filename
+    // order (the Hub returns them in submission order).
+    const accepted = data.attachments || []
+    const rejected = data.rejected || []
+    setChatPending((prev) => {
+      const next = [...prev]
+      let acceptedIx = 0
+      let rejectedIx = 0
+      for (const t of toUpload) {
+        const slot = next.findIndex((p) => p.localId === t.localId)
+        if (slot < 0) continue
+        // Match by filename — server preserves the original name.
+        const acc = accepted.find((a, i) => i === acceptedIx && a.filename === t.filename)
+        if (acc) {
+          next[slot] = { ...next[slot], status: 'ready', ref: acc, error: undefined }
+          acceptedIx++
+          continue
+        }
+        const rej = rejected[rejectedIx]
+        if (rej) {
+          next[slot] = { ...next[slot], status: 'error', error: rej.error }
+          rejectedIx++
+          continue
+        }
+        next[slot] = { ...next[slot], status: 'error', error: 'no server response' }
+      }
+      return next
+    })
+    return [...ready.map((p) => p.ref!).filter(Boolean), ...accepted]
+  }
+
   const handleSendChat = async () => {
     const message = chatInput.trim()
-    if (!message || chatSending) return
+    const queuedReady = chatPending.filter((p) => p.status === 'queued' && !p.error)
+    const alreadyReady = chatPending.filter((p) => p.status === 'ready' && p.ref)
+    const hasFiles = queuedReady.length + alreadyReady.length > 0
+    if ((!message && !hasFiles) || chatSending) return
+
     setChatSending(true)
     setError('')
-    // Optimistic: append user msg locally so the input clears immediately
+
+    // Step 1: upload any pending attachments first. If the user has
+    // already retried after errors, only the still-queued ones go up
+    // again. We block the send if uploads fail outright (network /
+    // HTTP error) so the user can decide whether to remove or retry.
+    let attachmentRefs: ChatAttachmentRef[] = []
+    if (hasFiles) {
+      try {
+        attachmentRefs = await uploadPendingAttachments()
+      } catch (e: any) {
+        setError(`Attachment upload failed: ${e?.message || e}`)
+        setChatSending(false)
+        return
+      }
+      if (attachmentRefs.length === 0) {
+        setError('All attachments were rejected — see errors on each file.')
+        setChatSending(false)
+        return
+      }
+    }
+
+    // Step 2: optimistic user-message bubble locally (with attachment
+    // previews so the user sees what they're sending immediately).
     const optimistic: ChatMessage = {
       id: -Date.now(),
       role: 'user',
-      content: message,
+      content: message || (attachmentRefs.length
+        ? `(see attached file${attachmentRefs.length === 1 ? '' : 's'})` : ''),
       created_at: new Date().toISOString(),
+      attachments: attachmentRefs.map((r, i) => ({
+        id: -i - 1,
+        chat_message_id: -Date.now(),
+        filename: r.filename, mime_type: r.mime_type,
+        size_bytes: r.size, kind: r.kind || classifyKind(r.filename, r.mime_type),
+        pi_path: r.pi_path, file_id: r.file_id ?? 0,
+        sha256: r.sha256 || '',
+      })),
     }
     setChatMessages((prev) => [...prev, optimistic])
     setChatInput('')
+
+    // Clear pending — ObjectURLs get revoked so we don't leak.
+    chatPending.forEach((p) => p.previewUrl && URL.revokeObjectURL(p.previewUrl))
+    setChatPending([])
+
     try {
+      const body: any = { message: message || '' }
+      if (attachmentRefs.length) body.attachments = attachmentRefs
       const r = await apiFetch<ChatSendResp>('/overseer/chat', {
         method: 'POST',
-        body: JSON.stringify({ message }),
+        body: JSON.stringify(body),
       })
-      if (!r.ok) {
-        setError(`Chat error: ${r.error || 'unknown'}`)
-      }
-      // Always re-fetch so we get the persisted IDs + assistant reply
+      if (!r.ok) setError(`Chat error: ${r.error || 'unknown'}`)
+      // Always re-fetch so we get the persisted IDs + assistant reply +
+      // attachments-from-DB (replaces the optimistic stub above).
       await refreshChat()
     } catch (e: any) {
       setError(`Chat failed: ${e?.message || e}`)
@@ -770,6 +1030,9 @@ export function OverseerPage() {
     try {
       await apiFetch<any>('/overseer/chat/clear', { method: 'POST' })
       setChatMessages([])
+      // Clear any in-flight composer attachments too.
+      chatPending.forEach((p) => p.previewUrl && URL.revokeObjectURL(p.previewUrl))
+      setChatPending([])
       setLastAction('Chat thread cleared')
     } catch (e: any) {
       setError(`Clear failed: ${e?.message || e}`)
@@ -1124,6 +1387,9 @@ export function OverseerPage() {
           onSend={handleSendChat}
           onClear={handleClearChat}
           onRefresh={refreshChat}
+          pending={chatPending}
+          onAddFiles={handleAddPendingFiles}
+          onRemovePending={handleRemovePending}
         />
       )}
       {tab === 'notifications' && (
@@ -1867,6 +2133,9 @@ function ChatPanel({
   onSend,
   onClear,
   onRefresh,
+  pending,
+  onAddFiles,
+  onRemovePending,
 }: {
   messages: ChatMessage[]
   input: string
@@ -1875,7 +2144,58 @@ function ChatPanel({
   onSend: () => void
   onClear: () => void
   onRefresh: () => void
+  pending: PendingAttachment[]
+  onAddFiles: (files: FileList | File[]) => void
+  onRemovePending: (localId: string) => void
 }) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const messagesEndRef = useRef<HTMLDivElement | null>(null)
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null)
+  const [dragOver, setDragOver] = useState<boolean>(false)
+  const [stickToBottom, setStickToBottom] = useState<boolean>(true)
+
+  // Auto-scroll-to-bottom when new messages arrive — but only if the
+  // user is already at (or near) the bottom. Reading older messages
+  // shouldn't yank them down on every fetch tick.
+  useEffect(() => {
+    if (!stickToBottom) return
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages.length, sending, stickToBottom])
+
+  // Track scroll position so stickToBottom flips off when the user
+  // scrolls up to read history, and back on when they return to the bottom.
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    setStickToBottom(distanceFromBottom < 80)
+  }
+
+  const sendDisabled = sending
+    || (!input.trim() && pending.filter((p) => !p.error).length === 0)
+    || pending.some((p) => p.status === 'uploading')
+
+  const droppableHandlers = {
+    onDragEnter: (e: React.DragEvent) => {
+      if (Array.from(e.dataTransfer.types).includes('Files')) {
+        e.preventDefault(); setDragOver(true)
+      }
+    },
+    onDragOver: (e: React.DragEvent) => {
+      if (Array.from(e.dataTransfer.types).includes('Files')) {
+        e.preventDefault(); e.dataTransfer.dropEffect = 'copy'
+      }
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      // Only clear when leaving the wrapping element itself, not a child
+      if (e.currentTarget === e.target) setDragOver(false)
+    },
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault(); setDragOver(false)
+      const files = e.dataTransfer.files
+      if (files && files.length) onAddFiles(files)
+    },
+  }
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex items-center justify-between px-6 py-2 border-b border-border">
@@ -1900,7 +2220,11 @@ function ChatPanel({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 py-4">
+      <div
+        ref={messagesScrollRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-6 py-4"
+      >
         <div className="max-w-3xl mx-auto space-y-4">
           {messages.length === 0 ? (
             <div className="text-sm text-text-muted text-center py-12">
@@ -1909,6 +2233,10 @@ function ChatPanel({
               first instance. Ask anything — what you've been working on,
               what you might be forgetting, what it thinks of a pattern it
               has noticed.
+              <div className="mt-4 text-xs">
+                Drop a file or click the paperclip to attach images, code,
+                docs, or PDFs.
+              </div>
             </div>
           ) : (
             messages.map((m) => (
@@ -1920,11 +2248,66 @@ function ChatPanel({
               <span className="inline-block animate-pulse">Thinking…</span>
             </div>
           )}
+          <div ref={messagesEndRef} />
         </div>
       </div>
 
-      <div className="border-t border-border px-6 py-3 bg-surface-secondary">
-        <div className="max-w-3xl mx-auto flex gap-2">
+      <div
+        className={`border-t border-border px-6 py-3 bg-surface-secondary relative ${
+          dragOver ? 'ring-2 ring-accent ring-inset' : ''
+        }`}
+        {...droppableHandlers}
+      >
+        {dragOver && (
+          <div className="absolute inset-0 flex items-center justify-center bg-accent/10 pointer-events-none z-10">
+            <div className="text-sm font-medium text-accent">
+              Drop to attach (max {CHAT_MAX_FILES}, {formatBytes(CHAT_MAX_FILE_BYTES)} each)
+            </div>
+          </div>
+        )}
+
+        {pending.length > 0 && (
+          <div className="max-w-3xl mx-auto mb-2 flex flex-wrap gap-2">
+            {pending.map((p) => (
+              <PendingAttachmentChip
+                key={p.localId}
+                p={p}
+                onRemove={() => onRemovePending(p.localId)}
+              />
+            ))}
+          </div>
+        )}
+
+        <div className="max-w-3xl mx-auto flex gap-2 items-end">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={[...CHAT_ALLOWED_EXTS].join(',')}
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files && e.target.files.length) {
+                onAddFiles(e.target.files)
+              }
+              // Reset so the same filename can be picked again later
+              e.target.value = ''
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={sending || pending.length >= CHAT_MAX_FILES}
+            title="Attach files (max 10, 5MB each)"
+            className="h-9 w-9 shrink-0 rounded-md flex items-center justify-center bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-muted hover:text-text-primary cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            aria-label="Attach files"
+          >
+            {/* Paperclip icon, simple inline SVG so we don't pull a deps */}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                 strokeLinejoin="round">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            </svg>
+          </button>
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -1934,14 +2317,18 @@ function ChatPanel({
                 onSend()
               }
             }}
-            placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+            placeholder={
+              pending.length
+                ? 'Add a question, or send the files alone…'
+                : 'Type a message… (Enter to send, Shift+Enter for newline, drop files anywhere here)'
+            }
             disabled={sending}
             rows={2}
             className="flex-1 rounded-md border border-border bg-surface-tertiary px-3 py-2 text-sm text-text-primary placeholder:text-text-muted resize-none focus:outline-none focus:border-accent disabled:opacity-50"
           />
           <button
             onClick={onSend}
-            disabled={sending || !input.trim()}
+            disabled={sendDisabled}
             className="px-4 py-2 rounded-md text-sm font-medium bg-accent hover:bg-accent-hover text-white cursor-pointer disabled:opacity-50 self-end"
           >
             {sending ? 'Sending…' : 'Send'}
@@ -1952,12 +2339,62 @@ function ChatPanel({
   )
 }
 
+function PendingAttachmentChip({
+  p, onRemove,
+}: { p: PendingAttachment; onRemove: () => void }) {
+  const kind = classifyKind(p.filename, p.mime_type)
+  const isError = p.status === 'error' || !!p.error
+  const isUploading = p.status === 'uploading'
+
+  return (
+    <div
+      className={`flex items-center gap-2 max-w-xs rounded-md border px-2 py-1 text-xs ${
+        isError
+          ? 'border-red-500/40 bg-red-500/10 text-red-300'
+          : 'border-border bg-surface-tertiary text-text-primary'
+      }`}
+      title={isError ? p.error : `${p.filename} · ${formatBytes(p.size)}`}
+    >
+      {kind === 'image' && p.previewUrl ? (
+        <img src={p.previewUrl} alt={p.filename}
+             className="h-8 w-8 object-cover rounded" />
+      ) : (
+        <span className="h-8 w-8 shrink-0 rounded flex items-center justify-center text-[10px] uppercase tracking-wide bg-surface-secondary text-text-muted">
+          {kind === 'pdf' ? 'PDF' : kind === 'text' ? 'TXT' : 'FILE'}
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium">{p.filename}</div>
+        <div className="text-[10px] text-text-muted">
+          {isUploading
+            ? 'uploading…'
+            : isError
+              ? (p.error || 'error')
+              : p.status === 'ready'
+                ? `${formatBytes(p.size)} · ready`
+                : formatBytes(p.size)}
+        </div>
+      </div>
+      <button
+        onClick={onRemove}
+        disabled={isUploading}
+        className="text-text-muted hover:text-red-400 cursor-pointer disabled:opacity-50"
+        aria-label="Remove attachment"
+        title="Remove"
+      >
+        ×
+      </button>
+    </div>
+  )
+}
+
 function ChatBubble({ m }: { m: ChatMessage }) {
   const isUser = m.role === 'user'
+  const attachments = m.attachments || []
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`max-w-[80%] rounded-lg px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
+        className={`max-w-[80%] rounded-lg px-4 py-3 text-sm leading-relaxed ${
           isUser
             ? 'bg-accent/15 text-text-primary border border-accent/30'
             : 'bg-surface-secondary text-text-primary border border-border'
@@ -1971,7 +2408,44 @@ function ChatBubble({ m }: { m: ChatMessage }) {
             </span>
           )}
         </div>
-        {m.content}
+
+        {attachments.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {attachments.map((a) => (
+              <ChatAttachmentBadge key={a.id} a={a} />
+            ))}
+          </div>
+        )}
+
+        <div className="whitespace-pre-wrap">{m.content}</div>
+      </div>
+    </div>
+  )
+}
+
+function ChatAttachmentBadge({ a }: { a: ChatStoredAttachment }) {
+  // Slice 8: render an image thumbnail when possible, otherwise a
+  // labelled chip. The thumbnail uses /api/pi/files/<category>/<name>
+  // when the file lives under uploads/, falling back to a generic
+  // chip if that route isn't available. For now we punt on the image
+  // src and render a text chip everywhere — the chat history still
+  // shows what was attached. Slice D will add real thumbs.
+  const label = a.kind === 'image' ? 'IMG'
+    : a.kind === 'pdf' ? 'PDF'
+    : a.kind === 'text' ? 'TXT' : 'FILE'
+  return (
+    <div
+      className="flex items-center gap-2 max-w-xs rounded-md border border-border bg-surface-tertiary/50 px-2 py-1 text-xs"
+      title={`${a.filename} · ${formatBytes(a.size_bytes)} · ${a.mime_type || a.kind}`}
+    >
+      <span className="h-7 w-7 shrink-0 rounded flex items-center justify-center text-[10px] uppercase tracking-wide bg-surface-secondary text-text-muted">
+        {label}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium">{a.filename}</div>
+        <div className="text-[10px] text-text-muted">
+          {formatBytes(a.size_bytes)}
+        </div>
       </div>
     </div>
   )
