@@ -207,7 +207,12 @@ async def list_rollups(project: str = "", limit: int = 100):
 class ChatRequest(BaseModel):
     message: str
     backend: str | None = None
-    max_tokens: int = 800
+    # dev.18: bumped from 800 -> 8000. The 800-token cap was truncating
+    # mid-paragraph on essay-length responses (Tory's catalog of things
+    # he wanted tracked got cut off mid-list, structured insight blocks
+    # got cut off mid-JSON). 8000 is generous default; Pi ceiling is
+    # 32000 for callers that explicitly need more.
+    max_tokens: int = 8000
     temperature: float = 0.7
 
 
