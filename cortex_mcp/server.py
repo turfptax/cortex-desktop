@@ -513,6 +513,169 @@ def overseer_chat(message: str, timeout: int = 120) -> str:
     return reply
 
 
+# ── Slice 9.3: sibling task dispatch tools ────────────────────────
+# These let the overseer dispatch work TO this Claude Code session.
+# Counterpart to overseer_chat (talk TO overseer). Pattern:
+#   1. Overseer writes a task via its dispatch_sibling chat tool.
+#   2. This Claude Code session calls sibling_pending() to see queue.
+#   3. Claims a task with sibling_claim(id) — atomic so two siblings
+#      can't race.
+#   4. Does the actual work.
+#   5. Submits result with sibling_complete(id, result, ...). Optionally
+#      grades the overseer's dispatch back (reciprocal — prevents the
+#      data from becoming "what overseer already believed, validated").
+#   6. Or rejects with sibling_reject(id, reason) if out of scope.
+#
+# Auto-surface convention: at session start, any session with the cortex
+# MCP loaded should call sibling_pending() and, if there's queued work,
+# surface using the overseer's exact phrasing:
+#   "Overseer flagged this for review when you opened the session"
+# (Not notification register — handoff register. Distinction matters.)
+
+@mcp.tool()
+def sibling_pending(limit: int = 50) -> str:
+    """List sibling tasks the overseer has dispatched that are
+    waiting to be claimed.
+
+    Use at session start (or when prompted) to see what the overseer
+    has queued up for review. Tasks are typically judgment calls the
+    overseer couldn't resolve alone — "is my read of X overfitting,"
+    "does theme Y deserve [high] confidence given recent evidence,"
+    etc. Each task carries the prompt + context the overseer attached
+    + the cost budget you should respect.
+
+    Returns JSON list of {id, prompt, task_type, cost_budget_usd,
+    created_at, created_by, context_json, ...} or "(no pending tasks)".
+
+    Auto-surface phrasing (for first-message-of-session use):
+      "Overseer flagged this for review when you opened the session"
+    Treat as continuous-work-state, not inbox notification.
+
+    Args:
+        limit: Max tasks to list (default 50).
+    """
+    import json as _json
+    result, err = _overseer_plugin_call(
+        "GET", "/sibling/pending",
+        {"target": "claude-code", "limit": int(limit)},
+        timeout=10,
+    )
+    if err:
+        return "Error: {}".format(err)
+    tasks = result.get("tasks") or []
+    if not tasks:
+        return "(no pending sibling tasks)"
+    return _json.dumps(tasks, indent=2, default=str)
+
+
+@mcp.tool()
+def sibling_claim(task_id: int, claimed_by: str = "") -> str:
+    """Claim a sibling task atomically. Refuses if another sibling
+    already claimed it (race-safe).
+
+    Returns the full task on success so you have everything needed
+    without a second round-trip. Returns an error if the task is
+    already claimed, completed, or doesn't exist.
+
+    Args:
+        task_id: The id from sibling_pending.
+        claimed_by: Your sibling identifier. Defaults to
+            "claude-code:<hostname>" — pass an explicit string if
+            you want it more specific (e.g. a session_id or repo).
+    """
+    import json as _json
+    import socket as _socket
+    if not claimed_by:
+        try:
+            claimed_by = "claude-code:" + _socket.gethostname()
+        except Exception:
+            claimed_by = "claude-code:unknown"
+    result, err = _overseer_plugin_call(
+        "POST", "/sibling/claim",
+        {"id": int(task_id), "claimed_by": claimed_by},
+        timeout=10,
+    )
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def sibling_complete(task_id: int, result_text: str,
+                     actual_model_used: str = "",
+                     result_cost_usd: float = 0.0,
+                     dispatch_quality_rating: int = 0,
+                     dispatch_quality_notes: str = "") -> str:
+    """Submit a completed result for a sibling task.
+
+    The overseer will see the result on its next tick (or sooner if it
+    polls sibling_recent). The result_text is stored permanently and
+    NEVER compacted, so future overseer instances can audit the
+    round-trip.
+
+    Reciprocal grading is OPTIONAL but strongly encouraged. Pass a
+    dispatch_quality_rating (1-5) to rate the overseer's dispatch
+    quality back at it. Mitigates the "overseer rates only what it
+    already believed as valid" bias the overseer itself flagged when
+    this surface was designed. Notes can be brief:
+      1 = ambiguous / unanswerable as posed
+      3 = workable but could have been scoped better
+      5 = well-formed; one round-trip was the right granularity
+
+    Args:
+        task_id: The id you claimed.
+        result_text: Your answer / synthesis / pushback.
+        actual_model_used: e.g. "anthropic/claude-opus-4.7" or
+            "anthropic/claude-sonnet-4.6". Helps the dataset later.
+        result_cost_usd: Best-effort estimate of what doing this cost.
+        dispatch_quality_rating: 1-5 reciprocal grade; 0 = skipped.
+        dispatch_quality_notes: One-line rationale for the rating.
+    """
+    import json as _json
+    payload = {
+        "id": int(task_id),
+        "result_text": result_text,
+        "actual_model_used": actual_model_used,
+        "result_cost_usd": float(result_cost_usd),
+    }
+    if dispatch_quality_rating and 1 <= int(dispatch_quality_rating) <= 5:
+        payload["dispatch_quality_rating"] = int(dispatch_quality_rating)
+        payload["dispatch_quality_notes"] = dispatch_quality_notes
+    result, err = _overseer_plugin_call(
+        "POST", "/sibling/complete", payload, timeout=15,
+    )
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def sibling_reject(task_id: int, reason: str) -> str:
+    """Pass on a sibling task. Different from completing with a poor
+    result: rejection means you chose not to attempt it.
+
+    Use when the task is out of scope, ambiguous beyond what one
+    round-trip can resolve, would clearly exceed the cost budget, or
+    isn't something a Claude Code session is the right surface for.
+    The reason text shows up in the overseer's next-tick read so it
+    learns what kinds of asks aren't landing.
+
+    Args:
+        task_id: The id you would otherwise claim/complete.
+        reason: Why you're skipping it. Be specific — this is how the
+            overseer calibrates future dispatches.
+    """
+    import json as _json
+    result, err = _overseer_plugin_call(
+        "POST", "/sibling/reject",
+        {"id": int(task_id), "reason": reason},
+        timeout=10,
+    )
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
 @mcp.tool()
 def query(table: str, filters: str = "", limit: int = 10, order_by: str = "created_at DESC") -> str:
     """Query the Cortex database on the Pi.
