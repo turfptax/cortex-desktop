@@ -440,6 +440,80 @@ def cortex_overseer_detail(token: str) -> str:
 
 
 @mcp.tool()
+def overseer_chat(message: str, timeout: int = 120) -> str:
+    """Chat directly with the Overseer. Returns its full reply.
+
+    This is the AI-conversation counterpart to ``cortex_overseer_detail``
+    (which is read-only graph drill-down). The Overseer is the long-lived
+    memory/reflection agent that runs on the Pi as the ``overseer`` plugin.
+    It reads your notes, sessions, and imported AI conversations and
+    builds working memory + summaries + open questions + drift + themes
+    on top of them. ``overseer_chat`` sends a message to the chat endpoint
+    (POST /plugins/overseer/chat), which renders the working-memory
+    artifact, recent gists/themes/questions, and your message into a
+    prompt and returns the model's reply.
+
+    Default model: Opus 4.7 via OpenRouter (per plugin.toml). Sonnet is
+    used for the cheaper internal jobs (auto-tag, journal); chat is
+    Opus. Cost is ~$0.02-$0.10 per turn depending on context length.
+    Daily call budget applies (currently 250/day, $5/day).
+
+    When to use:
+      - To get a real-time react/synthesis from the overseer about
+        something happening NOW. (Milestones, decisions, open questions,
+        observations.)
+      - To ask the overseer what it remembers about a specific person,
+        project, theme, or time period, anchored in its own analytical
+        state (not just the raw notes).
+      - To get it to draft an entry for ``future_overseer_notes`` or
+        suggest schema changes to its own analytical surfaces — the
+        overseer has demonstrated capacity to self-reflect and propose
+        edits to its own context plumbing.
+
+    When NOT to use:
+      - To ask a generic LLM question. Use a normal LLM call; the
+        overseer's context prompt is heavy and a generic question
+        wastes the budget.
+      - To do passive note-taking. Use ``send_note`` — it's free and
+        the overseer reads notes on its next ingest pass.
+      - To drill into a specific gist/theme/question by token — use
+        ``cortex_overseer_detail`` instead, it's a read-only DB lookup.
+
+    The overseer can take 15-60 seconds to reply (Opus + heavy context).
+    Patience.
+
+    Args:
+        message: Your message to the overseer. Free-form. The overseer
+            sees both this message and its assembled context.
+        timeout: Max seconds to wait for a reply (default 120, hard
+            cap 300).
+    """
+    import json as _json
+    # Cap the timeout — chat shouldn't ever take >5min in practice;
+    # an unbounded timeout would let a stuck call wedge the MCP session.
+    t = max(15, min(int(timeout), 300))
+    result, err = _overseer_plugin_call(
+        "POST", "/chat", {"message": message}, timeout=t,
+    )
+    if err:
+        return "Error: {}".format(err)
+    # The chat endpoint returns {"ok": True, "reply": "...", ...
+    # possibly other metadata like cost_usd, latency_ms, model}.
+    # Surface the reply prominently; include metadata as a footer so
+    # the caller can see how much it cost.
+    reply = result.get("reply") or ""
+    extra = {k: v for k, v in result.items()
+             if k not in ("ok", "reply") and v is not None}
+    if not reply:
+        # Empty reply is unusual — return the whole envelope so the
+        # caller can see what happened.
+        return _json.dumps(result, indent=2, default=str)
+    if extra:
+        return reply + "\n\n---\n" + _json.dumps(extra, default=str)
+    return reply
+
+
+@mcp.tool()
 def query(table: str, filters: str = "", limit: int = 10, order_by: str = "created_at DESC") -> str:
     """Query the Cortex database on the Pi.
 
