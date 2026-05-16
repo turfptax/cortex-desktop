@@ -1223,3 +1223,69 @@ async def people_stats():
     Used by both MCP agents and the upcoming Hub UI Network section."""
     return await pi_client.plugin_call(
         "overseer", "GET", "/people/stats", None)
+
+
+# ── Slice 9.3: sibling task dispatch proxies ────────────────────
+# The MCP tools talk to the Pi directly, but exposing the same
+# surface here lets the Hub UI build a "Tasks" sub-tab later
+# (pending queue, completed-but-unrated, dispatch-quality histogram)
+# without touching the Pi endpoint layer again.
+
+@router.post("/sibling/dispatch")
+async def sibling_dispatch(body: dict):
+    """Proxy: POST /plugins/overseer/sibling/dispatch.
+    Body: {prompt, created_by?, target?, task_type?,
+           preferred_model_tier?, cost_budget_usd?, context?}"""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/sibling/dispatch", body)
+
+
+@router.get("/sibling/pending")
+async def sibling_pending(target: str = "claude-code", limit: int = 50):
+    """Proxy: GET /plugins/overseer/sibling/pending.
+    Default target='claude-code' matches the MCP tool default."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/sibling/pending",
+        {"target": target, "limit": limit})
+
+
+@router.post("/sibling/claim")
+async def sibling_claim(body: dict):
+    """Proxy: POST /plugins/overseer/sibling/claim.
+    Body: {id, claimed_by}"""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/sibling/claim", body)
+
+
+@router.post("/sibling/complete")
+async def sibling_complete(body: dict):
+    """Proxy: POST /plugins/overseer/sibling/complete.
+    Body: {id, result_text, actual_model_used?, result_cost_usd?,
+           dispatch_quality_rating?, dispatch_quality_notes?}"""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/sibling/complete", body)
+
+
+@router.post("/sibling/reject")
+async def sibling_reject(body: dict):
+    """Proxy: POST /plugins/overseer/sibling/reject.
+    Body: {id, reason}"""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/sibling/reject", body)
+
+
+@router.get("/sibling/recent")
+async def sibling_recent(limit: int = 20, unread: int = 0):
+    """Proxy: GET /plugins/overseer/sibling/recent.
+    Pass unread=1 to filter to tasks the overseer hasn't rated yet."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/sibling/recent",
+        {"limit": limit, "unread": unread})
+
+
+@router.get("/sibling/stats")
+async def sibling_stats():
+    """Proxy: GET /plugins/overseer/sibling/stats — headline counts
+    + daily dispatch budget posture."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/sibling/stats", None)
