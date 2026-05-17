@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import { fmtTime, fmtLocalWithTz, fmtUtcWithTz } from '../../lib/time'
 
 interface Props {
   rows: Record<string, any>[]
@@ -18,7 +19,15 @@ const COLUMN_ORDER: Record<string, string[]> = {
 }
 
 // Columns to hide (internal/noisy)
+// local_*_at columns are hidden because their content is rendered
+// via the paired UTC column (formatCell looks up the local sibling
+// and prefers it). Showing both would be redundant duplicate columns.
 const HIDDEN_COLS = new Set(['session_id', 'source', 'last_touched'])
+function isHidden(key: string): boolean {
+  if (HIDDEN_COLS.has(key)) return true
+  if (key.startsWith('local_') && key.endsWith('_at')) return true
+  return false
+}
 
 // Columns that should be wider
 const WIDE_COLS = new Set(['description', 'content', 'summary', 'notes', 'name', 'github_url'])
@@ -26,18 +35,27 @@ const WIDE_COLS = new Set(['description', 'content', 'summary', 'notes', 'name',
 // Columns with mono font
 const MONO_COLS = new Set(['tag', 'project_tag', 'org_tag', 'id', 'duration_minutes', 'total_hours'])
 
-function formatCell(key: string, value: any): string {
+function formatCell(key: string, value: any, row?: Record<string, any>): string {
   if (value === null || value === undefined || value === '') return '—'
   if (key === 'total_hours' || key === 'duration_minutes') {
     const n = Number(value)
     if (key === 'duration_minutes') return `${n}m`
     return `${n.toFixed(1)}h`
   }
-  if (key.endsWith('_at') || key === 'started_at' || key === 'ended_at' || key === 'created_at') {
-    try {
-      const d = new Date(value)
-      return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    } catch { return String(value) }
+  // Slice 9.4.1: timestamp display rule (memory/feedback_time_always_local_with_tz.md):
+  // every shown time MUST include its timezone. After the 9.4.1 migration,
+  // every `_at` column has a paired `local_<col>_at` column with explicit
+  // offset. Prefer the local variant; fall back to UTC-with-suffix for any
+  // legacy row that somehow missed the trigger.
+  if (key.startsWith('local_') && key.endsWith('_at')) {
+    return fmtLocalWithTz(String(value))
+  }
+  if (key.endsWith('_at')) {
+    const localKey = 'local_' + key
+    if (row && row[localKey]) {
+      return fmtTime(String(row[localKey]), String(value))
+    }
+    return fmtUtcWithTz(String(value))
   }
   if (key === 'is_active') return value ? '✓ Active' : '✗ Inactive'
   const s = String(value)
@@ -60,7 +78,7 @@ export function TableBrowser({ rows, loading, onRowClick, activeTable }: Props) 
   // Determine columns from first row + preferred order
   const columns = useMemo(() => {
     if (rows.length === 0) return []
-    const allKeys = Object.keys(rows[0]).filter(k => !HIDDEN_COLS.has(k))
+    const allKeys = Object.keys(rows[0]).filter(k => !isHidden(k))
     const preferred = COLUMN_ORDER[activeTable] || []
     const ordered = preferred.filter(k => allKeys.includes(k))
     const rest = allKeys.filter(k => !ordered.includes(k))
@@ -202,7 +220,7 @@ export function TableBrowser({ rows, loading, onRowClick, activeTable }: Props) 
                           {row[col] ? '✓ Active' : '✗ Inactive'}
                         </span>
                       ) : (
-                        formatCell(col, row[col])
+                        formatCell(col, row[col], row)
                       )}
                     </td>
                   ))}
