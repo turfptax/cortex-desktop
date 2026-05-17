@@ -113,12 +113,14 @@ function fmtRelativeTime(iso: string): string {
   return `${Math.round(days / 365)}y ago`
 }
 
-function fmtLocalShort(iso: string): string {
-  if (!iso) return ''
-  // local_created_at is ISO with offset like "2026-05-03T11:30:00-05:00"
-  // — just take the first 16 chars for display.
-  return iso.slice(0, 16).replace('T', ' ')
-}
+// Slice 9.4.1 (2026-05-16): use the shared time helper so EVERY
+// timestamp display includes its tz suffix (CDT/CST/UTC/etc.). The
+// old local `fmtLocalShort` helper used `slice(0, 16)` which silently
+// dropped the offset — that pattern surfaced the "future-dated entry"
+// confusion when an entry written after 19:00 CDT had its UTC string
+// rendered as if it were local. See
+// memory/feedback_time_always_local_with_tz.md.
+import { fmtTime } from '../../lib/time'
 
 // ── Section 1: Human journal ─────────────────────────────────────
 
@@ -653,7 +655,7 @@ function HumanJournalSection() {
               >
                 <div className="flex items-baseline gap-2 mb-1">
                   <span className="text-[11px] text-text-muted">
-                    {fmtLocalShort(e.local_created_at || e.created_at)}
+                    {fmtTime(e.local_created_at, e.created_at)}
                   </span>
                   <span className="text-[10px] text-text-muted/60 ml-auto">
                     {fmtRelativeTime(e.created_at)}

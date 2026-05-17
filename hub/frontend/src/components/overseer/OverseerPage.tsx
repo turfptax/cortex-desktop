@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../../lib/api'
+import { fmtTime } from '../../lib/time'
 import { ExplorerPanel, type GraphResp } from './ExplorerPanel'
 import { ProjectsTab } from './ProjectsTab'
 import { JournalTab } from './JournalTab'
@@ -2061,8 +2062,8 @@ function NotificationsPanel({
                               <span className="text-sm text-text-primary font-medium">
                                 {n.title}
                               </span>
-                              <span className="text-xs text-text-muted ml-auto whitespace-nowrap">
-                                {n.created_at?.slice(0, 16)}
+                              <span className="text-xs text-text-muted ml-auto whitespace-nowrap" title={fmtTime((n as any).local_created_at, n.created_at)}>
+                                {fmtTime((n as any).local_created_at, n.created_at)}
                               </span>
                             </div>
                             {n.body && (
@@ -2643,7 +2644,7 @@ function ProjectsPanel({
                         {p.manual_override && (
                           <span
                             className="ml-1 text-[10px] text-text-muted"
-                            title={`Set ${p.classified_at?.slice(0, 16) || ''} (${p.classified_reason || 'manual'})`}
+                            title={`Set ${fmtTime((p as any).local_classified_at, p.classified_at) || ''} (${p.classified_reason || 'manual'})`}
                           >
                             🔒
                           </span>
@@ -3612,8 +3613,8 @@ function WorkingMemoryView({
                   <span className="text-[10px] text-text-muted uppercase">
                     {n.instance_id}
                     {n.written_at && (
-                      <span className="ml-2 normal-case">
-                        {n.written_at.slice(0, 16).replace('T', ' ')}
+                      <span className="ml-2 normal-case" title={fmtTime((n as any).local_written_at, n.written_at)}>
+                        {fmtTime((n as any).local_written_at, n.written_at)}
                       </span>
                     )}
                   </span>
@@ -3864,7 +3865,7 @@ function DialecticRowView({
           <div className="text-xs text-text-muted mb-0.5">
             {d.purpose} · {d.artifact_type}#{d.artifact_id} ·{' '}
             sim {(d.similarity * 100).toFixed(0)}% ·{' '}
-            {d.created_at?.slice(0, 16)}
+            <span title={fmtTime((d as any).local_created_at, d.created_at)}>{fmtTime((d as any).local_created_at, d.created_at)}</span>
           </div>
           <div className="text-sm text-text-primary truncate">
             {d.diff_summary || `${d.opus_text.slice(0, 100)}…`}
