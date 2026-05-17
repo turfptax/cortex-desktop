@@ -32,6 +32,7 @@ import { apiFetch } from '../../lib/api'
 export interface OverseerJournalEntry {
   id: number
   written_at: string
+  local_written_at?: string  // Slice 9.4.1: ISO with offset
   instance_id: string
   triggered_by: string
   body: string
@@ -880,7 +881,13 @@ function OverseerReflectionsSection({
   entries: OverseerJournalEntry[]
   onRefresh: () => void
 }) {
-  const reversed = [...entries].reverse() // newest first
+  // Newest first. Default to 10 visible; expand to all on demand.
+  const reversed = [...entries].reverse()
+  const [showAll, setShowAll] = useState(false)
+  const COLLAPSED = 10
+  const visible = showAll ? reversed : reversed.slice(0, COLLAPSED)
+  const hidden = reversed.length - visible.length
+
   return (
     <section className="space-y-3">
       <header className="flex items-baseline gap-3">
@@ -894,9 +901,12 @@ function OverseerReflectionsSection({
             to read at boot. You read along.
           </p>
         </div>
+        <span className="ml-auto text-[11px] text-text-muted whitespace-nowrap">
+          {reversed.length} total
+        </span>
         <button
           onClick={onRefresh}
-          className="ml-auto px-3 py-1.5 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer"
+          className="px-3 py-1.5 rounded-md text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer"
         >
           Refresh
         </button>
@@ -907,11 +917,29 @@ function OverseerReflectionsSection({
           with notable work.
         </div>
       ) : (
-        <ul className="space-y-3">
-          {reversed.map((j) => (
-            <OverseerJournalEntryView key={j.id} j={j} />
-          ))}
-        </ul>
+        <>
+          <ul className="space-y-3">
+            {visible.map((j) => (
+              <OverseerJournalEntryView key={j.id} j={j} />
+            ))}
+          </ul>
+          {hidden > 0 && (
+            <button
+              onClick={() => setShowAll(true)}
+              className="w-full py-2 rounded-md text-[11px] uppercase tracking-wider text-text-muted hover:text-text-primary bg-surface-secondary/40 hover:bg-surface-secondary/70 cursor-pointer"
+            >
+              Show {hidden} more older reflections
+            </button>
+          )}
+          {showAll && reversed.length > COLLAPSED && (
+            <button
+              onClick={() => setShowAll(false)}
+              className="w-full py-2 rounded-md text-[11px] uppercase tracking-wider text-text-muted hover:text-text-primary cursor-pointer"
+            >
+              Collapse to {COLLAPSED} most recent
+            </button>
+          )}
+        </>
       )}
     </section>
   )
@@ -933,8 +961,8 @@ function OverseerJournalEntryView({ j }: { j: OverseerJournalEntry }) {
         >
           prov: {j.provisionality}
         </span>
-        <span className="text-xs text-text-muted">
-          {j.written_at?.slice(0, 19)}
+        <span className="text-xs text-text-muted" title={fmtTime(j.local_written_at, j.written_at)}>
+          {fmtTime(j.local_written_at, j.written_at)}
         </span>
         <span className="text-[11px] text-text-muted ml-auto truncate max-w-xs font-mono">
           {j.triggered_by} · {j.model}
@@ -949,6 +977,38 @@ function OverseerJournalEntryView({ j }: { j: OverseerJournalEntry }) {
 
 // ── Top-level export ─────────────────────────────────────────────
 
+// Slice 9.4.2 (2026-05-17): Tory's UX directive — three stacked
+// sections forced a lot of scrolling to reach the most recent records
+// (especially overseer reflections, which can have 100+ entries since
+// every notable tick writes one). Switched to sub-tabs so each section
+// gets the full Hub-tab height, and the active sub-tab persists across
+// reloads via localStorage. Inside each section, default-collapsed
+// patterns ("Show N more …") keep the active sub-tab from growing
+// unbounded over time.
+
+type JournalSubTab = 'human' | 'temporal' | 'reflections'
+const SUBTAB_STORAGE_KEY = 'cortex.overseer.journal.subtab'
+
+function readPersistedSubTab(): JournalSubTab {
+  try {
+    const v = localStorage.getItem(SUBTAB_STORAGE_KEY)
+    if (v === 'human' || v === 'temporal' || v === 'reflections') {
+      return v
+    }
+  } catch {
+    // localStorage may be unavailable in some embedded contexts
+  }
+  // Default to the human journal — it's the section Tory writes INTO,
+  // so it's the most actionable surface to land on.
+  return 'human'
+}
+
+interface SubTabDef {
+  key: JournalSubTab
+  label: string
+  count?: number
+}
+
 export function JournalTab({
   overseerEntries,
   onRefreshOverseerJournal,
@@ -956,15 +1016,64 @@ export function JournalTab({
   overseerEntries: OverseerJournalEntry[]
   onRefreshOverseerJournal: () => void
 }) {
+  const [active, setActive] = useState<JournalSubTab>(readPersistedSubTab)
+
+  const setAndPersist = useCallback((next: JournalSubTab) => {
+    setActive(next)
+    try {
+      localStorage.setItem(SUBTAB_STORAGE_KEY, next)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const tabs: SubTabDef[] = [
+    { key: 'human', label: 'Your journal' },
+    { key: 'temporal', label: 'Temporal narratives' },
+    {
+      key: 'reflections',
+      label: 'Overseer reflections',
+      count: overseerEntries.length,
+    },
+  ]
+
   return (
     <div className="flex-1 overflow-y-auto p-6">
-      <div className="max-w-3xl mx-auto space-y-8">
-        <HumanJournalSection />
-        <TemporalNarrativesSection />
-        <OverseerReflectionsSection
-          entries={overseerEntries}
-          onRefresh={onRefreshOverseerJournal}
-        />
+      <div className="max-w-3xl mx-auto space-y-4">
+        <nav className="flex gap-0 border-b border-border">
+          {tabs.map((t) => {
+            const isActive = active === t.key
+            return (
+              <button
+                key={t.key}
+                onClick={() => setAndPersist(t.key)}
+                className={
+                  'px-4 py-2 text-sm font-medium border-b-2 -mb-px ' +
+                  'transition-colors cursor-pointer ' +
+                  (isActive
+                    ? 'border-accent text-text-primary'
+                    : 'border-transparent text-text-muted ' +
+                      'hover:text-text-primary')
+                }
+              >
+                {t.label}
+                {t.count !== undefined && t.count > 0 && (
+                  <span className="ml-1.5 text-[11px] text-text-muted">
+                    ({t.count})
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </nav>
+        {active === 'human' && <HumanJournalSection />}
+        {active === 'temporal' && <TemporalNarrativesSection />}
+        {active === 'reflections' && (
+          <OverseerReflectionsSection
+            entries={overseerEntries}
+            onRefresh={onRefreshOverseerJournal}
+          />
+        )}
       </div>
     </div>
   )
