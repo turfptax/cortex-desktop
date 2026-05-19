@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { apiFetch } from '../../lib/api'
 import { fmtTime } from '../../lib/time'
 import { ExplorerPanel, type GraphResp } from './ExplorerPanel'
@@ -253,6 +255,17 @@ interface ChatStoredAttachment {
   created_at?: string
 }
 
+// Slice 9.5 CP1 (2026-05-19): the backend persists tool_calls + other
+// per-message audit fields inside metadata_json. The frontend parses
+// that string once at load time into structured fields so the chat
+// rendering layer doesn't need to JSON.parse on every render.
+interface ChatToolCallSummary {
+  iter: number
+  name: string
+  args: Record<string, any>
+  result_chars: number
+}
+
 interface ChatMessage {
   id: number
   role: 'user' | 'assistant' | 'system'
@@ -263,6 +276,14 @@ interface ChatMessage {
   latency_ms?: number
   cost_usd?: number
   attachments?: ChatStoredAttachment[]   // Slice 8
+  // Slice 9.5 CP1: parsed from metadata_json. None of these are
+  // required — historic rows from before persistence won't have them.
+  tool_calls?: ChatToolCallSummary[]
+  tool_iterations?: number
+  history_turns_used?: number
+  context_chars?: number
+  // raw_metadata kept for /compress and debug — full original JSON.
+  raw_metadata?: Record<string, any>
 }
 
 interface ChatHistoryResp {
@@ -665,8 +686,37 @@ export function OverseerPage() {
 
   const refreshChat = async () => {
     try {
-      const r = await apiFetch<ChatHistoryResp>('/overseer/chat/history?limit=200')
-      setChatMessages(r.messages || [])
+      const r = await apiFetch<ChatHistoryResp & { messages?: (ChatMessage & { metadata_json?: string })[] }>(
+        '/overseer/chat/history?limit=200',
+      )
+      // Slice 9.5 CP1: parse metadata_json once so the render layer
+      // doesn't reparse on every render and so we get typed fields.
+      const parsed: ChatMessage[] = (r.messages || []).map((m) => {
+        const out: ChatMessage = { ...m }
+        const raw = (m as any).metadata_json
+        if (typeof raw === 'string' && raw && raw !== '{}') {
+          try {
+            const meta = JSON.parse(raw)
+            out.raw_metadata = meta
+            if (Array.isArray(meta.tool_calls)) {
+              out.tool_calls = meta.tool_calls as ChatToolCallSummary[]
+            }
+            if (typeof meta.tool_iterations === 'number') {
+              out.tool_iterations = meta.tool_iterations
+            }
+            if (typeof meta.history_turns_used === 'number') {
+              out.history_turns_used = meta.history_turns_used
+            }
+            if (typeof meta.context_chars === 'number') {
+              out.context_chars = meta.context_chars
+            }
+          } catch {
+            // Bad JSON — leave fields unset, don't crash the render.
+          }
+        }
+        return out
+      })
+      setChatMessages(parsed)
     } catch (e: any) {
       setError(`Chat refresh failed: ${e?.message || e}`)
     }
@@ -954,8 +1004,237 @@ export function OverseerPage() {
     return [...ready.map((p) => p.ref!).filter(Boolean), ...accepted]
   }
 
+  // Slice 9.5 CP2 (2026-05-19): slash commands intercept chat input
+  // before the message hits the overseer LLM. Saves the cost of a
+  // chat-turn for simple state queries (cost / budget / insights /
+  // working memory / sibling status) and gives Tory a fast keyboard
+  // affordance for /clear / /compress / /tick / /help.
+  // System bubbles use negative IDs so they never collide with real
+  // chat_messages.id values from the DB.
+  const slashSystemIdRef = useRef(-1)
+  const pushSlashSystemMessage = (content: string) => {
+    slashSystemIdRef.current -= 1
+    const msg: ChatMessage = {
+      id: slashSystemIdRef.current,
+      role: 'system',
+      content,
+      created_at: new Date().toISOString(),
+    }
+    setChatMessages((prev) => [...prev, msg])
+  }
+
+  const SLASH_HELP_TEXT = [
+    '## Slash commands',
+    '',
+    '- `/help` — show this list',
+    '- `/clear` — wipe the chat thread (confirm prompt)',
+    '- `/compress` — fold older turns into a compressed summary',
+    '- `/cost` — show today\'s LLM spend and remaining budget',
+    '- `/budget` — alias for /cost',
+    '- `/tick` — force an overseer loop tick now',
+    '- `/whoami` — working memory snapshot (freshness + posture)',
+    '- `/insights` — list pending interpretations',
+    '- `/sibling-status` — A-channel dispatch counters',
+    '',
+    'Commands run locally (no LLM cost). Overseer can still see results in their next turn.',
+  ].join('\n')
+
+  const handleSlashCommand = async (raw: string): Promise<boolean> => {
+    const parts = raw.trim().split(/\s+/)
+    const cmd = (parts[0] || '').toLowerCase()
+    if (!cmd.startsWith('/')) return false
+    setChatInput('')
+    switch (cmd) {
+      case '/help': {
+        pushSlashSystemMessage(SLASH_HELP_TEXT)
+        return true
+      }
+      case '/clear': {
+        if (!confirm('Clear the entire chat thread? This cannot be undone.')) return true
+        try {
+          await apiFetch<any>('/overseer/chat/clear', { method: 'POST' })
+          setChatMessages([])
+          chatPending.forEach((p) => p.previewUrl && URL.revokeObjectURL(p.previewUrl))
+          setChatPending([])
+          setLastAction('Chat thread cleared')
+        } catch (e: any) {
+          pushSlashSystemMessage(`**/clear failed:** ${e?.message || e}`)
+        }
+        return true
+      }
+      case '/compress': {
+        try {
+          const r = await apiFetch<{
+            ok: boolean
+            messages_before: number
+            messages_after: number
+            compressed_summary?: string
+            cost_usd?: number
+            error?: string
+          }>('/overseer/chat/compress', { method: 'POST', body: JSON.stringify({}) })
+          if (!r.ok) {
+            pushSlashSystemMessage(`**/compress failed:** ${r.error || 'unknown'}`)
+          } else {
+            pushSlashSystemMessage(
+              `**Chat compressed.** ${r.messages_before} → ${r.messages_after} messages ` +
+                `(\$${(r.cost_usd ?? 0).toFixed(4)}).\n\n` +
+                (r.compressed_summary
+                  ? `**Summary written into thread:**\n\n> ${r.compressed_summary.split('\n').join('\n> ')}`
+                  : ''),
+            )
+            await refreshChat()
+          }
+        } catch (e: any) {
+          pushSlashSystemMessage(`**/compress failed:** ${e?.message || e}`)
+        }
+        return true
+      }
+      case '/cost':
+      case '/budget': {
+        try {
+          const r = await apiFetch<{
+            ok: boolean
+            daily?: {
+              date: string
+              cost_used_usd: number
+              cost_max_usd: number
+              calls_used: number
+              calls_max: number
+            }
+            session?: { cost_used_usd: number; calls_used: number }
+          }>('/overseer/budget')
+          const d = r.daily || ({} as any)
+          pushSlashSystemMessage(
+            [
+              '## Budget',
+              '',
+              `- **Today** (${d.date || '?'}): \$${(d.cost_used_usd ?? 0).toFixed(4)} / \$${(d.cost_max_usd ?? 0).toFixed(2)} ` +
+                `· ${d.calls_used ?? 0} / ${d.calls_max ?? 0} calls`,
+              `- **Session**: \$${(r.session?.cost_used_usd ?? 0).toFixed(4)} · ${r.session?.calls_used ?? 0} calls`,
+            ].join('\n'),
+          )
+        } catch (e: any) {
+          pushSlashSystemMessage(`**/cost failed:** ${e?.message || e}`)
+        }
+        return true
+      }
+      case '/tick': {
+        try {
+          const r = await apiFetch<any>('/overseer/tick-now', { method: 'POST', body: JSON.stringify({}) })
+          const s = r.summary || {}
+          pushSlashSystemMessage(
+            [
+              '## Tick complete',
+              '',
+              `- imports_summarized: ${s.imports_summarized ?? 0}`,
+              `- notes_tagged: ${s.notes_tagged ?? 0}`,
+              `- classify_changed: ${s.classify_changed ?? 0}`,
+              `- working_memory_rebuilt: ${s.working_memory_rebuilt ? 'yes' : 'no'}`,
+              `- errors: ${(s.errors || []).length || 0}`,
+              `- finished: ${s.finished_at || '?'}`,
+            ].join('\n'),
+          )
+        } catch (e: any) {
+          pushSlashSystemMessage(`**/tick failed:** ${e?.message || e}`)
+        }
+        return true
+      }
+      case '/whoami': {
+        try {
+          const r = await apiFetch<{ working_memory?: any }>('/overseer/working-memory')
+          const wm = r.working_memory || {}
+          const built = wm.local_built_at || wm.built_at || '?'
+          const lastGist = wm.last_successful_gist_at || '?'
+          const queue = wm.import_queue_depth ?? 0
+          const dist = wm.recent_gist_source_distribution || {}
+          const sibT = wm.sibling_dispatched_today
+          const sibC = wm.sibling_daily_cap
+          const sibU = wm.sibling_unrated_count
+          const sibP = wm.sibling_pending_for_me
+          const gitState = wm.git_ingest || {}
+          const gitLast = gitState.last_run_at || '?'
+          const topByOrigin = Object.entries(dist.by_origin || {})
+            .map(([k, v]) => `${k}: ${v}`)
+            .join(', ')
+          pushSlashSystemMessage(
+            [
+              '## Working memory snapshot',
+              '',
+              `- **Built**: ${built}`,
+              `- **Last gist**: ${lastGist}`,
+              `- **Ingest queue**: ${queue} unprocessed`,
+              `- **Recent gists by origin**: ${topByOrigin || '(none)'}`,
+              `- **Sibling (Cat A)**: ${sibT}/${sibC} today · unrated ${sibU} · pending-for-me ${sibP}`,
+              `- **Git ingest**: last ran ${gitLast}`,
+              `- **Open todos**: ${(wm.open_todos || []).length}`,
+              `- **Open questions**: ${(wm.open_questions || []).length}`,
+            ].join('\n'),
+          )
+        } catch (e: any) {
+          pushSlashSystemMessage(`**/whoami failed:** ${e?.message || e}`)
+        }
+        return true
+      }
+      case '/insights': {
+        try {
+          const r = await apiFetch<{
+            interpretations?: Array<{
+              id: number
+              kind: string
+              title: string
+              status: string
+            }>
+            counts?: Record<string, number>
+          }>('/overseer/insight/pending?status=pending')
+          const items = r.interpretations || []
+          const lines = ['## Pending interpretations', '']
+          if (items.length === 0) lines.push('_(none — all reviewed)_')
+          else
+            items.slice(0, 20).forEach((it) =>
+              lines.push(`- **#${it.id}** [${it.kind}] ${it.title}`),
+            )
+          if (items.length > 20) lines.push('', `_(+${items.length - 20} more)_`)
+          pushSlashSystemMessage(lines.join('\n'))
+        } catch (e: any) {
+          pushSlashSystemMessage(`**/insights failed:** ${e?.message || e}`)
+        }
+        return true
+      }
+      case '/sibling-status': {
+        try {
+          const r = await apiFetch<{ working_memory?: any }>('/overseer/working-memory')
+          const wm = r.working_memory || {}
+          pushSlashSystemMessage(
+            [
+              '## Sibling status (Category A)',
+              '',
+              `- Dispatched today: **${wm.sibling_dispatched_today ?? 0} / ${wm.sibling_daily_cap ?? 0}**`,
+              `- Unrated completed (overseer owes a rating): **${wm.sibling_unrated_count ?? 0}**`,
+              `- In flight (dispatched, awaiting result): **${wm.sibling_pending_for_me ?? 0}**`,
+              '',
+              '_Category B and C agents are gated on ≥1 week of A-volume data + graduation criteria._',
+            ].join('\n'),
+          )
+        } catch (e: any) {
+          pushSlashSystemMessage(`**/sibling-status failed:** ${e?.message || e}`)
+        }
+        return true
+      }
+      default: {
+        pushSlashSystemMessage(`Unknown command \`${cmd}\`. Type \`/help\` for the list.`)
+        return true
+      }
+    }
+  }
+
   const handleSendChat = async () => {
     const message = chatInput.trim()
+    // Slice 9.5 CP2: slash command intercept BEFORE the cost-of-a-turn
+    // gate. Falls through to the LLM only for non-slash messages.
+    if (message.startsWith('/')) {
+      await handleSlashCommand(message)
+      return
+    }
     const queuedReady = chatPending.filter((p) => p.status === 'queued' && !p.error)
     const alreadyReady = chatPending.filter((p) => p.status === 'ready' && p.ref)
     const hasFiles = queuedReady.length + alreadyReady.length > 0
@@ -2321,7 +2600,7 @@ function ChatPanel({
             placeholder={
               pending.length
                 ? 'Add a question, or send the files alone…'
-                : 'Type a message… (Enter to send, Shift+Enter for newline, drop files anywhere here)'
+                : 'Type a message… (/ for commands, Enter to send, Shift+Enter for newline)'
             }
             disabled={sending}
             rows={2}
@@ -2391,19 +2670,26 @@ function PendingAttachmentChip({
 
 function ChatBubble({ m }: { m: ChatMessage }) {
   const isUser = m.role === 'user'
+  const isSystem = m.role === 'system'
   const attachments = m.attachments || []
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+    <div
+      className={`flex ${
+        isUser ? 'justify-end' : isSystem ? 'justify-center' : 'justify-start'
+      }`}
+    >
       <div
         className={`max-w-[80%] rounded-lg px-4 py-3 text-sm leading-relaxed ${
           isUser
             ? 'bg-accent/15 text-text-primary border border-accent/30'
-            : 'bg-surface-secondary text-text-primary border border-border'
+            : isSystem
+              ? 'bg-surface-tertiary/40 text-text-secondary border border-border/40 max-w-[90%]'
+              : 'bg-surface-secondary text-text-primary border border-border'
         }`}
       >
         <div className="text-[10px] uppercase tracking-wide text-text-muted mb-1">
-          {isUser ? 'you' : 'overseer'}
-          {!isUser && m.model && (
+          {isUser ? 'you' : isSystem ? 'system' : 'overseer'}
+          {!isUser && !isSystem && m.model && (
             <span className="ml-2 normal-case">
               {m.model} · {m.latency_ms}ms · ${(m.cost_usd ?? 0).toFixed(4)}
             </span>
@@ -2418,7 +2704,165 @@ function ChatBubble({ m }: { m: ChatMessage }) {
           </div>
         )}
 
-        <div className="whitespace-pre-wrap">{m.content}</div>
+        {/* Slice 9.5 CP1 (2026-05-19): assistant messages render as
+            markdown (GFM = tables, strikethrough, task lists). User
+            messages stay plain to avoid surprising formatting if Tory
+            types backtick code or # headers conversationally. */}
+        {isUser ? (
+          <div className="whitespace-pre-wrap">{m.content}</div>
+        ) : (
+          <div className="chat-markdown text-text-primary">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                p: ({ children }) => (
+                  <p className="mb-2 last:mb-0 leading-relaxed">{children}</p>
+                ),
+                ul: ({ children }) => (
+                  <ul className="list-disc pl-5 mb-2 space-y-1">{children}</ul>
+                ),
+                ol: ({ children }) => (
+                  <ol className="list-decimal pl-5 mb-2 space-y-1">{children}</ol>
+                ),
+                li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+                h1: ({ children }) => (
+                  <h1 className="text-base font-semibold mb-2 mt-3 first:mt-0">{children}</h1>
+                ),
+                h2: ({ children }) => (
+                  <h2 className="text-sm font-semibold mb-2 mt-3 first:mt-0">{children}</h2>
+                ),
+                h3: ({ children }) => (
+                  <h3 className="text-sm font-medium mb-1 mt-2 first:mt-0">{children}</h3>
+                ),
+                code: ({ className, children, ...rest }) => {
+                  const isInline = !className
+                  return isInline ? (
+                    <code className="rounded bg-surface-tertiary px-1 py-0.5 text-xs font-mono">
+                      {children}
+                    </code>
+                  ) : (
+                    <code className={className} {...rest}>
+                      {children}
+                    </code>
+                  )
+                },
+                pre: ({ children }) => (
+                  <pre className="rounded bg-surface-tertiary border border-border px-3 py-2 my-2 text-xs font-mono overflow-x-auto">
+                    {children}
+                  </pre>
+                ),
+                blockquote: ({ children }) => (
+                  <blockquote className="border-l-2 border-accent/40 pl-3 my-2 text-text-secondary italic">
+                    {children}
+                  </blockquote>
+                ),
+                a: ({ href, children }) => (
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-accent hover:underline"
+                  >
+                    {children}
+                  </a>
+                ),
+                strong: ({ children }) => (
+                  <strong className="font-semibold text-text-primary">{children}</strong>
+                ),
+                table: ({ children }) => (
+                  <div className="overflow-x-auto my-2">
+                    <table className="text-xs border-collapse">{children}</table>
+                  </div>
+                ),
+                th: ({ children }) => (
+                  <th className="border border-border px-2 py-1 bg-surface-tertiary font-medium">
+                    {children}
+                  </th>
+                ),
+                td: ({ children }) => (
+                  <td className="border border-border px-2 py-1">{children}</td>
+                ),
+              }}
+            >
+              {m.content}
+            </ReactMarkdown>
+          </div>
+        )}
+
+        {/* Slice 9.5 CP1: tool-call audit. Shows which tools overseer
+            invoked and in what order. Multi-iter loops collapse by
+            iter number so a 3-iteration tool-use exchange reads
+            cleanly. Tory's directive: "We will want to show the tool
+            use of overseer as well in the chat screen." */}
+        {!isUser && !isSystem && m.tool_calls && m.tool_calls.length > 0 && (
+          <ChatToolCallList calls={m.tool_calls} iterations={m.tool_iterations} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Slice 9.5 CP1: tool-call audit display under assistant messages.
+// Compact by default (one row per call); each row expands on click
+// to show the args + result size. Keeps the chat readable while
+// preserving the audit trail.
+function ChatToolCallList({
+  calls,
+  iterations,
+}: {
+  calls: ChatToolCallSummary[]
+  iterations?: number
+}) {
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
+  if (!calls.length) return null
+  const toggle = (i: number) => {
+    setExpanded((s) => {
+      const next = new Set(s)
+      if (next.has(i)) next.delete(i)
+      else next.add(i)
+      return next
+    })
+  }
+  return (
+    <div className="mt-3 pt-2 border-t border-border/40">
+      <div className="text-[10px] uppercase tracking-wide text-text-muted mb-1">
+        tool calls ({calls.length}
+        {iterations && iterations !== calls.length ? ` across ${iterations} iter` : ''})
+      </div>
+      <div className="space-y-1">
+        {calls.map((c, i) => {
+          const isOpen = expanded.has(i)
+          return (
+            <div
+              key={i}
+              className="rounded bg-surface-tertiary/50 border border-border/40 text-xs"
+            >
+              <button
+                type="button"
+                onClick={() => toggle(i)}
+                className="w-full px-2 py-1 flex items-center gap-2 text-left hover:bg-surface-tertiary/80 cursor-pointer"
+              >
+                <span className="text-[10px] text-text-muted font-mono">#{c.iter}</span>
+                <span className="font-mono text-accent flex-1 truncate">{c.name}</span>
+                <span className="text-[10px] text-text-muted whitespace-nowrap">
+                  {c.result_chars >= 1024
+                    ? `${(c.result_chars / 1024).toFixed(1)}k`
+                    : c.result_chars}{' '}
+                  chars
+                </span>
+                <span className="text-text-muted text-[10px]">{isOpen ? '▾' : '▸'}</span>
+              </button>
+              {isOpen && (
+                <div className="px-2 pb-2 pt-1 border-t border-border/40">
+                  <div className="text-[10px] text-text-muted mb-0.5">args:</div>
+                  <pre className="text-[10px] font-mono whitespace-pre-wrap break-all text-text-secondary">
+                    {JSON.stringify(c.args, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
