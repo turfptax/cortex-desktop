@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from config import settings
@@ -403,6 +403,18 @@ async def chat_history(limit: int = 50):
 async def chat_clear():
     return await pi_client.plugin_call(
         "overseer", "POST", "/chat/clear", {})
+
+
+@router.post("/chat/compress")
+async def chat_compress(req: Request):
+    """Slice 9.5 CP3: proxy for the Pi's chat compression endpoint.
+    Body: {"keep_recent"?: int} — default 12 on the Pi side."""
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/chat/compress", body or {})
 
 
 @router.get("/notifications")
