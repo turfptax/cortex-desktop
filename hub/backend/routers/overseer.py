@@ -463,6 +463,19 @@ async def notification_action(req: NotificationActionRequest):
         req.dict(exclude_none=True))
 
 
+@router.post("/notifications/respond")
+async def notification_respond(req: Request):
+    """Slice 9.6 CP1: log Tory's response to a custom action button
+    on a notification (free_text / yes_no / dispatch_sibling / etc).
+    Body: {notification_id, action_kind, action_label?, response_payload?, also_archive?}"""
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/notifications/respond", body or {})
+
+
 @router.get("/budget")
 async def budget():
     return await pi_client.plugin_call("overseer", "GET", "/budget")
