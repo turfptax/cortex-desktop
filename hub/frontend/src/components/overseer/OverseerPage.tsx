@@ -7,6 +7,7 @@ import { ExplorerPanel, type GraphResp } from './ExplorerPanel'
 import { ProjectsTab } from './ProjectsTab'
 import { JournalTab } from './JournalTab'
 import { EcosystemMapPanel } from './EcosystemMapPanel'
+import { ActivityPanel } from './ActivityPanel'
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -605,7 +606,7 @@ function fmtRelative(iso?: string | null): string {
 
 // ── Page ──────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'chat' | 'dialectic' | 'journal' | 'insights' | 'projects' | 'classify' | 'notifications' | 'explorer' | 'ecosystem'
+type Tab = 'overview' | 'chat' | 'dialectic' | 'journal' | 'insights' | 'projects' | 'classify' | 'notifications' | 'explorer' | 'ecosystem' | 'activity'
 
 export function OverseerPage() {
   const [tab, setTab] = useState<Tab>('overview')
@@ -1684,6 +1685,7 @@ export function OverseerPage() {
                 ['classify', 'Classify'],
                 ['explorer', 'Explorer'],
                 ['ecosystem', 'Map'],
+                ['activity', 'Activity'],
                 ['notifications', `Bell${notificationsUnread > 0 ? ` (${notificationsUnread})` : ''}`],
               ] as const).map(([id, label]) => (
                 <button
@@ -1763,6 +1765,9 @@ export function OverseerPage() {
       )}
       {tab === 'ecosystem' && (
         <EcosystemMapPanel />
+      )}
+      {tab === 'activity' && (
+        <ActivityPanel />
       )}
       {tab === 'projects' && (
         <ProjectsTab />
