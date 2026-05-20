@@ -73,7 +73,16 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("cortex.hub")
 logger.info("Cortex Hub starting — log file: %s", LOG_FILE)
 
-app = FastAPI(title="Cortex Hub", version="0.1.0")
+# v0.18.0-dev.25 (2026-05-19): app version reads from cortex_desktop
+# package, not hardcoded. Previously a bare "0.1.0" leaked into
+# /openapi.json AND into the frontend's UpdateCard fallback when the
+# /check-update response hadn't arrived yet, making Tory's first-launch
+# header read "0.1.0" until he manually clicked "Check for update".
+try:
+    from cortex_desktop import __version__ as _cd_version
+except ImportError:
+    _cd_version = "0.0.0-unknown"
+app = FastAPI(title="Cortex Hub", version=_cd_version)
 
 # CORS for Vite dev server
 app.add_middleware(

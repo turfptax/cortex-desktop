@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { apiFetch } from '../../lib/api'
 
 type Channel = 'stable' | 'dev'
@@ -34,6 +34,15 @@ export function UpdateCard() {
   const [updateError, setUpdateError] = useState('')
   const [updateSuccess, setUpdateSuccess] = useState('')
   const [channel, setChannel] = useState<Channel>(getStoredChannel)
+  // v0.18.0-dev.25: fetch the running version on mount so the
+  // footer shows it before any /check-update call returns. Previously
+  // it fell back to a hardcoded '0.1.0' until the user clicked Check.
+  const [currentVersion, setCurrentVersion] = useState<string>('')
+  useEffect(() => {
+    apiFetch<{ current_version?: string }>('/settings/version')
+      .then((r) => setCurrentVersion(r.current_version || ''))
+      .catch(() => setCurrentVersion(''))
+  }, [])
 
   const handleChannelChange = (ch: Channel) => {
     setChannel(ch)
@@ -206,7 +215,7 @@ export function UpdateCard() {
 
       {/* Version footer */}
       <p className="text-xs text-text-muted mt-3">
-        Current version: v{info?.current_version || '0.1.0'}
+        Current version: v{info?.current_version || currentVersion || '…'}
         {channel === 'dev' && <span className="text-amber-400/60"> &middot; Dev channel</span>}
       </p>
     </div>
