@@ -357,6 +357,18 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
+// Slice 9.6 CP1 (2026-05-19): custom action button shape attached to
+// notifications by overseer's emit_notification tool. kind drives the
+// frontend's interaction model: predefined CRUD names execute server-
+// side immediately; 'free_text' opens a textarea inline; 'yes_no'
+// renders as a two-button pair; 'dispatch_sibling' is a single button
+// that just logs the response (overseer reads + acts next tick).
+interface NotificationAction {
+  label: string
+  kind: string  // 'archive_project' | 'mark_dormant' | 'free_text' | 'yes_no' | 'dispatch_sibling' | custom
+  payload?: Record<string, any>
+}
+
 interface NotificationRow {
   id: number
   severity: 'info' | 'warn' | 'important'
@@ -371,6 +383,10 @@ interface NotificationRow {
   // 3i CP1: per-rule action state
   snoozed_until: string | null
   archived_at: string | null
+  // 9.6 CP1: actions_json parsed into the array form
+  actions?: NotificationAction[]
+  // Raw string from API (parsed in handler)
+  actions_json?: string
 }
 
 interface NotificationsResp {
@@ -664,7 +680,21 @@ export function OverseerPage() {
       setLoop(l)
       setLlmStats(ls)
       setImports(im.imports || [])
-      setNotifications(n.notifications || [])
+      // Slice 9.6 CP1: parse actions_json string into structured
+      // actions array so the render layer doesn't reparse per render.
+      const parsedNotifs = (n.notifications || []).map((row) => {
+        const raw = (row as any).actions_json
+        if (typeof raw === 'string' && raw && raw !== '[]') {
+          try {
+            const parsed = JSON.parse(raw)
+            if (Array.isArray(parsed)) return { ...row, actions: parsed }
+          } catch {
+            // bad json, fall through with empty actions
+          }
+        }
+        return row
+      })
+      setNotifications(parsedNotifs)
       setNotificationsUnread(n.unread_count || 0)
       setBudget(b.budget || null)
       setDialectics(d.dialectics || [])
@@ -1407,6 +1437,40 @@ export function OverseerPage() {
     }
   }
 
+  // Slice 9.6 CP1: respond to a custom action button on a notification
+  // (free_text / yes_no / dispatch_sibling / predefined CRUD kind). The
+  // response is logged in notification_responses and surfaced to
+  // overseer on next tick via the freshness block + the
+  // get_pending_notification_responses tool.
+  const handleNotificationRespond = async (
+    notification_id: number,
+    action_kind: string,
+    action_label: string,
+    response_payload: Record<string, any> = {},
+    also_archive: boolean = true,
+  ) => {
+    try {
+      await apiFetch<any>('/overseer/notifications/respond', {
+        method: 'POST',
+        body: JSON.stringify({
+          notification_id,
+          action_kind,
+          action_label,
+          response_payload,
+          also_archive,
+        }),
+      })
+      await refreshAll()
+      setLastAction(
+        `Responded to #${notification_id} (${action_kind})${
+          also_archive ? ' + archived' : ''
+        }`,
+      )
+    } catch (e: any) {
+      setError(`Notification respond failed: ${e?.message || e}`)
+    }
+  }
+
   const handleNotificationAction = async (
     id: number,
     action: 'archive' | 'snooze' | 'touch',
@@ -1679,6 +1743,7 @@ export function OverseerPage() {
           onDismissAll={handleDismissAllNotifications}
           onOpenInChat={handleOpenNotificationInChat}
           onAction={handleNotificationAction}
+          onRespond={handleNotificationRespond}
         />
       )}
       {tab === 'explorer' && (
@@ -2184,6 +2249,7 @@ function NotificationsPanel({
   onDismissAll,
   onOpenInChat,
   onAction,
+  onRespond,
 }: {
   notifications: NotificationRow[]
   onDismiss: (id: number) => void
@@ -2193,6 +2259,15 @@ function NotificationsPanel({
     id: number,
     action: 'archive' | 'snooze' | 'touch',
     snooze_days?: number,
+  ) => void
+  // Slice 9.6 CP1: respond to a custom action button. Distinct from
+  // onAction (which targets the built-in archive/snooze/touch flow).
+  onRespond: (
+    notification_id: number,
+    action_kind: string,
+    action_label: string,
+    response_payload?: Record<string, any>,
+    also_archive?: boolean,
   ) => void
 }) {
   const unread = notifications.filter(
@@ -2353,6 +2428,17 @@ function NotificationsPanel({
                             <div className="text-[10px] text-text-muted mt-1.5 font-mono">
                               key={n.rule_key}
                             </div>
+                            {/* Slice 9.6 CP1 (2026-05-19): custom action
+                                buttons attached by overseer when the
+                                notification was emitted. Above the
+                                standard Open/Archive/Snooze/Touch row
+                                so they're the visually-primary CTA. */}
+                            {n.actions && n.actions.length > 0 && (
+                              <NotificationCustomActions
+                                notification={n}
+                                onRespond={onRespond}
+                              />
+                            )}
                             <div className="mt-2 flex items-center gap-2 flex-wrap">
                               <button
                                 onClick={() => onOpenInChat(n)}
@@ -2615,6 +2701,143 @@ function ChatPanel({
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+// Slice 9.6 CP1 (2026-05-19): renders overseer-attached custom action
+// buttons on a notification. Four interaction models depending on
+// action.kind:
+//   - 'free_text'         → click expands a textarea; submit logs reply
+//   - 'yes_no'            → two button cluster: Yes / No (auto-payload)
+//   - 'dispatch_sibling'  → single button (overseer reads + creates the
+//                            sibling task on next tick from the response
+//                            payload)
+//   - all other kinds     → click immediately POSTs the action's payload
+//                            verbatim ('archive_project', 'mark_dormant',
+//                            etc. — overseer reads the response next tick
+//                            and acts via its write tools)
+function NotificationCustomActions({
+  notification,
+  onRespond,
+}: {
+  notification: NotificationRow
+  onRespond: (
+    notification_id: number,
+    action_kind: string,
+    action_label: string,
+    response_payload?: Record<string, any>,
+    also_archive?: boolean,
+  ) => void
+}) {
+  const [freeTextOpen, setFreeTextOpen] = useState<string | null>(null)
+  const [freeTextValue, setFreeTextValue] = useState('')
+  const actions = notification.actions || []
+  if (actions.length === 0) return null
+
+  const click = (a: NotificationAction) => {
+    if (a.kind === 'free_text') {
+      setFreeTextOpen(a.label)
+      setFreeTextValue('')
+      return
+    }
+    if (a.kind === 'yes_no') {
+      // The action's payload.value should carry 'yes' or 'no'; if not,
+      // derive from the label as a best-effort fallback.
+      const value =
+        a.payload?.value ??
+        (a.label.toLowerCase().includes('yes') ? 'yes' : 'no')
+      onRespond(notification.id, a.kind, a.label, { ...a.payload, value }, true)
+      return
+    }
+    // dispatch_sibling + predefined CRUD + custom — fire immediately
+    onRespond(
+      notification.id,
+      a.kind,
+      a.label,
+      a.payload || {},
+      true,  // auto-archive — Tory has handled the notification
+    )
+  }
+
+  const submitFreeText = (label: string) => {
+    if (!freeTextValue.trim()) return
+    onRespond(
+      notification.id,
+      'free_text',
+      label,
+      { value: freeTextValue.trim() },
+      true,
+    )
+    setFreeTextOpen(null)
+    setFreeTextValue('')
+  }
+
+  return (
+    <div className="mt-2.5 space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        {actions.map((a, i) => {
+          // Color cue per kind so Tory eyes-down can tell them apart.
+          const cls =
+            a.kind === 'yes_no'
+              ? 'bg-accent/20 hover:bg-accent/30 text-accent-hover border-accent/40'
+              : a.kind === 'free_text'
+                ? 'bg-surface-tertiary hover:bg-surface-tertiary/80 text-text-primary border-border'
+                : a.kind === 'dispatch_sibling'
+                  ? 'bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 border-purple-500/30'
+                  : 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/30'
+          return (
+            <button
+              key={i}
+              onClick={() => click(a)}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-medium border cursor-pointer ${cls}`}
+              title={`kind: ${a.kind}${a.payload ? ' · payload: ' + JSON.stringify(a.payload).slice(0, 80) : ''}`}
+            >
+              {a.label}
+            </button>
+          )
+        })}
+      </div>
+      {freeTextOpen !== null && (
+        <div className="rounded-md border border-border bg-surface-tertiary/40 p-2">
+          <div className="text-[10px] text-text-muted mb-1">
+            Reply to overseer — your text is logged and surfaced to them
+            on their next tick.
+          </div>
+          <textarea
+            value={freeTextValue}
+            onChange={(e) => setFreeTextValue(e.target.value)}
+            rows={3}
+            autoFocus
+            placeholder="Type your reply…"
+            className="w-full text-xs rounded border border-border bg-surface-secondary p-2 text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent resize-none"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault()
+                submitFreeText(freeTextOpen)
+              }
+            }}
+          />
+          <div className="mt-1.5 flex items-center gap-2 justify-end">
+            <button
+              onClick={() => {
+                setFreeTextOpen(null)
+                setFreeTextValue('')
+              }}
+              className="px-2.5 py-1 rounded-md text-[11px] font-medium text-text-muted hover:text-text-primary cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => submitFreeText(freeTextOpen)}
+              disabled={!freeTextValue.trim()}
+              className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent/20 hover:bg-accent/30 text-accent-hover border border-accent/40 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Send reply (Ctrl+Enter)
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
