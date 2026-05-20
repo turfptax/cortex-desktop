@@ -6,6 +6,7 @@ import { fmtTime } from '../../lib/time'
 import { ExplorerPanel, type GraphResp } from './ExplorerPanel'
 import { ProjectsTab } from './ProjectsTab'
 import { JournalTab } from './JournalTab'
+import { EcosystemMapPanel } from './EcosystemMapPanel'
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -604,7 +605,7 @@ function fmtRelative(iso?: string | null): string {
 
 // ── Page ──────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'chat' | 'dialectic' | 'journal' | 'insights' | 'projects' | 'classify' | 'notifications' | 'explorer'
+type Tab = 'overview' | 'chat' | 'dialectic' | 'journal' | 'insights' | 'projects' | 'classify' | 'notifications' | 'explorer' | 'ecosystem'
 
 export function OverseerPage() {
   const [tab, setTab] = useState<Tab>('overview')
@@ -1682,6 +1683,7 @@ export function OverseerPage() {
                 ['projects', 'Projects'],
                 ['classify', 'Classify'],
                 ['explorer', 'Explorer'],
+                ['ecosystem', 'Map'],
                 ['notifications', `Bell${notificationsUnread > 0 ? ` (${notificationsUnread})` : ''}`],
               ] as const).map(([id, label]) => (
                 <button
@@ -1758,6 +1760,9 @@ export function OverseerPage() {
             setExpandedToken(t)
           }}
         />
+      )}
+      {tab === 'ecosystem' && (
+        <EcosystemMapPanel />
       )}
       {tab === 'projects' && (
         <ProjectsTab />
