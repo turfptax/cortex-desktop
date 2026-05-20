@@ -63,3 +63,7 @@ secrets.toml
 secrets.json
 *.pem
 *.key
+
+# Scripts ancillary tooling (NOT bundled in release)
+scripts/video-annotator/node_modules/
+scripts/video-annotator/package-lock.json
