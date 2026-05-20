@@ -1326,3 +1326,52 @@ async def ecosystem():
     visualizer (the "Map" sub-tab under Overseer)."""
     return await pi_client.plugin_call(
         "overseer", "GET", "/ecosystem", None)
+
+
+# ── Slice 10.4 Phase 2 (2026-05-20): runs / Activity tab ──────────
+
+
+@router.get("/runs/recent")
+async def runs_recent(hours: int = 24, limit: int = 200,
+                       kinds: str = ""):
+    """Proxy: GET /plugins/overseer/runs/recent — unified timeline
+    of recent runs (B/C agents, A siblings, chat turns, journal
+    steps)."""
+    payload = {"hours": hours, "limit": limit}
+    if kinds:
+        payload["kinds"] = kinds
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/runs/recent", payload)
+
+
+@router.get("/runs/detail")
+async def runs_detail(kind: str, id: str):
+    """Proxy: GET /plugins/overseer/runs/detail — full detail of one
+    run including nodes/edges for the flow graph + full prompt +
+    full output."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/runs/detail", {"kind": kind, "id": id})
+
+
+@router.get("/runs/export")
+async def runs_export(hours: int = 24):
+    """Proxy: GET /plugins/overseer/runs/export — full bundle of
+    all runs in the past N hours. Frontend triggers a file
+    download from this response."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/runs/export", {"hours": hours})
+
+
+class _RunRateBody(BaseModel):
+    sibling_task_id: int
+    rating: int
+    notes: str = ""
+    dataset_candidate: bool = False
+
+
+@router.post("/runs/rate")
+async def runs_rate(body: _RunRateBody):
+    """Proxy: POST /plugins/overseer/runs/rate — rate a run that has
+    a sibling_task_id (B/C/A dispatches)."""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/runs/rate", body.model_dump())

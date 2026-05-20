@@ -1,0 +1,14 @@
+{
+  "name": "cortex-video-annotator",
+  "version": "0.1.0",
+  "description": "Local annotation tool for Cortex video mining — review, watch, tag, and curate the selected videos before / during / after transcription.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "import": "node scripts/import-videos.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "express": "^4.21.0"
+  }
+}
