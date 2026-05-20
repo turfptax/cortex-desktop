@@ -1314,3 +1314,15 @@ async def sibling_stats():
     + daily dispatch budget posture."""
     return await pi_client.plugin_call(
         "overseer", "GET", "/sibling/stats", None)
+
+
+# ── Slice 10.4 (2026-05-20): ecosystem visualizer ──────────────────
+
+
+@router.get("/ecosystem")
+async def ecosystem():
+    """Proxy: GET /plugins/overseer/ecosystem — static map of tools,
+    tick steps, hooks, B-agents, C-agents for the Hub's ecosystem
+    visualizer (the "Map" sub-tab under Overseer)."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/ecosystem", None)
