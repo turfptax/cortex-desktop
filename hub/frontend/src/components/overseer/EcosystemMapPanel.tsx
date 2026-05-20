@@ -154,8 +154,7 @@ export function EcosystemMapPanel() {
     setLoading(true)
     setError(null)
     try {
-      const r = await apiFetch('/api/overseer/ecosystem')
-      const j = (await r.json()) as EcosystemResp
+      const j = await apiFetch<EcosystemResp>('/overseer/ecosystem')
       if (!j.ok) throw new Error(j.error || 'ecosystem load failed')
       setEco(j)
     } catch (e: any) {
