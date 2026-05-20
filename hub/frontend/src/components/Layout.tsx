@@ -1,7 +1,8 @@
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 import { type Page, type StatusInfo } from '../App'
 import { PetWidget, type PetStatus } from './PetWidget'
 import { DisplayEmulator } from './DisplayEmulator'
+import { apiFetch } from '../lib/api'
 
 interface LayoutProps {
   page: Page
@@ -43,6 +44,17 @@ export function Layout({
   })
   const [useVoxels, setUseVoxels] = useState(false)
 
+  // v0.18.0-dev.25 (2026-05-19): show the running version in the
+  // sidebar header so it's always visible. The /version endpoint
+  // returns instantly (no GitHub call), so this populates within ms
+  // of app mount — no more "0.1.0" stub during the check-update wait.
+  const [version, setVersion] = useState<string>('')
+  useEffect(() => {
+    apiFetch<{ current_version?: string }>('/settings/version')
+      .then((r) => setVersion(r.current_version || ''))
+      .catch(() => setVersion(''))
+  }, [])
+
   return (
     <div className="flex h-screen">
       {/* Sidebar */}
@@ -50,7 +62,17 @@ export function Layout({
         {/* Logo */}
         <div className="p-4 border-b border-border">
           <h1 className="text-lg font-bold text-text-primary">Cortex Hub</h1>
-          <p className="text-xs text-text-muted mt-0.5">Control Center</p>
+          <p className="text-xs text-text-muted mt-0.5">
+            Control Center
+            {version && (
+              <span
+                className="ml-1.5 font-mono text-text-muted/70"
+                title={`Running cortex-desktop ${version}`}
+              >
+                v{version}
+              </span>
+            )}
+          </p>
         </div>
 
         {/* Navigation */}

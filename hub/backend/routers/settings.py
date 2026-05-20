@@ -356,7 +356,18 @@ def _current_version() -> str:
         from cortex_desktop import __version__
         return __version__
     except ImportError:
-        return "0.1.0"
+        return "0.0.0-unknown"
+
+
+# v0.18.0-dev.25 (2026-05-19): instant version endpoint. The existing
+# /check-update endpoint hits GitHub which can take 1-3s and may fail
+# offline; the frontend was falling back to a hardcoded '0.1.0' string
+# in the meantime. This endpoint returns the running version in <1ms
+# so the header can show it on app mount without waiting on the
+# network.
+@router.get("/version")
+async def version():
+    return {"ok": True, "current_version": _current_version()}
 
 
 def _parse_version(v: str) -> tuple[int, ...]:
