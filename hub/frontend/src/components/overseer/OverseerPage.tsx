@@ -8,6 +8,7 @@ import { ProjectsTab } from './ProjectsTab'
 import { JournalTab } from './JournalTab'
 import { EcosystemMapPanel } from './EcosystemMapPanel'
 import { ActivityPanel } from './ActivityPanel'
+import { useVoiceMode, type VoiceState } from '../../hooks/useVoiceMode'
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -1259,6 +1260,37 @@ export function OverseerPage() {
     }
   }
 
+  // Slice 14: voice-mode turn. Sends a spoken transcript through the
+  // overseer chat with voice_mode=true (Pi appends the succinctness
+  // directive), refreshes the thread so the bubbles render, and
+  // returns the reply text for the hook to speak aloud.
+  const handleVoiceTurn = async (text: string): Promise<string> => {
+    const optimistic: ChatMessage = {
+      id: -Date.now(),
+      role: 'user',
+      content: text,
+      created_at: new Date().toISOString(),
+    }
+    setChatMessages((prev) => [...prev, optimistic])
+    try {
+      const r = await apiFetch<ChatSendResp>('/overseer/chat', {
+        method: 'POST',
+        body: JSON.stringify({ message: text, voice_mode: true }),
+      })
+      await refreshChat()
+      if (!r.ok) {
+        setError(`Voice chat error: ${r.error || 'unknown'}`)
+        return ''
+      }
+      return r.reply || ''
+    } catch (e: any) {
+      setError(`Voice chat failed: ${e?.message || e}`)
+      return ''
+    }
+  }
+
+  const voice = useVoiceMode({ sendVoiceTurn: handleVoiceTurn })
+
   const handleSendChat = async () => {
     const message = chatInput.trim()
     // Slice 9.5 CP2: slash command intercept BEFORE the cost-of-a-turn
@@ -1738,6 +1770,11 @@ export function OverseerPage() {
           pending={chatPending}
           onAddFiles={handleAddPendingFiles}
           onRemovePending={handleRemovePending}
+          voiceState={voice.voiceState}
+          voiceError={voice.lastError}
+          voiceLastHeard={voice.lastHeard}
+          onEnterVoice={voice.enterVoiceMode}
+          onExitVoice={voice.exitVoiceMode}
         />
       )}
       {tab === 'notifications' && (
@@ -2512,6 +2549,11 @@ function ChatPanel({
   pending,
   onAddFiles,
   onRemovePending,
+  voiceState,
+  voiceError,
+  voiceLastHeard,
+  onEnterVoice,
+  onExitVoice,
 }: {
   messages: ChatMessage[]
   input: string
@@ -2523,7 +2565,13 @@ function ChatPanel({
   pending: PendingAttachment[]
   onAddFiles: (files: FileList | File[]) => void
   onRemovePending: (localId: string) => void
+  voiceState: VoiceState
+  voiceError: string | null
+  voiceLastHeard: string
+  onEnterVoice: () => void
+  onExitVoice: () => void
 }) {
+  const voiceActive = voiceState !== 'off'
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const messagesScrollRef = useRef<HTMLDivElement | null>(null)
@@ -2654,6 +2702,22 @@ function ChatPanel({
           </div>
         )}
 
+        {/* Slice 14: voice mode status banner */}
+        {voiceActive && (
+          <div className="max-w-3xl mx-auto mb-2">
+            <VoiceModeBanner
+              state={voiceState}
+              lastHeard={voiceLastHeard}
+              onExit={onExitVoice}
+            />
+          </div>
+        )}
+        {voiceError && (
+          <div className="max-w-3xl mx-auto mb-2 text-xs text-red-400">
+            {voiceError}
+          </div>
+        )}
+
         <div className="max-w-3xl mx-auto flex gap-2 items-end">
           <input
             ref={fileInputRef}
@@ -2672,7 +2736,7 @@ function ChatPanel({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={sending || pending.length >= CHAT_MAX_FILES}
+            disabled={sending || voiceActive || pending.length >= CHAT_MAX_FILES}
             title="Attach files (max 10, 5MB each)"
             className="h-9 w-9 shrink-0 rounded-md flex items-center justify-center bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-muted hover:text-text-primary cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             aria-label="Attach files"
@@ -2684,6 +2748,39 @@ function ChatPanel({
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
             </svg>
           </button>
+          {/* Slice 14: voice mode toggle — one press enters continuous
+              voice conversation, press again to exit to text. */}
+          <button
+            type="button"
+            onClick={() => (voiceActive ? onExitVoice() : onEnterVoice())}
+            disabled={sending}
+            title={voiceActive
+              ? 'Exit voice mode'
+              : 'Voice mode — talk to the overseer'}
+            className={`h-9 w-9 shrink-0 rounded-md flex items-center justify-center cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+              voiceActive
+                ? 'bg-accent text-white'
+                : 'bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-muted hover:text-text-primary'
+            }`}
+            aria-label={voiceActive ? 'Exit voice mode' : 'Enter voice mode'}
+          >
+            {voiceActive ? (
+              /* Stop square */
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="5" y="5" width="14" height="14" rx="2" />
+              </svg>
+            ) : (
+              /* Microphone */
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                   strokeLinejoin="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="23"/>
+                <line x1="8" y1="23" x2="16" y2="23"/>
+              </svg>
+            )}
+          </button>
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -2694,11 +2791,13 @@ function ChatPanel({
               }
             }}
             placeholder={
-              pending.length
+              voiceActive
+                ? 'Voice mode active — speak, or press the stop button to return to text.'
+                : pending.length
                 ? 'Add a question, or send the files alone…'
                 : 'Type a message… (/ for commands, Enter to send, Shift+Enter for newline)'
             }
-            disabled={sending}
+            disabled={sending || voiceActive}
             rows={2}
             className="flex-1 rounded-md border border-border bg-surface-tertiary px-3 py-2 text-sm text-text-primary placeholder:text-text-muted resize-none focus:outline-none focus:border-accent disabled:opacity-50"
           />
@@ -2711,6 +2810,63 @@ function ChatPanel({
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+// Slice 14: voice-mode status banner. Shows the live state of the
+// conversation loop (listening / transcribing / thinking / speaking)
+// plus what was last heard, with a stop control.
+function VoiceModeBanner({
+  state,
+  lastHeard,
+  onExit,
+}: {
+  state: VoiceState
+  lastHeard: string
+  onExit: () => void
+}) {
+  const label: Record<VoiceState, string> = {
+    off: '',
+    listening: 'Listening…',
+    transcribing: 'Transcribing…',
+    thinking: 'Overseer is thinking…',
+    speaking: 'Speaking…',
+  }
+  const dotColor: Record<VoiceState, string> = {
+    off: '#64748b',
+    listening: '#10b981',
+    transcribing: '#06b6d4',
+    thinking: '#f59e0b',
+    speaking: '#7c5cff',
+  }
+  return (
+    <div className="flex items-center gap-3 rounded-md bg-surface-tertiary px-3 py-2">
+      <span
+        className="w-2.5 h-2.5 rounded-full shrink-0"
+        style={{
+          background: dotColor[state],
+          animation: state === 'listening' || state === 'speaking'
+            ? 'pulse 1.4s ease-in-out infinite'
+            : undefined,
+        }}
+      />
+      <div className="flex-1 min-w-0">
+        <div className="text-xs font-medium text-text-primary">
+          Voice mode · {label[state]}
+        </div>
+        {lastHeard && (
+          <div className="text-[11px] text-text-muted truncate">
+            heard: "{lastHeard}"
+          </div>
+        )}
+      </div>
+      <button
+        onClick={onExit}
+        className="text-xs px-2 py-1 rounded bg-surface-secondary hover:bg-red-500/20 text-text-secondary hover:text-red-400 cursor-pointer shrink-0"
+      >
+        Stop
+      </button>
     </div>
   )
 }
