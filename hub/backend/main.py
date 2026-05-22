@@ -29,6 +29,7 @@ from routers import (
     plugins as plugins_router,
     transcribe,
     video,
+    voice,
 )
 from routers import settings as settings_router
 from services.plugin_manager import PluginManager, set_manager
@@ -107,6 +108,7 @@ app.include_router(learning.router, prefix="/api/learning", tags=["learning"])
 app.include_router(settings_router.router, prefix="/api/settings", tags=["settings"])
 app.include_router(overseer.router, prefix="/api/overseer", tags=["overseer"])
 app.include_router(transcribe.router, prefix="/api/transcribe", tags=["transcribe"])
+app.include_router(voice.router, prefix="/api/voice", tags=["voice"])
 app.include_router(plugins_router.router, prefix="/api/plugins", tags=["plugins"])
 app.include_router(video.router, prefix="/api/video", tags=["video"])
 

@@ -233,6 +233,9 @@ class ChatRequest(BaseModel):
     # Slice 8: file attachments. Each entry must have come back from
     # POST /chat/upload (the Pi has the bytes on disk under uploads/).
     attachments: list[ChatAttachmentRef] | None = None
+    # Slice 14: voice mode — when true the Pi appends a succinctness
+    # directive to the system block (the reply will be spoken aloud).
+    voice_mode: bool = False
 
 
 @router.post("/chat")
