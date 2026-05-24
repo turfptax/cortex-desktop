@@ -1,384 +1,222 @@
-# Cortex Desktop v0.18.0 (cycle complete — 2026-05-06)
+# Cortex Desktop v0.18.0
 
-**Status:** Pre-release. Latest dev tag: `v0.18.0-dev.14`.
-**Theme:** Plugin sidecar architecture + cortex-vision integration end-to-end.
+**Released:** May 2026
+**Theme:** Agent ecosystem, voice, cost discipline, sensitivity tiers
 
-This file is the cycle-level changelog. Once v0.18.0 stable cuts, it
-becomes the official release notes.
+The 0.18 cycle promotes ~30 dev releases of work into a single stable release. It expands Cortex from a memory-layer with a single chat surface into a **multi-agent system with cost-aware routing, voice-mode conversation, on-device confidentiality, and a runtime/observability layer that lets you see what the agents are actually doing**.
 
----
+Code lives across two repos:
 
-## Headline
-
-v0.18 introduces the **plugin sidecar architecture** — Cortex Hub
-can now host first-class third-party plugins that run as separate
-processes, are installed via GitHub releases, and proxy through the
-Hub. The cortex-vision plugin (video understanding: batch, journal,
-live OBS) ships end-to-end as the first user of this architecture.
-
-The cycle landed in 13 dev releases between 2026-05-05 and
-2026-05-06, organized around the cortex-vision team's 6-phase
-roadmap. Plus several plumbing fixes the cycle surfaced and a polish
-pass on cross-source labeling at the end.
+- **cortex-desktop** (this repo) — Hub UI + backend proxies + Whisper bundling + MCP server
+- **[cortex-core](https://github.com/turfptax/cortex-core)** — Pi-side overseer plugin, schema, all the agent logic
 
 ---
 
-## What ships
+## Headline capabilities
 
-### Plugin sidecar harness (Phase 0)
+### Sub-agents — Category B + C (Slice 10, 10.4)
 
-- `services/plugin_manager.py` — registry persistence at
-  `%APPDATA%/Cortex/plugins/registry.json`, threaded subprocess
-  lifecycle, 5-second asyncio health loop, dev-mode auto-detect,
-  log capture per plugin
-- `routers/video.py` — pure HTTP proxy with structured 503/502/504
-  errors, hop-by-hop header stripping (incl. date/server to avoid
-  uvicorn double-stamp), streaming-client lifetime tied to response
-  generator. Phase 4 added a sibling WebSocket pass-through handler.
-- `routers/plugins.py` — admin API (8 endpoints): list, marketplace,
-  install, update, uninstall, restart, health, check-updates,
-  plus `dev-register` for agent-driven dev-mode registration
-- `components/settings/PluginsTab.tsx` — Plugins card in Settings
-  with installed list (status dots, version, restart, uninstall),
-  marketplace list (Install, Register dev sidecar), update
-  detection (badge + "Update to vX.Y.Z" button), and a Configure
-  form for cortex-vision specifically
-- App.tsx + Layout.tsx — `'video'` reserved in the Page union; nav
-  item gated on `cortex-vision.is_running`; deep-link guard
-  bounces missing-plugin navigations to Settings
-- `cortex-desktop/tests/test_plugin_manager.py` — 27 tests passing
-  in 5s including registry CRUD, spawn/stop, the dies-flips-red
-  lifecycle case, sandbox/path safety, install/update/uninstall,
-  SHA256 verification, retry-on-locked-handle, install_locked
-  rollback
+The overseer now has staff. Two model tiers were added alongside the existing Opus-overseer + Claude Code siblings:
 
-### Cortex Vision plugin integration (Phases 1, 3, 4)
+- **Category B agents** — stateless snapshot-on-demand specialists. Called as tools from chat or the journal step. Two ship in v0.18:
+  - **`b_theme_check`** — calibration audit on a theme. Slices evidence by `contributed_at <= theme.created_at` as a structural defense against verdict-creep. Returns `[B:theme-check] <CALIBRATED | OVERCONFIDENT | UNDERCONFIDENT | INSUFFICIENT_EVIDENCE>`.
+  - **`b_project_merge_check`** — independent verifier for project merges. Returns `[B:project-merge-check] <SAME | SUBPROJECT_OF_A | SUBPROJECT_OF_B | DISTINCT | INSUFFICIENT_DATA>`.
+- **Category C agents** — patterns graduated from B. C-graduation is proposal-only (Tory accepts/rejects via Bell notification). Threshold: ≥10 dispatches + ≥7 rated 4+ in 7 days (lowered to 2/1/1 for shake-out testing).
+- Every B/C output carries a syntactic `[B:...]` / `[C:...]` marker that survives consolidation passes — authorship attribution that downstream readers (Tory or another agent) can use to tell B/C work apart from overseer's own thinking.
+- Marker preservation is enforced by prompt-level rules in every consolidation surface (gists, themes, episodes, temporal narratives, project narratives, insight scans) and backed by a meta-blindspot in `known_blindspots`.
 
-All four cortex-vision modes wired through the Hub:
+### Router layer — Flash in front of Opus (Slice 14.7)
 
-- **FileMode** (Phase 1) — paste a YouTube/TikTok URL, get scenes +
-  descriptions + narrative. Polls `/api/video/sessions/{id}` every
-  2s. Built on `lib/videoApi.ts` + `useVideoJob` hook.
-- **JournalMode** (Phase 3) — `getDisplayMedia` + `getUserMedia` +
-  MediaRecorder (vp9+opus with fallback chain) → multipart upload
-  to `/api/video/jobs/upload` → same polling pipeline as FileMode.
-  Refresh-resilient.
-- **LiveMode** (Phase 4) — camera picker (with OBS-default
-  heuristic), audio source picker, transcribe-audio toggle, audio
-  level meter (RMS+peak), live scene grid driven by WebSocket
-  events.
-- **History** — cross-mode session list backed by
-  `GET /api/video/sessions`.
+The dominant cost was the chat layer (~$0.107/turn at 113 turns/week = $12/week). The router addresses it head-on.
 
-Plus `SessionStatusView.tsx` (shared scene grid + narrative
-display, used by both FileMode and JournalMode).
+- New `POST /api/overseer/quick-chat` endpoint. Default chat path posts here.
+- **Gemini 2.0 Flash** with **thin context** (~500–1000 tokens vs Opus's ~20k) answers routine factual/lookup questions in 1–3 sentences. Verified: **~$0.0001/turn vs $0.107/turn = ~1500× cheaper on routine.**
+- Escalation rules:
+  - Trigger words in user message: `overseer`, `@boss`, `think hard`, `deep think`, `strategize`, `long-term`, `reconcile`, `synthesize`/`synthesis`
+  - 3+ consecutive router turns on the same thread → next turn auto-escalates
+  - Flash itself emits `ESCALATE: <reason>` when its thin context can't answer well
+  - `direct_override` flag from the Direct button bypasses the router
+- Every assistant message carries an `answered_by` chip in the UI:
+  - 🟢 **Router** (emerald) for Flash turns
+  - 🟪 **Overseer ↑** (purple, with up-arrow) for escalated turns; hover shows the escalation reason
+- Direct / Router toggle in the chat input row, persisted to localStorage.
 
-### Real install + Configure (Phase 5)
+### Voice mode for overseer (Slice 14)
 
-- `PluginManager.install` does the full GitHub-release flow:
-  fetch latest (or specific tag) → find asset + .sha256 sibling →
-  stream-download to `%TEMP%` → verify SHA256 → stop existing
-  process → backup-existing-install-dir → extract → locate exe →
-  upsert registry → start. Atomic backup-and-rollback if
-  extraction fails midway. Spawn failures (port conflict, etc.)
-  are LOGGED but do NOT roll back — install considered successful.
-- `PluginManager.update` reuses the install code path with
-  `version="latest"`.
-- `PluginManager.uninstall` stops process, optionally rmtrees
-  install_dir (gated on `keep_user_data=False` AND a defensive
-  path check that the dir is under our managed plugins root),
-  then removes registry entry — flipping registry first would
-  leave the user in the bad state where registry says clean but
-  disk says dirty.
-- `PluginManager.check_updates` populates per-plugin
-  `latest_available_version` + `last_update_check_at` fields.
-  Once-per-launch fired in main.py startup hook + manual button.
-- `CortexVisionConfigForm.tsx` — describer + transcribe sections
-  with URL/Model/API key fields, per-section Test connection (auto-
-  populates Model dropdown from upstream's available_models), Save.
-  No restart needed — sidecar reads config on every request.
+A continuous spoken conversation with the overseer, on-device by default.
 
-### Audio capture in LiveMode (Phase 4 expansion)
+- One press on the **mic button** in the Overseer Chat tab enters voice mode; press stop to exit.
+- Loop: **listening → transcribing → thinking → speaking → listening**
+- Energy-based VAD (Web Audio AnalyserNode measuring RMS) ends each turn after ~1.2s of silence following speech. Echo suppression: mic stops listening during TTS playback.
+- **On-device STT** via the bundled `whisper-cli` (large-v3, the same model the voice journal uses).
+- **On-device TTS** via the browser's built-in `speechSynthesis` API.
+- **Cloud upgrades available**: ElevenLabs TTS proxy at `/api/voice/tts`; key in `%APPDATA%/Cortex/config.json` enables it.
+- When voice mode is on, the chat call carries `voice_mode: true` and the Pi-side persona appends a **succinctness directive**: 1–3 sentences, plain prose, no markdown, no preamble.
+- Planned upgrade (locked, not yet built): Moonshine STT + Kokoro-82M TTS for higher-quality on-device voice. See `memory/slice_14_voice_plan.md` in the .claude memory.
 
-cortex-vision v0.4.0 added audio. Frontend wired:
+### Sensitivity tiers — confidential-IP handling (Slice 13)
 
-- `GET /api/video/live/audio-devices` for the picker
-- `audio_source: int | str | null` on `liveStart` (null = video-only,
-  "desktop" = WASAPI loopback, int = sounddevice index)
-- `transcribe_audio: bool` toggle
-- New WS event types in `LiveEvent` union: `audio_level` (RMS+peak,
-  ~10Hz), `transcribing` (post-Stop while whisper runs),
-  `transcribed` (segment_count + scenes_with_audio),
-  `transcribe_skipped`, `transcribe_failed`
-- Live audio meter component (color-coded green/amber/red, peak
-  indicator) under the stats grid
+Cortex regularly sees confidential work (M&A, HIPAA-adjacent, executive comms). v0.18 ships a tiered system:
 
-### Hardening + polish
+- New `imported_sessions.sensitivity` column: `public` / `internal` / `confidential` / `restricted`
+- New `sensitivity_rules` table: cwd-pattern based, promote-only (rules can only raise tier, never lower)
+- **Seeded rules:** `%lux%` → `restricted/no-import` (deliberately never imported); `%bwcs%`, `%/home/bwh%`, `%COO-Email%`, `%ToryMoghadam%`, `%Be Well%` → `confidential/gist-and-drop`; forward-looking rules for `rhd/hhs/nahm` contractor cwds.
+- **Sanitized gist prompt** runs for confidential/restricted sessions: captures work *kind* + workstream + milestone; never figures, contract terms, party names, PHI, credentials, verbatim quotes. *"Confidential work session — \<domain\> — detail withheld by sensitivity policy"* is an explicitly acceptable complete gist.
+- **Outbound sibling-dispatch filter**: scans the prompt + context_json for credentials, PII patterns, and references to confidential-tier session IDs before any `dispatch_sibling` call leaves the Pi. Refuses the dispatch on hit.
+- Tier definitions are **provisional pending Tory's HIPAA/security review** — the plumbing is shipped; the legal-threshold layer is the user's call.
 
-- **dev.7**: LiveMode fixed — was auto-attaching to phantom
-  sessions on mount; now requires explicit Start, calls liveStop
-  on unmount when the session was started by this component.
-  Camera picker uses native_resolution/native_fps fields with
-  OBS-name + highest-resolution heuristic. Errors render in a
-  prominent banner.
-- **dev.10**: install/uninstall hardened against WinError 5
-  ("file in use"). New helpers: `_force_release_install_dir`
-  (PowerShell-driven kill anything holding the port or path),
-  `_rename_with_retry` and `_rmtree_with_retry` (5×200ms retry
-  loops). New `InstallLocked` exception → 409 with structured
-  recovery message. Pre-cleans stale `.bak` dirs from prior
-  failed installs. Belt-and-braces sanity check in uninstall
-  that install_dir is actually gone before flipping registry.
-- **dev.11**: auto-respawn on crash (`restart_on_crash: bool`,
-  capped at 5 attempts with linear backoff, counter resets on
-  successful health), update detection cadence (cached
-  `latest_available_version` per plugin, populated by startup hook
-  and manual "Check for updates" button, "Update to vX.Y.Z" green
-  button on the row when available).
-- **dev.13**: cross-source labeling on the Overseer imports panel.
-  Renamed "Imported Claude Sessions" → "Imported AI Conversations"
-  after the historical ChatGPT bulk import made the old title a
-  lie. New `SourceBadge` component renders a compact colored pill
-  per row: orange "CC" for claude-code, green "GPT" for chatgpt,
-  gray for any future source.
+### Voice journal entries via local Whisper (Slice 7)
 
----
+A 🎤 button next to "Save entry" in the human-journal section of the Journal tab.
 
-## Versioning across the cycle
+- Accepts audio + video; ffmpeg normalizes to 16 kHz mono WAV.
+- **whisper.cpp bundled in installer** — single ~5 MB native binary built in CI from a pinned tag, ships in the exe. No Python deps for transcription.
+- Default model: `large-v3` (~3 GB GGML file). Auto-downloads once from HuggingFace on first transcription, cached at `%APPDATA%\Cortex\whisper-models\`. Single network call ever.
+- **Vulkan SDK** in the CI build → GPU support compiled in. Falls back to CPU on Vulkan init failure or hard crash (with retry).
+- **Async with live progress** — POST `/api/transcribe` returns 202 immediately, background thread runs whisper-cli, frontend polls every 1.5s for progress percentage. Survives browser refresh: state lives server-side, UI rebinds on mount.
+- Privacy: file never leaves the host.
 
-| Tag | Date | Theme |
-|---|---|---|
-| v0.18.0-dev.1 | 2026-05-05 | Phase 0 plugin sidecar harness |
-| v0.18.0-dev.2 | 2026-05-05 | dev-register endpoint (UWP sandbox workaround) |
-| v0.18.0-dev.3 | 2026-05-05 | Phase 1 FileMode |
-| v0.18.0-dev.4 | 2026-05-05 | Phase 3 JournalMode |
-| v0.18.0-dev.5 | 2026-05-05 | Phase 4 LiveMode + WS bridge |
-| v0.18.0-dev.6 | 2026-05-05 | Phase 2/6 overseer bridge + transcribe toggle |
-| v0.18.0-dev.7 | 2026-05-05 | LiveMode picker + lifecycle fixes |
-| v0.18.0-dev.8 | 2026-05-05 | Phase 5 real install/update from GitHub releases |
-| v0.18.0-dev.9 | 2026-05-05 | Configure form for cortex-vision |
-| v0.18.0-dev.10 | 2026-05-05 | install/uninstall hardening (WinError 5) |
-| v0.18.0-dev.11 | 2026-05-05 | auto-respawn + update detection cadence |
-| v0.18.0-dev.12 | 2026-05-06 | Live mode audio capture (cortex-vision v0.4.0 contract) |
-| v0.18.0-dev.13 | 2026-05-06 | Cross-source labeling on imports panel |
-| v0.18.0-dev.20 | 2026-05-07 | Slice 8 Phase 2: overseer chat file uploads |
+### Temporal narratives + Human Journal (Slice 5, 5.5)
 
-### dev.20 — Overseer chat file uploads (text + image + pdf)
+The overseer now writes **daily / weekly / monthly / yearly** narrative rollups on local-time schedules.
 
-The overseer chat surface accepts attachments. Multipart upload at
-the Hub (`POST /api/overseer/chat/upload`, max 10 files, 5MB each,
-type-allowlisted) forwards each file to the Pi via the existing
-`/files/uploads` endpoint and returns refs that the frontend then
-submits with the next chat call. The Pi reads bytes off disk and
-either inlines text/pdf into the user prompt or builds an
-OpenAI-compat multimodal content block for images. New
-`chat_message_files` table on `overseer.db` keeps attachment refs
-FK'd to the user turn so chat history re-renders badges after a
-reload.
+- New table `temporal_narratives` with `UNIQUE(kind, period_label)` to prevent double-generation.
+- Triggers at 22:00 local; once-per-period (missing the window is permanent — the loop has a Step 0 that BYPASSES the daily LLM budget so time-anchored narratives always get budget priority).
+- Yearly skip-if-empty gate (no monthlies in the year → no yearly).
+- Hub Journal tab restructured into three sections: **Your journal** (free-form textarea + recent entries) / **Temporal narratives** (D/W/M/Y cards with per-card "Generate now") / **Overseer reflections** (the original tick-based first-person journal).
+- New `human_journal_entries` table — your free-form entries, multiple per day allowed.
 
-UX: paperclip button next to the textarea, drag-drop anywhere over
-the composer area, pending chips above the input (image thumbs /
-TXT/PDF/FILE badges) with × to remove, auto-scroll-to-bottom that
-respects manual scroll-up, "Add a question, or send the files
-alone…" hint when files are queued. Send blocks while uploads are
-in flight.
+### People as first-class memory entity (Slice 6)
 
-Pairs with cortex-core commit `f34c3cd` (Slice 8 Phase 2 backend).
+The overseer can now track the recurring humans in your work.
 
-Verification (this dev tag pre-soak):
-* curl text → Opus 4.7 quoted the exact unique token from the file
-* curl 256×256 PNG → Opus identified the precise hex `#FF8C00`
-* browser end-to-end: paperclip → upload → chat → reply rendered
-  with attachment badge in the bubble; text-only and image both
-  observed working
+- New `overseer_people` table with full audit trail (`created_by_agent`, `created_by_session_id`).
+- `overseer_project_people` junction (project, person_id, role).
+- **9 MCP tools** (`cortex_people_*`) — the primary entry surface. Agents working with Tory in his other repos call these to capture relationships during real work. Tool descriptions are opinionated about WHEN to use (recurring people, real relationships) vs WHEN NOT (casual mentions, fictional names, code variables, AI agents).
 
-Streaming (Slice C / dev.21) and chat polish (regenerate / continue
-/ syntax highlighting — Slice D / dev.22) still queued.
+### Ecosystem Map + Activity tab (Slice 10.4)
+
+Two new sub-tabs under Overseer that surface the agent layer.
+
+- **Map** — static React Flow graph of the overseer's tool ecosystem. 5 hooks (boot / chat / journal_step / tick_scheduled / bell_action) × 16 tick steps × 36+ tools × B agents × C agents (live). Edges show callable relationships. Click any node for a detail sidebar.
+- **Activity** — per-run trace viewer for the unified timeline of what overseer actually did. Filterable by run kind (B/C/sibling/chat/journal). Each run renders as a flow graph: trigger → LLM calls → tool calls → output. Click any node to see the data. Top-of-panel **"Export 24h bundle (JSON)"** button downloads a complete snapshot for offline review / bug reports.
+- **Inline rating** on each rateable run (1-5 stars + comment + dataset_candidate flag), threading into `sibling_tasks.quality_rating` — same audit row the chat tool writes to.
+
+### Chat attachments, markdown, slash commands, compression (Slice 8, 9.5)
+
+- **File attachments** in the Overseer chat — drag-and-drop or paperclip button. Up to 10 files, 5 MB each. Text/PDF contents are inlined into the user message; images become multimodal content blocks. PDF text extraction via PyMuPDF, max 20 pages. Persisted as `chat_message_files` keyed to the user turn so history reloads correctly.
+- **Markdown rendering** for assistant replies (GFM: tables, strikethrough, task lists). User messages stay plain to avoid surprising formatting.
+- **Slash commands** in the chat input — intercepted before the LLM round-trip:
+  - `/clear` / `/compress` — chat thread management
+  - `/insights`, `/themes`, `/projects`, `/notifications`, `/journal` — Hub-internal jumps and lookups
+  - `/dispatch <prompt>` — opens the sibling dispatch surface pre-filled with your prompt
+- **`compress_chat`** — overseer can fold its own older turns into a Sonnet-summarized prefix when context bloats. Available via slash command and as a tool the overseer can call autonomously.
+
+### Bell two-way + write tools (Slice 9.6, 9.7)
+
+The notification system used to flow one direction (overseer alerts Tory). v0.18 closes the loop.
+
+- **Custom action buttons** on notifications: `free_text` (textarea), `yes_no` (button pair), `dispatch_sibling`, plus arbitrary kinds that POST a payload overseer reads next tick.
+- New `notification_responses` table; overseer reads pending responses each journal tick and acts on them.
+- **Write tools** for overseer (callable from chat AND the tool-enabled journal step):
+  - Project: `update_project_status`, `create_project`
+  - Questions: `create_question`, `update_question_lifecycle`
+  - Redaction: `redact_chat_attachment`, `delete_chat_message`, `redact_imported_session`, `redact_human_journal`
+  - Notifications: `emit_notification` (with custom actions)
+  - Synthesis: `file_evidence`, `propose_project_merge`
+  - Notification responses: `get_pending_notification_responses`, `mark_notification_responses_processed`
+
+### Tool-enabled journal step (Slice 9.9)
+
+The overseer's tick journal can now CALL TOOLS, not just reflect. Same tool surface as chat (minus `dispatch_sibling` + `compress_chat`, which stay chat-only). Max 4 tool iterations per tick. This is what made the autonomous "respond to a Bell click overnight" workflow possible.
+
+### Imported data (Slice 9.1)
+
+- 906 grok-com conversations + 22 Twitter-Grok + 1,546 tweets = **3,012 new memory artifacts** brought 10.5 years of pre-Cortex history into the corpus.
+- `imported_sessions` source taxonomy now distinguishes `claude-code` / `chatgpt` / `grok-com` / `grok-twitter` / `git:<owner>/<repo>` / `youtube:<channel>`.
+
+### Git ingest (Slice 9.4)
+
+Periodic GitHub commit ingester runs as part of the loop:
+
+- `loop_git_ingest_enabled = true`, repos listed in `loop_git_ingest_repos`, polled every `loop_git_ingest_interval_hours`.
+- Adds a `source:git:<owner>/<name>` channel to the gist origin distribution — captures *what Tory ships*, not just what he surfaces.
+- Skipped-repos logged in overseer state so the freshness block can show what is NOT being seen.
+
+### Time, with timezones, everywhere (Slice 9.4.1)
+
+A discipline lock: every timestamp in the DB stores **both UTC and local-with-offset** (paired columns). Every display surface renders the local variant. Frontend `lib/time.ts` has shared helpers (`fmtTime`, `fmtRelative`). Reference pattern: `human_journal_entries`. The pre-fix bug: naked UTC at display read as future-dated entries between 19:00 CDT and midnight; that class of error is now structurally impossible.
+
+### Cost discipline (Slice 14.5, 14.6, 14.7)
+
+- **Daily LLM cap: $3/day** (down from $5). Target: ~$1/day typical.
+- **Routine purposes routed to Gemini 2.0 Flash** (~30× cheaper than Sonnet): `auto-tag-notes`, `evidence-routing`, `insight-scan`, `distill-corrections`, `router-chat`.
+- **Model attribution endpoint** `GET /api/overseer/llm/attribution?days=N` returns per-(model × purpose) breakdown with calls, total/avg cost, latency, avg input/output tokens, plus a `by_layer` rollup (router / overseer / routine / dialectic / other) with % of spend.
+- **CEO directive** in the durable system prompts: overseer operates as the executive layer; delegates routine work to cheap models; reserves itself for high-judgment calls. *"Do not do work yourself that can be delegated. Stay expensive but worth every cent."*
+- **Karpathy-adapted discipline principles** in the durable prompts: read the row (don't recall the frame); smallest claim that survives the evidence; close the loop; one artifact per truth; stupid-simple baseline first; cheap experiments first; honest about what you don't know.
+- **Paired-generation dialectic disabled** (Slice 3f): 3 weeks of accumulation produced 160 unresolved diff rows whose divergences were uniformly stylistic, not interpretive. The 160 backlog was bulk-resolved as `no-action`; `loop_paired_generation = false` going forward.
 
 ---
 
-## Off-cycle work the v0.18 cycle surfaced
+## Hub UI surface map (as of v0.18.0)
 
-These shipped during the cycle but aren't bound to it:
+Top-level sidebar: **Chat / Pi / Data / Overseer / Settings**
 
-### Slice 5.6.1 — temporal cadence catchup (cortex-core repo)
+Overseer inner tabs:
 
-Diagnosed during 2026-05-06 night triage: Tory reported the daily
-narrative didn't trigger at 10pm. Investigation revealed the
-auto-trigger had **never** fired since Slice 5 deployed 3 days
-earlier — every existing temporal_narratives row was
-`triggered_by='manual'`.
+- **Overview** — stats grid + working memory + import panel + loop status + LLM cost
+- **Chat** — Opus chat (now via the **router by default** with **Direct** override + per-message layer badges)
+- **Dialectic** — paired-gen diff queue (now empty by design; paired generation disabled)
+- **Journal** — Your journal (free-form + voice) / Temporal narratives (D/W/M/Y) / Overseer reflections
+- **Insights** — pending interpretation queue (themes, patterns, drift, merge proposals, blindspot proposals) with accept/reject
+- **Projects** — per-project narrative cards
+- **Classify** — per-project human/automation/ignore
+- **Explorer** — force-directed graph of the interpretive layer
+- **Map** *(NEW in 0.18)* — the overseer's tool ecosystem
+- **Activity** *(NEW in 0.18)* — per-run trace viewer with rating + 24h export
+- **Bell** — notifications with custom action buttons
 
-Two compounding bugs:
-- Step 0 was gated on `not budget.exhausted()`, negating Slice
-  5.6's bypass-budget design (the bypass lives INSIDE
-  `_run_temporal_cadence` but the outer guard short-circuited
-  before it ran)
-- Trigger window was just 22:00-23:59 local with no catchup —
-  any miss (Pi reboot, AV blip, transient bug) meant the period
-  could never auto-generate
+---
 
-Fix: drop the budget guard from Step 0; replace single-period
-logic with enumerate-with-catchup that walks back 7 days for
-daily, 5 weeks for weekly, 4 months for monthly, 2 years for
-yearly. The dedup gate handles "already generated" so catchup
-is a no-op when caught up.
+## Cost reduction expected from v0.18
 
-Cortex-core commit `3a1eb46` (local, not pushed). Verified live —
-4 auto-fired narratives in immediate aftermath, the first ever.
+Pre-router baseline: ~$1.94/day average, **70% on the chat layer** (`overseer-chat` at $0.107/turn × ~16 turns/day).
 
-See `~/.claude/projects/.../memory/slice_5_6_1_temporal_catchup.md`.
+With the router layer active (v0.18.0):
 
-### Historical data import (cortex.db + overseer.db)
+- Routine turns: $0.107 → $0.0001 (~1500× cheaper)
+- Typical 20-turn day (15 routine + 5 needing-overseer): **$2.14 → $0.54 chat layer**
+- Routine loop work (Flash) stays ~$0.20–0.30/day
+- **Total target: ~$0.75–1.00/day** under typical use
 
-Bridged Tory's pre-Cortex life data from
-`C:\Users\User\Local History AI\db\tory_life.db` (Apr 2023 → Mar 2026).
+---
 
-| Phase | What | Cost |
-|---|---|---|
-| 1 (peer records) | +70 projects, +16 people, +6 inventions, 13 orgs reconciled | $0 |
-| 2 (yearly retros) | 3 yearly narratives 2023/2024/2025 via Sonnet | $0.06 |
-| 3 (ChatGPT) | 1,728 conversations imported as `imported_sessions` source='chatgpt' | $0 |
-| 3b (bulk gist) | 1,725 individual gists via Sonnet (parallel 6-worker, 12 min total) | $9.83 |
+## Versioning
 
-**Total LLM spend: $9.89** (under the $17 budget).
-
-Cortex now has memory back to **December 2013** (earliest Amazon
-purchase in tory_life.db) for any future yearly retrospectives.
-
-Backups at `C:\dev\ttx\Cortex\backups\2026-05-06_post-chatgpt-bulk-summarize\`
-(96 MB: cortex.db + overseer.db + tory_life.db + 1,728 source
-JSONL files + portable CSV/JSON dumps + README with restore
-instructions).
-
-See `~/.claude/projects/.../memory/historical_data_import_complete.md`.
-
-### Memory + repos updated
-
-- `feedback_uwp_appdata_sandbox_redirect.md` — captured during dev.1
-  testing when agent edits to `%APPDATA%\Cortex\plugins\registry.json`
-  silently went to a UWP sandbox instead of the real path. The fix
-  was the dev-register endpoint (dev.2).
-- Memory index `MEMORY.md` updated with pointers to all the new
-  feedback + complete files.
+- **Stable**: v0.18.0 (this release)
+- **Previous stable**: v0.16.0 (May 2026)
+- **Dev cycle that fed this release**: v0.17.0-dev.1 → v0.18.0-dev.32 (~30 dev releases)
+- **Sub-package versions**: `cortex_mcp/__init__.py` 0.5.0, `cortex_train/__init__.py` 0.1.0
+- **Pi-side cortex-core**: deployed via scp; current tip is on master post-`f34b8c8` (paired-gen disabled).
 
 ---
 
 ## Migration notes
 
-After installing v0.18:
+For installs upgrading from v0.16.0:
 
-- **Schema migrations are automatic**. New tables (plugin registry,
-  no DB changes — registry.json is JSON in `%APPDATA%`).
-- **First run** — Plugins card in Settings. cortex-vision marketplace
-  entry visible. Click Install for one-click bundle install +
-  spawn (~30-60s). Click Configure to enter LM Studio URL.
-- **Existing dev-mode entries** carry over from `registry.json` if
-  you had the plugin running locally during the cycle.
-- **Update detection** — Hub fires `check_updates` once on startup;
-  manual "Check for updates" button in Plugins card top-right.
-  When a new cortex-vision lands, you'll see "↑ vX.Y.Z" badge plus
-  green "Update to vX.Y.Z" button on the cortex-vision row.
+1. **Update the Hub** via Settings → Check for update (stable channel).
+2. **Pi-side updates** are continuous via scp / `sudo systemctl restart cortex-core`. The cortex-core repo at HEAD has all the schema migrations chained — they apply on next service start. No manual SQL needed.
+3. **Whisper model** auto-downloads on first voice transcription (~3 GB). Subsequent transcriptions are fully offline.
+4. **Sensitivity backfill**: existing imported_sessions get tagged on next `/sensitivity/backfill` POST (or one-time at install via the migration's seeded rules). Verified during this cycle: 52 work-machine sessions correctly tagged `confidential`; 3,278 → `public`.
+5. **Dialectic queue**: anyone upgrading will find their queue is empty by design; paired generation is off. To re-enable, flip `loop_paired_generation = true` in `plugins/overseer/plugin.toml`.
 
 ---
 
-## dev.14 — Voice transcription crash fix (off-cycle, 2026-05-06)
+## Repos used during this cycle
 
-Voice journal stopped working on Tory's i7-14700F roughly halfway
-through 2026-05-06: every `whisper-cli.exe` invocation died ~4 seconds
-after launch with no output. Initial reports pointed at the recent
-NVIDIA driver / Vulkan loader, but the crash also reproduced under
-`-ng` (CPU only), ruling out the GPU path. Windows Event Viewer
-showed exit `0xC000001D` (`STATUS_ILLEGAL_INSTRUCTION`) at a fixed
-offset inside `whisper-cli.exe` itself.
-
-**Root cause.** `scripts/build_whisper_cpp.py` configured CMake with
-no ISA constraints, so ggml's default `GGML_NATIVE=ON` baked the
-build host's `-march=native` into the binary. The GitHub Actions
-Windows runner pool includes Xeon Platinum SKUs with full AVX-512;
-binaries built on those land in CI artifacts with ~6900 EVEX-prefixed
-(AVX-512) instructions. None of those execute on Intel hybrid CPUs
-(12th-gen+ Alder/Raptor Lake disabled AVX-512 entirely because the
-E-cores lack it) or on most consumer Ryzen desktop parts.
-
-The original `dev.13` binary had ~6919 EVEX-prefix opcodes and
-crashed on the user's i7-14700F (no AVX-512). Confirmed via the
-Win32 `IsProcessorFeaturePresent` API + EVEX-prefix scan over the
-binary's `.text`.
-
-**Fix.**
-
-- `scripts/build_whisper_cpp.py` now passes
-  `-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
-  -DGGML_AVX512=OFF` (plus the `_VBMI`/`_VNNI`/`_BF16` variants).
-  Resulting binary requires only AVX2 + FMA + F16C, available on
-  every x86_64 CPU since Haswell (2013). Marker file gains a
-  `+avx2` suffix so the UI/log can confirm the baseline.
-- `routers/transcribe.py` gains a defensive runtime layer:
-  - `_classify_exit_code()` recognises the three native-fault DWORDs
-    (`0xC000001D`, `0xC0000409`, `0xC0000005`) and Python's signed
-    representation of them.
-  - On a hard crash on the GPU path, the background runner retries
-    once with `-ng`. If the CPU run succeeds, `force_cpu` becomes
-    sticky for the rest of the Hub process.
-  - When *both* paths crash natively, the user sees a clear
-    remediation message ("update to v0.18.0-dev.14 or later — that
-    release ships an AVX2-baseline binary") instead of stderr soup.
-  - `whisper_force_cpu` config flag persists the GPU-bypass choice
-    across restarts.
-- `routers/settings.py` env_map gains `whisper_model →
-  CORTEX_HUB_WHISPER_MODEL` and `whisper_force_cpu →
-  CORTEX_HUB_WHISPER_FORCE_CPU`; `SettingsUpdate` and `DEFAULT_CONFIG`
-  carry both. Previously `whisper_model` couldn't actually be saved
-  through the settings UI.
-- `JournalTab.tsx` reads the active model name + size from
-  `/api/transcribe/status` instead of hardcoding "large-v3" / "~3GB"
-  in the download placeholder. Adds a sticky amber banner that
-  surfaces native-fault signatures with remediation copy. Tested
-  against `dev.14` build output: `npm run build` clean, `tsc -b`
-  clean.
-
-**Diagnosis path that didn't pan out (documented for future
-reference).** The original three hypotheses — Vulkan loader/driver
-mismatch, binary corruption, missing C++ runtime DLL — were all
-ruled out by the `-ng` reproduction and the Event Viewer "faulting
-module: whisper-cli.exe" line. A 4th hypothesis (build-host ISA
-over-specialisation) matched the evidence and was confirmed by the
-EVEX-prefix scan plus the `IsProcessorFeaturePresent(41)` = `False`
-check on the user's CPU.
-
-**Operator note.** Existing dev.13 installs need to either update
-to dev.14 (CI builds an AVX2-baseline binary now, regardless of
-which runner picks up the job) or replace the bundled
-`whisper-cli.exe` with one built locally from the patched
-`build_whisper_cpp.py`. The runtime crash-detection layer doesn't
-rescue dev.13 by itself — the second `-ng` retry hits the same
-illegal instruction inside ggml's CPU kernels.
-
----
-
-## In flight (deferred to v0.19)
-
-- **Phase 6 polish (cortex-vision side)** — settings page additions
-  (describer/audio/thresholds), describer hot-swap, resume past
-  session, CLI mode, auto-cleanup, remote sidecar UI. Most of these
-  are cortex-vision-side; cortex-desktop just exposes whatever the
-  plugin manifest declares.
-- **Project narrative gain people block** — pairs with Slice 6 CP3
-- **Slice 4 CP3** — per-project actions (rename / archive / set
-  focus / merge / inline classify); absorbs the standalone Classify tab
-- **Slice 6 CP2** — Hub UI Network section in Journal tab (held
-  until ~30+ people accumulate from agent capture)
-
----
-
-## Out-of-scope queued (future cycles)
-
-- **MCP tool surface in cortex-mcp** so Claude Code agents in other
-  repos can drive cortex-vision (process video, search past sessions)
-- **WebSocket pass-through perf tuning** — currently ~10Hz audio_level
-  events through the bridge; could backpressure if ever streaming
-  larger payloads
-- **Plugin marketplace JSON hosted on GitHub Pages** — currently
-  the marketplace list is hardcoded in `plugin_manager.py` (just
-  cortex-vision). Phase 5+ would fetch from a registry.
+- [cortex-core](https://github.com/turfptax/cortex-core) — Pi plugin
+- [cortex-desktop](https://github.com/turfptax/cortex-desktop) — Hub, this repo
+- [cortex-link](https://github.com/turfptax/cortex-link) — ESP32-S3 BLE bridge
+- [cortex-pet-training](https://github.com/turfptax/cortex-pet-training) — Training scripts + data
+- [cortex-pet](https://github.com/turfptax/cortex-pet) — Pet plugin (extracted from cortex-core in Slice 11)
