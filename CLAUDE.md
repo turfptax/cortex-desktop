@@ -154,14 +154,9 @@ git push origin v0.17.0-dev.1
 ```
 
 ### Recent stable releases
-- **v0.16.0** (May 2026) — Slice 3 Overseer (full) + Slice 4 Project-Centric (rollups, narratives, Projects tab) + sidebar reorg (7→5 tabs) + Polish slice (Data Explorer, Bell digestibility, scan UI). See `RELEASE_NOTES_0.16.md`.
+- **v0.18.0** (May 2026) — Agent ecosystem, voice, cost discipline, sensitivity tiers. Slices 5/6/7/8/9.x/10/10.4/13/14/14.5/14.6/14.7 + the work that made them stable. New Hub sub-tabs: Map, Activity. Router layer (Flash in front of Opus, ~1500× cheaper on routine chat). Voice mode (push-to-talk continuous conversation). Sensitivity tiers (confidential-IP handling). See `RELEASE_NOTES_0.18.md`.
+- **v0.16.0** (May 2026) — Slice 3 Overseer (full) + Slice 4 Project-Centric (rollups, narratives, Projects tab) + sidebar reorg (7→5 tabs) + Polish slice. See `RELEASE_NOTES_0.16.md`.
 - **v0.15.0** (Apr 2026) — Polish CP1 closeout: project name canonicalization + skipped-imports fix.
-
-### v0.17.0 cycle in flight (post-0.16.0)
-- **v0.17.0-dev.1** — Slice 5 CP1+CP2 backend (cadence + human journal — backend only, no UI)
-- **v0.17.0-dev.2** — Slice 5 CP3+CP4 (Journal tab UI restructure)
-- **CP6 (deferred)** — minor polish: "Today's context" line on Daily, hover-for-exact-time on human entries, search/filter on entries
-- **Slice 4 CP3 (still queued)** — per-project rename/archive/set-focus/merge/inline-classify; absorbs the standalone Classify tab
 
 ## Update System
 
@@ -330,6 +325,12 @@ python -m cortex_mcp note "test note" --tags test
 | [cortex-mcp](https://github.com/turfptax/cortex-mcp) | Standalone MCP server (cortex-desktop bundles its own copy) |
 | [cortex-pet-training](https://github.com/turfptax/cortex-pet-training) | Training scripts + data (being consolidated into cortex_train) |
 
+## Git Hygiene
+
+**HARD RULE: never `git add -A` or `git add .` from the cortex-desktop root.** Always stage an explicit file list.
+
+The root contains `scripts/video-annotator/` and other ancillary tooling that can carry `node_modules/` dirs not yet in `.gitignore`. Concrete failure: the dev.29 commit (`a5e8048`) accidentally swept in 1007 files / 384k insertions (~380KB transit). The recovery commit (`7ae0e8b`) added those paths to `.gitignore`, but the lesson generalizes — stage files by name, every time.
+
 ## Common Tasks
 
 ### Adding a new API endpoint
@@ -351,5 +352,78 @@ python -m cortex_mcp note "test note" --tags test
 ### Deploying code to Pi
 ```bash
 scp cortex-core/src/*.py turfptax@10.0.0.25:~/cortex-core/src/
+
+## Working Style — coding discipline
+
+(Adapted from [Karpathy's CLAUDE.md](https://github.com/multica-ai/andrej-karpathy-skills/blob/main/CLAUDE.md).
+Behavioral guidelines to reduce common LLM coding mistakes.)
+
+**Tradeoff:** these bias toward caution over speed. For trivial tasks,
+use judgment.
+
+### 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them — don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+### 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask: "Would a senior engineer say this is overcomplicated?" If yes,
+simplify.
+
+### 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it — don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: every changed line should trace directly to the user's request.
+
+### 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria
+("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in
+diffs, fewer rewrites due to overcomplication, and clarifying
+questions come before implementation rather than after mistakes.
+
 ssh turfptax@10.0.0.25 "sudo systemctl restart cortex-core"
 ```
