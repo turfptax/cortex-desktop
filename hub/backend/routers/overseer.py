@@ -246,6 +246,21 @@ async def chat(req: ChatRequest):
     )
 
 
+class QuickChatRequest(BaseModel):
+    """Slice 14.7: router-tier chat. Cheaper, faster path that
+    handles routine turns and escalates to /chat when needed."""
+    message: str
+    direct_override: bool = False
+
+
+@router.post("/quick-chat")
+async def quick_chat(req: QuickChatRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/quick-chat", req.dict(exclude_none=True),
+        timeout=180.0,  # router calls are fast; escalations may take longer
+    )
+
+
 # ── Slice 8: chat file attachments ──────────────────────────────
 #
 # Two-step upload contract:
