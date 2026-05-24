@@ -287,6 +287,10 @@ interface ChatMessage {
   context_chars?: number
   // raw_metadata kept for /compress and debug — full original JSON.
   raw_metadata?: Record<string, any>
+  // Slice 14.7 CP4: layer attribution. Empty/undefined on pre-14.7
+  // rows; assistant rows from the router/overseer split carry these.
+  answered_by?: 'router' | 'overseer' | ''
+  escalation_reason?: string
 }
 
 interface ChatHistoryResp {
@@ -304,6 +308,11 @@ interface ChatSendResp {
   cost_usd?: number
   error?: string
   attachments?: ChatStoredAttachment[]   // Slice 8
+  // Slice 14.7 CP4: present on quick-chat responses; identifies which
+  // layer answered + why if escalated.
+  answered_by?: 'router' | 'overseer'
+  escalation_reason?: string
+  router_attempted?: boolean
 }
 
 interface ChatUploadResp {
@@ -623,6 +632,27 @@ export function OverseerPage() {
   const [chatSending, setChatSending] = useState<boolean>(false)
   // Slice 8: pending file attachments queued in the composer
   const [chatPending, setChatPending] = useState<PendingAttachment[]>([])
+  // Slice 14.7 CP4: direct-overseer mode. When false (default), the
+  // composer posts to /api/overseer/quick-chat — the Flash router
+  // handles routine turns and escalates to overseer when needed.
+  // When true, posts go straight to /api/overseer/chat (full Opus).
+  // Persisted to localStorage so the user's preference survives
+  // reloads.
+  const [directMode, setDirectMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('cortex.overseer.directMode') === '1'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        'cortex.overseer.directMode', directMode ? '1' : '0')
+    } catch {
+      /* noop */
+    }
+  }, [directMode])
   const [notifications, setNotifications] = useState<NotificationRow[]>([])
   const [notificationsUnread, setNotificationsUnread] = useState<number>(0)
   const [budget, setBudget] = useState<BudgetSnapshot | null>(null)
@@ -1351,16 +1381,33 @@ export function OverseerPage() {
     chatPending.forEach((p) => p.previewUrl && URL.revokeObjectURL(p.previewUrl))
     setChatPending([])
 
+    // Slice 14.7 CP4: route between /quick-chat (router default) and
+    // /chat (full Opus overseer). Attachments force /chat because the
+    // router endpoint doesn't accept them. Direct mode forces /chat
+    // too. Otherwise: thin Flash path.
+    const useRouter = !directMode && attachmentRefs.length === 0
     try {
-      const body: any = { message: message || '' }
-      if (attachmentRefs.length) body.attachments = attachmentRefs
-      const r = await apiFetch<ChatSendResp>('/overseer/chat', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      })
-      if (!r.ok) setError(`Chat error: ${r.error || 'unknown'}`)
+      if (useRouter) {
+        const r = await apiFetch<ChatSendResp>('/overseer/quick-chat', {
+          method: 'POST',
+          body: JSON.stringify({
+            message: message || '',
+            direct_override: false,
+          }),
+        })
+        if (!r.ok) setError(`Chat error: ${r.error || 'unknown'}`)
+      } else {
+        const body: any = { message: message || '' }
+        if (attachmentRefs.length) body.attachments = attachmentRefs
+        const r = await apiFetch<ChatSendResp>('/overseer/chat', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        })
+        if (!r.ok) setError(`Chat error: ${r.error || 'unknown'}`)
+      }
       // Always re-fetch so we get the persisted IDs + assistant reply +
-      // attachments-from-DB (replaces the optimistic stub above).
+      // attachments-from-DB + the answered_by tag (replaces the
+      // optimistic stub above).
       await refreshChat()
     } catch (e: any) {
       setError(`Chat failed: ${e?.message || e}`)
@@ -1775,6 +1822,8 @@ export function OverseerPage() {
           voiceLastHeard={voice.lastHeard}
           onEnterVoice={voice.enterVoiceMode}
           onExitVoice={voice.exitVoiceMode}
+          directMode={directMode}
+          onToggleDirectMode={() => setDirectMode((v) => !v)}
         />
       )}
       {tab === 'notifications' && (
@@ -2554,6 +2603,8 @@ function ChatPanel({
   voiceLastHeard,
   onEnterVoice,
   onExitVoice,
+  directMode,
+  onToggleDirectMode,
 }: {
   messages: ChatMessage[]
   input: string
@@ -2570,6 +2621,8 @@ function ChatPanel({
   voiceLastHeard: string
   onEnterVoice: () => void
   onExitVoice: () => void
+  directMode: boolean
+  onToggleDirectMode: () => void
 }) {
   const voiceActive = voiceState !== 'off'
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -2780,6 +2833,27 @@ function ChatPanel({
                 <line x1="8" y1="23" x2="16" y2="23"/>
               </svg>
             )}
+          </button>
+          {/* Slice 14.7 CP4: direct-overseer override. Default off →
+              chat posts to /quick-chat (Flash router, escalates when
+              needed). When on, posts go straight to /chat (full Opus).
+              Persisted in localStorage. */}
+          <button
+            type="button"
+            onClick={onToggleDirectMode}
+            disabled={sending || voiceActive}
+            title={directMode
+              ? 'Direct mode ON — talking to overseer (Opus) directly'
+              : 'Direct mode OFF — using router (cheaper). Click to switch.'}
+            className={`h-9 px-2 shrink-0 rounded-md text-[11px] font-medium cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+              directMode
+                ? 'bg-purple-600 text-white'
+                : 'bg-surface-tertiary text-text-muted hover:text-text-primary'
+            }`}
+            aria-label={directMode ? 'Direct mode on' : 'Direct mode off'}
+            aria-pressed={directMode}
+          >
+            {directMode ? 'Direct' : 'Router'}
           </button>
           <textarea
             value={input}
@@ -3076,10 +3150,38 @@ function ChatBubble({ m }: { m: ChatMessage }) {
               : 'bg-surface-secondary text-text-primary border border-border'
         }`}
       >
-        <div className="text-[10px] uppercase tracking-wide text-text-muted mb-1">
-          {isUser ? 'you' : isSystem ? 'system' : 'overseer'}
+        <div className="text-[10px] uppercase tracking-wide text-text-muted mb-1 flex items-center gap-2 flex-wrap">
+          <span>
+            {isUser
+              ? 'you'
+              : isSystem
+                ? 'system'
+                : m.answered_by === 'router'
+                  ? 'router'
+                  : 'overseer'}
+          </span>
+          {/* Slice 14.7 CP4: layer badge — emerald for router, purple
+              for overseer. Only on assistant rows that carry the
+              attribution tag (pre-14.7 rows have no answered_by). */}
+          {!isUser && !isSystem && m.answered_by && (
+            <span
+              className={`normal-case px-1.5 py-0.5 rounded text-[9px] font-semibold ${
+                m.answered_by === 'router'
+                  ? 'bg-emerald-500/20 text-emerald-300'
+                  : 'bg-purple-500/20 text-purple-300'
+              }`}
+              title={m.escalation_reason
+                ? `Escalated: ${m.escalation_reason}`
+                : (m.answered_by === 'router'
+                    ? 'Answered by the cheap Flash router'
+                    : 'Answered by the full Opus overseer')}
+            >
+              {m.answered_by === 'router' ? 'Router' : 'Overseer'}
+              {m.escalation_reason && ' ↑'}
+            </span>
+          )}
           {!isUser && !isSystem && m.model && (
-            <span className="ml-2 normal-case">
+            <span className="normal-case">
               {m.model} · {m.latency_ms}ms · ${(m.cost_usd ?? 0).toFixed(4)}
             </span>
           )}
