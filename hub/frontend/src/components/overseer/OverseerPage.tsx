@@ -1185,18 +1185,28 @@ export function OverseerPage() {
         try {
           const r = await apiFetch<any>('/overseer/tick-now', { method: 'POST', body: JSON.stringify({}) })
           const s = r.summary || {}
-          pushSlashSystemMessage(
-            [
-              '## Tick complete',
-              '',
-              `- imports_summarized: ${s.imports_summarized ?? 0}`,
-              `- notes_tagged: ${s.notes_tagged ?? 0}`,
-              `- classify_changed: ${s.classify_changed ?? 0}`,
-              `- working_memory_rebuilt: ${s.working_memory_rebuilt ? 'yes' : 'no'}`,
-              `- errors: ${(s.errors || []).length || 0}`,
-              `- finished: ${s.finished_at || '?'}`,
-            ].join('\n'),
-          )
+          // Surface skip reason so a tick held off by an in-flight
+          // backfill/drain doesn't read as "nothing happened."
+          if (s.skipped) {
+            pushSlashSystemMessage(
+              `## Tick skipped\n\n_${s.skipped}_\n\nThis usually means a background drain or backfill is currently holding the tick lock. Wait for it to finish, or check **GET /api/overseer/loop** for status.`,
+            )
+          } else if (r?.ok === false && r?.error) {
+            pushSlashSystemMessage(`**/tick failed:** ${r.error}`)
+          } else {
+            pushSlashSystemMessage(
+              [
+                '## Tick complete',
+                '',
+                `- imports_summarized: ${s.imports_summarized ?? 0}`,
+                `- notes_tagged: ${s.notes_tagged ?? 0}`,
+                `- classify_changed: ${s.classify_changed ?? 0}`,
+                `- working_memory_rebuilt: ${s.working_memory_rebuilt ? 'yes' : 'no'}`,
+                `- errors: ${(s.errors || []).length || 0}`,
+                `- finished: ${s.finished_at || '?'}`,
+              ].join('\n'),
+            )
+          }
         } catch (e: any) {
           pushSlashSystemMessage(`**/tick failed:** ${e?.message || e}`)
         }
@@ -1685,9 +1695,22 @@ export function OverseerPage() {
         body: JSON.stringify({}),
       })
       const s = r?.summary || {}
-      setLastAction(
-        `Tick: sessions=${s.sessions_summarized ?? 0}, imports=${s.imports_summarized ?? 0}, notes=${s.notes_tagged ?? 0}, calls=${s.budget?.calls_used ?? 0}, cost=$${s.budget?.cost_used_usd ?? 0}`
-      )
+      // 14.7.2 (2026-05-26): the Pi-side tick endpoint returns
+      // {"ok": false, "summary": {"skipped": "another tick is
+      // already running"}} when the tick lock is held — typically
+      // by a background drain (/imports/process-targeted, /backfill).
+      // Previously we displayed "sessions=0 imports=0 notes=0" in
+      // that case, which read as "nothing happened" — silently
+      // misleading. Surface the skip reason instead.
+      if (s.skipped) {
+        setLastAction(`Tick skipped — ${s.skipped}`)
+      } else if (r?.ok === false && r?.error) {
+        setError(`Tick failed: ${r.error}`)
+      } else {
+        setLastAction(
+          `Tick: sessions=${s.sessions_summarized ?? 0}, imports=${s.imports_summarized ?? 0}, notes=${s.notes_tagged ?? 0}, calls=${s.budget?.calls_used ?? 0}, cost=$${s.budget?.cost_used_usd ?? 0}`
+        )
+      }
       await refreshAll()
     } catch (e: any) {
       setError(`Tick failed: ${e?.message || e}`)
