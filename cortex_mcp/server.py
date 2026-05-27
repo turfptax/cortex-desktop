@@ -440,6 +440,84 @@ def cortex_overseer_detail(token: str) -> str:
 
 
 @mcp.tool()
+def cortex_search(
+    q: str,
+    kinds: str = "",
+    limit_per_kind: int = 5,
+    limit_total: int = 40,
+    days: int = 0,
+    caller_id: str = "",
+) -> str:
+    """Substring search across the Overseer's interpretive corpus.
+
+    This is the primary discovery tool for external AIs trying to
+    find context on a topic. Walks the layered memory (gists,
+    themes, episodes, patterns, drift, future_overseer_notes,
+    journal entries, temporal narratives, open questions,
+    blindspots, human journal entries) and returns hits with
+    drill-down tokens.
+
+    The intended workflow:
+      1. Call cortex_search("topic of interest") to discover what
+         the corpus knows.
+      2. Pick the most-promising hits by snippet + kind.
+      3. Pass the hit's `token` to cortex_overseer_detail for the
+         full row + linked artifacts.
+
+    This is NOT the right tool for:
+      - Looking up notes (use notes_search — different table).
+      - Asking the overseer a question (use overseer_chat — that
+        renders working memory and runs Opus).
+      - Reading a specific known token (use cortex_overseer_detail
+        — direct lookup, no search).
+
+    Each hit is recorded as a pull_event on the Pi so the overseer
+    can see what external AIs are looking for. That signal is how
+    gist prompts evolve.
+
+    Args:
+        q: Substring to search for (case-insensitive). Min 2 chars.
+        kinds: Comma-separated subset of: gist, theme, episode,
+            pattern, drift, note, journal, narrative, question,
+            blindspot, human. Empty = all kinds.
+        limit_per_kind: Max hits per kind (default 5).
+        limit_total: Hard cap across all kinds (default 40).
+        days: Restrict to artifacts within last N days (0 = no
+            limit).
+        caller_id: Optional free-form id ("claude-desktop-session-
+            abc123", agent name, etc.) — gets attached to the
+            pull_event so the overseer can attribute drills.
+
+    Returns JSON with:
+      ok            — bool
+      query         — echoed query
+      kinds_searched — list of kinds actually searched
+      hits          — list of {token, kind, artifact_table,
+                      artifact_id, snippet, created_at, extras}
+      total         — count of hits
+      truncated     — true if limit_total was hit
+    """
+    import json as _json
+    payload = {
+        "q": q,
+        "limit_per_kind": int(limit_per_kind),
+        "limit_total": int(limit_total),
+    }
+    if kinds.strip():
+        payload["kinds"] = kinds.strip()
+    if days:
+        payload["days"] = int(days)
+    if caller_id.strip():
+        payload["caller_id"] = caller_id.strip()
+    result, err = _overseer_plugin_call(
+        "GET", "/search", payload, timeout=20,
+    )
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
 def overseer_chat(message: str, timeout: int = 120) -> str:
     """Chat directly with the Overseer. Returns its full reply.
 

@@ -918,6 +918,66 @@ async def overseer_detail(token: str):
         "overseer", "GET", "/detail", {"token": token})
 
 
+# ── Phase 1 (2026-05-27): corpus search + pull events ──────────
+
+
+@router.get("/search")
+async def overseer_search(
+    q: str,
+    kinds: str = "",
+    limit_per_kind: int = 5,
+    limit_total: int = 40,
+    days: int = 0,
+    caller_id: str = "",
+):
+    """Substring search across the interpretive corpus. Mirror of the
+    cortex_search MCP tool so the Hub can drive the same surface."""
+    payload = {
+        "q": q,
+        "limit_per_kind": limit_per_kind,
+        "limit_total": limit_total,
+    }
+    if kinds:
+        payload["kinds"] = kinds
+    if days:
+        payload["days"] = days
+    if caller_id:
+        payload["caller_id"] = caller_id
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/search", payload, timeout=20.0,
+    )
+
+
+@router.get("/pull-events")
+async def overseer_pull_events(
+    limit: int = 50,
+    surface: str = "",
+    artifact_table: str = "",
+    days: int = 0,
+):
+    """Recent corpus-drill events. Surfaces what external AIs are
+    bouncing off of."""
+    payload = {"limit": limit}
+    if surface:
+        payload["surface"] = surface
+    if artifact_table:
+        payload["artifact_table"] = artifact_table
+    if days:
+        payload["days"] = days
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/pull-events", payload, timeout=10.0,
+    )
+
+
+@router.get("/pull-events/stats")
+async def overseer_pull_event_stats(days: int = 7):
+    """Aggregate pull-event stats for a time window."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/pull-events/stats", {"days": days},
+        timeout=10.0,
+    )
+
+
 # ── Slice 3h: insight generation queue ─────────────────────────
 
 
