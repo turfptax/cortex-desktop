@@ -978,6 +978,50 @@ async def overseer_pull_event_stats(days: int = 7):
     )
 
 
+# ── Sub-agent tier management (2026-05-27) ──────────────────────
+
+
+@router.get("/sub-agents")
+async def overseer_sub_agents():
+    """List B/C sub-agents with their current tier, default, and
+    per-agent invocation history."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/sub-agents", None, timeout=10.0,
+    )
+
+
+class SubAgentTierUpdate(BaseModel):
+    agent_type: str
+    agent_name: str
+    tier: str
+    notes: str = ""
+
+
+@router.post("/sub-agents/set-tier")
+async def overseer_set_sub_agent_tier(req: SubAgentTierUpdate):
+    """Change a sub-agent's tier (flash | sonnet | opus). Persists."""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/sub-agents/set-tier", req.dict(),
+        timeout=10.0,
+    )
+
+
+@router.get("/sub-agents/performance")
+async def overseer_sub_agent_performance(
+    agent_type: str,
+    agent_name: str,
+    last_n: int = 10,
+):
+    """Quality-rating signal for one sub-agent over the last N
+    completed dispatches."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/sub-agents/performance",
+        {"agent_type": agent_type, "agent_name": agent_name,
+         "last_n": last_n},
+        timeout=10.0,
+    )
+
+
 # ── Slice 3h: insight generation queue ─────────────────────────
 
 

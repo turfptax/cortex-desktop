@@ -518,6 +518,124 @@ def cortex_search(
 
 
 @mcp.tool()
+def cortex_sub_agents() -> str:
+    """List the Cortex Overseer's B/C sub-agents with their current
+    model tier, default tier, and per-agent invocation history.
+
+    Sub-agents are stateless helpers the overseer dispatches for
+    judgment-call work (e.g. b_theme_check audits a theme's confidence
+    calibration). Each runs at one of three tiers — flash (cheap),
+    sonnet (mid), opus (premium) — and Tory pulls the upgrade trigger
+    when output is poor. The registry persists tier choices across
+    restarts.
+
+    Returns a JSON list. Each row has:
+      agent_type           'b' or 'c'
+      agent_name           e.g. 'theme_check'
+      model_tier           current tier (flash|sonnet|opus)
+      current_model        the OpenRouter id that tier resolves to
+      default_tier         code-side default (compare to spot drift
+                           from Tory's manual upgrades)
+      default_tier_rationale  why the default is what it is
+      tier_set_at / tier_set_by  who set the current tier + when
+      last_model_used      the model that actually ran on the most
+                           recent dispatch (verifies the registry
+                           is being honored)
+      last_invoked_at      most recent dispatch time
+      invocation_count     total dispatches since registry inception
+
+    Pair with cortex_set_sub_agent_tier to change a tier.
+    """
+    import json as _json
+    result, err = _overseer_plugin_call(
+        "GET", "/sub-agents", None, timeout=10,
+    )
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def cortex_set_sub_agent_tier(
+    agent_type: str,
+    agent_name: str,
+    tier: str,
+    notes: str = "",
+) -> str:
+    """Change a Cortex sub-agent's model tier. Persists across
+    restarts. The next dispatch of that agent picks up the new tier.
+
+    Args:
+        agent_type: 'b' (stateless audit) or 'c' (scheduled).
+        agent_name: e.g. 'theme_check' or 'project_merge_check'. Use
+            cortex_sub_agents() to see the valid names.
+        tier: 'flash' (cheap, ~$0.001/call), 'sonnet' (~$0.02), or
+            'opus' (~$0.10). Higher tiers cost more but handle nuance
+            better. Confidence-calibration B-agents typically need
+            sonnet minimum; structural-comparison Bs do fine on flash.
+        notes: Optional free-text rationale for the tier change.
+            Logged with the registry row so future-you (or future-AI)
+            knows why the change was made.
+
+    Returns the updated registry row.
+    """
+    import json as _json
+    payload = {
+        "agent_type": agent_type,
+        "agent_name": agent_name,
+        "tier": tier,
+        "notes": notes,
+    }
+    result, err = _overseer_plugin_call(
+        "POST", "/sub-agents/set-tier", payload, timeout=10,
+    )
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def cortex_sub_agent_performance(
+    agent_type: str,
+    agent_name: str,
+    last_n: int = 10,
+) -> str:
+    """Quality-rating signal for one sub-agent. Returns the last N
+    completed dispatches with their quality_rating (Tory's 1-5 grade)
+    + the model that actually ran.
+
+    Use this when deciding whether to upgrade a sub-agent's tier.
+    Rule of thumb (per overseer's guidance): if avg rating is <3 over
+    last 5 rated dispatches, consider promoting one tier. If avg is
+    >=4, consider demoting to save cost.
+
+    Args:
+        agent_type: 'b' or 'c'.
+        agent_name: e.g. 'theme_check'.
+        last_n: How many recent dispatches to look back (default 10).
+
+    Returns:
+      recent       — list of {id, rating, claimed_at, model, ...}
+      n            — number of dispatches in the window
+      avg_rating   — average rating across the rated dispatches (or null)
+      rated_count  — how many in the window have a rating
+      unrated_count — how many lack a rating
+    """
+    import json as _json
+    payload = {
+        "agent_type": agent_type,
+        "agent_name": agent_name,
+        "last_n": int(last_n),
+    }
+    result, err = _overseer_plugin_call(
+        "GET", "/sub-agents/performance", payload, timeout=10,
+    )
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
 def overseer_chat(message: str, timeout: int = 120) -> str:
     """Chat directly with the Overseer. Returns its full reply.
 
