@@ -413,6 +413,8 @@ def cortex_overseer_detail(token: str) -> str:
       r:18    — automation rollup (per-project per-day digest)
       n:1     — note from a prior overseer instance to future ones
       j:1     — overseer journal entry (the thinking layer)
+      hj:8    — human journal entry (the user's own free-form/voice journal)
+      nar:5   — temporal narrative (daily/weekly/monthly/yearly rollup)
       b:7     — known blindspot
       dial:2  — open dialectic between Opus and Gemma readings
 
