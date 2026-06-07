@@ -484,9 +484,18 @@ def cortex_search(
         limit_total: Hard cap across all kinds (default 40).
         days: Restrict to artifacts within last N days (0 = no
             limit).
-        caller_id: Optional free-form id ("claude-desktop-session-
-            abc123", agent name, etc.) — gets attached to the
-            pull_event so the overseer can attribute drills.
+        caller_id: Optional free-form id. Convention (2026-06-06,
+            looper iter #2): if you're automation (a script, a
+            looper iteration, a test harness), tag yourself so the
+            overseer's F1 adoption signal (caller_class =
+            'organic-external') stays honest. Examples:
+              'looper-iter5-cleanup'  → automation:looper
+              'phase2-checkpoint'     → automation:bootstrap
+              'tory-probe-2026-06-06' → user-probe
+              'claude-code-verify-*'  → automation:verification
+              <leave empty>           → organic-external (the F1
+                                        metric — preserve this for
+                                        ACTUAL external AI reads)
 
     Returns JSON with:
       ok            — bool
