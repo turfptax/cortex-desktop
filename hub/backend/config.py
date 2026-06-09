@@ -1,8 +1,78 @@
-"""Cortex Hub configuration."""
+"""Cortex Hub configuration.
+
+Single source of truth is the user config file at
+%APPDATA%/Cortex/config.json (written by cortex_desktop and the
+Settings UI). Resolution order for every field:
+
+    1. CORTEX_HUB_* environment variable
+    2. config.json value
+    3. hardcoded default below
+
+Before this, the backend only honored config.json when launched by
+the tray app (which copied it into env vars). Run standalone via
+uvicorn, it silently fell back to hardcoded IPs.
+"""
 
 import json
+import os
+import platform
 from pathlib import Path
-from pydantic_settings import BaseSettings
+from typing import Any
+
+from pydantic.fields import FieldInfo
+from pydantic_settings import (
+    BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict,
+)
+
+
+def user_config_path() -> Path:
+    """Path to the shared user config file (same logic as
+    cortex_desktop.config; duplicated so the backend stays importable
+    without the cortex_desktop package, e.g. bare uvicorn in CI)."""
+    if platform.system() == "Windows":
+        base = Path(os.environ.get(
+            "APPDATA", Path.home() / "AppData" / "Roaming"))
+    else:
+        base = Path(os.environ.get(
+            "XDG_CONFIG_HOME", Path.home() / ".config"))
+    return base / "Cortex" / "config.json"
+
+
+# config.json key -> Settings field name (keys identical unless noted)
+_CONFIG_KEY_MAP = {
+    "pi_host": "pi_host",
+    "pi_port": "pi_port",
+    "pi_username": "pi_username",
+    "pi_password": "pi_password",
+    "lmstudio_url": "lmstudio_url",
+    "lmstudio_model": "lmstudio_default_model",
+    "hub_host": "host",
+    "hub_port": "port",
+    "whisper_model": "whisper_model",
+    "whisper_force_cpu": "whisper_force_cpu",
+}
+
+
+class UserConfigSource(PydanticBaseSettingsSource):
+    """pydantic-settings source backed by config.json. Sits below env
+    vars in precedence, above the field defaults."""
+
+    def __init__(self, settings_cls):
+        super().__init__(settings_cls)
+        self._values: dict[str, Any] = {}
+        try:
+            raw = json.loads(user_config_path().read_text())
+            for key, field in _CONFIG_KEY_MAP.items():
+                if key in raw:
+                    self._values[field] = raw[key]
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            pass
+
+    def get_field_value(self, field: FieldInfo, field_name: str):
+        return self._values.get(field_name), field_name, False
+
+    def __call__(self) -> dict[str, Any]:
+        return {k: v for k, v in self._values.items() if v is not None}
 
 
 class Settings(BaseSettings):
@@ -44,8 +114,21 @@ class Settings(BaseSettings):
     # Hub restart).
     whisper_force_cpu: bool = False
 
-    class Config:
-        env_prefix = "CORTEX_HUB_"
+    model_config = SettingsConfigDict(env_prefix="CORTEX_HUB_")
+
+    @classmethod
+    def settings_customise_sources(
+        cls, settings_cls, init_settings, env_settings,
+        dotenv_settings, file_secret_settings,
+    ):
+        # Precedence: init kwargs > env vars > config.json > defaults
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            UserConfigSource(settings_cls),
+            file_secret_settings,
+        )
 
     def model_post_init(self, __context):
         if not self.training_dir:
