@@ -7,6 +7,33 @@ import httpx
 
 from config import settings
 
+# Shared connection pool. The Hub polls the Pi constantly (status
+# every 15s from App.tsx, the overseer page every 30s), and the old
+# client-per-request pattern paid TCP setup/teardown on every single
+# call. One pooled client reuses connections; the per-call timeout
+# still varies per request. Closed by the app lifespan on shutdown.
+_client: httpx.AsyncClient | None = None
+
+
+def get_client() -> httpx.AsyncClient:
+    """Return the shared AsyncClient, creating it on first use.
+
+    Tests can inject their own (e.g. with httpx.MockTransport) by
+    assigning to pi_client._client directly.
+    """
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient()
+    return _client
+
+
+async def aclose_client() -> None:
+    """Close the shared client (called from the app lifespan)."""
+    global _client
+    if _client is not None and not _client.is_closed:
+        await _client.aclose()
+    _client = None
+
 
 def _basic_auth_header() -> str:
     """Build HTTP Basic Auth header value from configured credentials."""
@@ -25,12 +52,12 @@ def _headers() -> dict:
 async def health() -> dict | None:
     """GET /health on the Pi."""
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                f"{settings.pi_base_url}/health", headers=_headers()
-            )
-            resp.raise_for_status()
-            return resp.json()
+        resp = await get_client().get(
+            f"{settings.pi_base_url}/health", headers=_headers(),
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        return resp.json()
     except Exception as e:
         return {"error": str(e), "online": False}
 
@@ -42,14 +69,14 @@ async def send_command(command: str, payload: dict | None = None) -> dict:
         body["payload"] = payload
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{settings.pi_base_url}/api/cmd",
-                json=body,
-                headers=_headers(),
-            )
-            resp.raise_for_status()
-            return resp.json()
+        resp = await get_client().post(
+            f"{settings.pi_base_url}/api/cmd",
+            json=body,
+            headers=_headers(),
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        return resp.json()
     except httpx.TimeoutException:
         return {"error": "Pi request timed out", "online": False}
     except httpx.ConnectError:
@@ -78,15 +105,14 @@ async def plugin_call(
     method = method.upper()
     url = f"{settings.pi_base_url}/plugins/{plugin}{route}"
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            kwargs = {"headers": _headers()}
-            if method == "GET" and payload:
-                kwargs["params"] = payload
-            elif payload is not None:
-                kwargs["json"] = payload
-            resp = await client.request(method, url, **kwargs)
-            resp.raise_for_status()
-            return resp.json()
+        kwargs = {"headers": _headers(), "timeout": timeout}
+        if method == "GET" and payload:
+            kwargs["params"] = payload
+        elif payload is not None:
+            kwargs["json"] = payload
+        resp = await get_client().request(method, url, **kwargs)
+        resp.raise_for_status()
+        return resp.json()
     except httpx.TimeoutException:
         return {"ok": False, "error": "Pi request timed out"}
     except httpx.ConnectError:
@@ -261,10 +287,10 @@ async def delete_record(table: str, row_id) -> dict:
 async def check_online() -> bool:
     """Quick check if Pi is reachable."""
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(
-                f"{settings.pi_base_url}/health", headers=_headers()
-            )
-            return resp.status_code == 200
+        resp = await get_client().get(
+            f"{settings.pi_base_url}/health", headers=_headers(),
+            timeout=3.0,
+        )
+        return resp.status_code == 200
     except Exception:
         return False
