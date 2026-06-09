@@ -122,7 +122,7 @@ async def list_imports(source: str = "", limit: int = 100, offset: int = 0):
 async def delete_import(req: DeleteImportRequest):
     return await pi_client.plugin_call(
         "overseer", "POST", "/imports/delete",
-        req.dict(),
+        req.model_dump(),
     )
 
 
@@ -194,7 +194,7 @@ class ProjectSettingRequest(BaseModel):
 @router.post("/projects/setting")
 async def set_project_setting(req: ProjectSettingRequest):
     return await pi_client.plugin_call(
-        "overseer", "POST", "/projects/setting", req.dict())
+        "overseer", "POST", "/projects/setting", req.model_dump())
 
 
 @router.get("/rollups")
@@ -531,7 +531,7 @@ class ResolveDialecticRequest(BaseModel):
 @router.post("/dialectic/resolve")
 async def resolve_dialectic(req: ResolveDialecticRequest):
     return await pi_client.plugin_call(
-        "overseer", "POST", "/dialectic/resolve", req.dict())
+        "overseer", "POST", "/dialectic/resolve", req.model_dump())
 
 
 @router.get("/dialectic/counts")
@@ -565,7 +565,7 @@ class QuestionLifecycleRequest(BaseModel):
 @router.post("/questions/lifecycle")
 async def question_lifecycle(req: QuestionLifecycleRequest):
     return await pi_client.plugin_call(
-        "overseer", "POST", "/questions/lifecycle", req.dict())
+        "overseer", "POST", "/questions/lifecycle", req.model_dump())
 
 
 class QuestionUpsertRequest(BaseModel):
@@ -591,7 +591,7 @@ class RouteExistingRequest(BaseModel):
 @router.post("/questions/route-existing")
 async def route_existing(req: RouteExistingRequest):
     return await pi_client.plugin_call(
-        "overseer", "POST", "/questions/route-existing", req.dict(),
+        "overseer", "POST", "/questions/route-existing", req.model_dump(),
         timeout=600.0,
     )
 
@@ -638,7 +638,7 @@ class BlindspotActiveRequest(BaseModel):
 @router.post("/blindspots/active")
 async def set_blindspot_active(req: BlindspotActiveRequest):
     return await pi_client.plugin_call(
-        "overseer", "POST", "/blindspots/active", req.dict())
+        "overseer", "POST", "/blindspots/active", req.model_dump())
 
 
 class CorrectionRequest(BaseModel):
@@ -1012,7 +1012,7 @@ class SubAgentTierUpdate(BaseModel):
 async def overseer_set_sub_agent_tier(req: SubAgentTierUpdate):
     """Change a sub-agent's tier (flash | sonnet | opus). Persists."""
     return await pi_client.plugin_call(
-        "overseer", "POST", "/sub-agents/set-tier", req.dict(),
+        "overseer", "POST", "/sub-agents/set-tier", req.model_dump(),
         timeout=10.0,
     )
 
@@ -1046,7 +1046,7 @@ async def insight_scan_now(req: InsightScanRequest):
     """Trigger a Sonnet scan of one project's recent gist arc.
     Proposes theme/pattern/drift candidates to the pending queue."""
     return await pi_client.plugin_call(
-        "overseer", "POST", "/insight/scan-now", req.dict(),
+        "overseer", "POST", "/insight/scan-now", req.model_dump(),
         timeout=60.0,
     )
 
@@ -1157,7 +1157,7 @@ async def project_summary_refresh(req: ProjectRefreshRequest):
     imported_sessions + each row's metadata_json."""
     return await pi_client.plugin_call(
         "overseer", "POST", "/projects/summary/refresh",
-        req.dict(),
+        req.model_dump(),
     )
 
 
@@ -1262,7 +1262,7 @@ class HumanJournalDeleteRequest(BaseModel):
 async def delete_human_journal(req: HumanJournalDeleteRequest):
     return await pi_client.plugin_call(
         "overseer", "POST", "/human-journal/delete",
-        req.dict())
+        req.model_dump())
 
 
 # ── Slice 6: people ─────────────────────────────────────────────
@@ -1339,7 +1339,7 @@ class PersonDeleteRequest(BaseModel):
 @router.post("/people/delete")
 async def delete_person(req: PersonDeleteRequest):
     return await pi_client.plugin_call(
-        "overseer", "POST", "/people/delete", req.dict())
+        "overseer", "POST", "/people/delete", req.model_dump())
 
 
 class LinkProjectPersonRequest(BaseModel):
@@ -1364,7 +1364,7 @@ class UnlinkProjectPersonRequest(BaseModel):
 @router.post("/people/unlink-project")
 async def unlink_project_person(req: UnlinkProjectPersonRequest):
     return await pi_client.plugin_call(
-        "overseer", "POST", "/people/unlink-project", req.dict())
+        "overseer", "POST", "/people/unlink-project", req.model_dump())
 
 
 @router.get("/people/for-project")
