@@ -83,7 +83,93 @@ try:
     from cortex_desktop import __version__ as _cd_version
 except ImportError:
     _cd_version = "0.0.0-unknown"
-app = FastAPI(title="Cortex Hub", version=_cd_version)
+
+
+# --- App lifespan -----------------------------------------------------------
+# v0.19.0-dev.2: migrated from the deprecated @app.on_event
+# startup/shutdown hooks to a lifespan context manager. Behavior is
+# unchanged; the task handles that were module-level globals now live
+# in the closure. Also closes pi_client's shared connection pool.
+
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # -- startup --
+    # Plugin sidecar lifecycle: owns the registry at
+    # %APPDATA%/Cortex/plugins/registry.json. Spawns auto_start=true
+    # plugins on boot, polls health every 5s, gracefully stops
+    # everything on shutdown. See services/plugin_manager.py.
+    manager = PluginManager()
+    set_manager(manager)
+    app.state.plugins = manager
+
+    for plugin in manager.list_installed():
+        if plugin.auto_start:
+            try:
+                manager.start(plugin.id)
+            except Exception as exc:
+                logger.error(
+                    "Failed to auto-start plugin %s: %s", plugin.id, exc
+                )
+
+    health_task = asyncio.create_task(manager.health_loop())
+
+    # Once-per-launch update check. Fire-and-forget so a slow GitHub
+    # response doesn't delay the Hub coming up. Result lands in each
+    # plugin's latest_available_version field, which the Plugins tab
+    # reads off /api/plugins.
+    async def _initial_check_updates() -> None:
+        try:
+            result = await manager.check_updates()
+            avail = {pid: v for pid, v in result.items() if v}
+            if avail:
+                logger.info("Plugin updates available: %s", avail)
+        except Exception as exc:
+            logger.warning("Initial check_updates failed: %s", exc)
+
+    asyncio.create_task(_initial_check_updates())
+
+    # Video overseer bridge — polls cortex-vision for completed-but-
+    # unpushed sessions and forwards each as a Pi note. Idempotent and
+    # self-healing; safe to start unconditionally regardless of whether
+    # cortex-vision is currently registered. See
+    # services/video_overseer_bridge.py.
+    bridge = VideoOverseerBridge(manager)
+    app.state.video_bridge = bridge
+    bridge_task = bridge.start()
+
+    yield
+
+    # -- shutdown --
+    bridge.stop()
+    if bridge_task is not None:
+        bridge_task.cancel()
+        try:
+            await bridge_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    manager.stop_health_loop()
+    health_task.cancel()
+    try:
+        await health_task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+    for plugin in manager.list_installed():
+        try:
+            manager.stop(plugin.id, graceful=True)
+        except Exception as exc:
+            logger.error("Failed to stop plugin %s: %s", plugin.id, exc)
+
+    # Close the shared Pi connection pool (services/pi_client.py)
+    from services import pi_client as _pi_client
+    await _pi_client.aclose_client()
+
+
+app = FastAPI(title="Cortex Hub", version=_cd_version, lifespan=_lifespan)
 
 # CORS for Vite dev server
 app.add_middleware(
@@ -115,93 +201,6 @@ app.include_router(video.router, prefix="/api/video", tags=["video"])
 # /api/* so the URL is short + bookmarkable: http://localhost:8003/intro
 from routers import intro as intro_router  # noqa: E402
 app.include_router(intro_router.router, tags=["intro"])
-
-
-# --- Plugin sidecar lifecycle ----------------------------------------------
-# Owns the registry at %APPDATA%/Cortex/plugins/registry.json. Spawns
-# auto_start=true plugins on boot, polls health every 5s, gracefully
-# stops everything on shutdown. See services/plugin_manager.py.
-
-_health_task: asyncio.Task | None = None
-_bridge_task: asyncio.Task | None = None
-
-
-@app.on_event("startup")
-async def _start_plugins() -> None:
-    global _health_task, _bridge_task
-    manager = PluginManager()
-    set_manager(manager)
-    app.state.plugins = manager
-
-    for plugin in manager.list_installed():
-        if plugin.auto_start:
-            try:
-                manager.start(plugin.id)
-            except Exception as exc:
-                logger.error(
-                    "Failed to auto-start plugin %s: %s", plugin.id, exc
-                )
-
-    _health_task = asyncio.create_task(manager.health_loop())
-
-    # Once-per-launch update check. Fire-and-forget so a slow GitHub
-    # response doesn't delay the Hub coming up. Result lands in each
-    # plugin's latest_available_version field, which the Plugins tab
-    # reads off /api/plugins.
-    async def _initial_check_updates() -> None:
-        try:
-            result = await manager.check_updates()
-            avail = {pid: v for pid, v in result.items() if v}
-            if avail:
-                logger.info("Plugin updates available: %s", avail)
-        except Exception as exc:
-            logger.warning("Initial check_updates failed: %s", exc)
-
-    asyncio.create_task(_initial_check_updates())
-
-    # Video overseer bridge — polls cortex-vision for completed-but-
-    # unpushed sessions and forwards each as a Pi note. Idempotent and
-    # self-healing; safe to start unconditionally regardless of whether
-    # cortex-vision is currently registered. See
-    # services/video_overseer_bridge.py.
-    bridge = VideoOverseerBridge(manager)
-    app.state.video_bridge = bridge
-    _bridge_task = bridge.start()
-
-
-@app.on_event("shutdown")
-async def _stop_plugins() -> None:
-    global _health_task, _bridge_task
-
-    bridge: VideoOverseerBridge | None = getattr(
-        app.state, "video_bridge", None
-    )
-    if bridge is not None:
-        bridge.stop()
-        if _bridge_task is not None:
-            _bridge_task.cancel()
-            try:
-                await _bridge_task
-            except (asyncio.CancelledError, Exception):
-                pass
-
-    manager: PluginManager | None = getattr(app.state, "plugins", None)
-    if manager is None:
-        return
-
-    manager.stop_health_loop()
-    if _health_task is not None:
-        _health_task.cancel()
-        try:
-            await _health_task
-        except (asyncio.CancelledError, Exception):
-            pass
-
-    for plugin in manager.list_installed():
-        try:
-            manager.stop(plugin.id, graceful=True)
-        except Exception as exc:
-            logger.error("Failed to stop plugin %s: %s", plugin.id, exc)
 
 
 @app.get("/api/debug/logs")
