@@ -111,6 +111,10 @@ app.include_router(transcribe.router, prefix="/api/transcribe", tags=["transcrib
 app.include_router(voice.router, prefix="/api/voice", tags=["voice"])
 app.include_router(plugins_router.router, prefix="/api/plugins", tags=["plugins"])
 app.include_router(video.router, prefix="/api/video", tags=["video"])
+# Standalone copy-context page for non-MCP AI paste. Lives outside
+# /api/* so the URL is short + bookmarkable: http://localhost:8003/intro
+from routers import intro as intro_router  # noqa: E402
+app.include_router(intro_router.router, tags=["intro"])
 
 
 # --- Plugin sidecar lifecycle ----------------------------------------------
