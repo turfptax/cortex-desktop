@@ -1,3 +1,3 @@
 """Cortex MCP - Bridge to Cortex Core wearable AI memory system."""
 
-__version__ = "0.5.0"  # add sibling_{pending,claim,complete,reject} tools (2026-05-16)
+__version__ = "0.5.1"  # config.json layer in wifi_bridge resolution (2026-06-09)
