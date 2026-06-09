@@ -35,28 +35,66 @@ def _load_discovery():
         return {}
 
 
+def _load_user_config():
+    """Load the shared Cortex user config (%APPDATA%/Cortex/config.json
+    on Windows, ~/.config/Cortex/config.json elsewhere).
+
+    This is the same file cortex_desktop and the Hub Settings UI write,
+    so a Pi IP change made in Settings reaches the MCP server too. Read
+    fresh on every call (the file is tiny) rather than cached at import
+    so new bridge constructions see current values. We only ever READ
+    this file from here: the MCP server runs as a child of Claude
+    Desktop (UWP), where %APPDATA% writes get sandbox-redirected.
+    """
+    if os.name == "nt":
+        base = os.environ.get(
+            "APPDATA", os.path.join(os.path.expanduser("~"),
+                                    "AppData", "Roaming"))
+    else:
+        base = os.environ.get(
+            "XDG_CONFIG_HOME",
+            os.path.join(os.path.expanduser("~"), ".config"))
+    path = os.path.join(base, "Cortex", "config.json")
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
 def get_pi_host():
-    """Get Pi IP from env var, BLE discovery, or default."""
+    """Get Pi IP: env var > user config.json > BLE discovery > default."""
     env = os.environ.get("CORTEX_PI_HOST", "")
     if env:
         return env
+    user = _load_user_config()
+    if user.get("pi_host"):
+        return user["pi_host"]
     discovered = _load_discovery()
     return discovered.get("ip", DEFAULT_PI_HOST)
 
 
 def get_pi_port():
-    """Get Pi HTTP port from env var, BLE discovery, or default."""
+    """Get Pi HTTP port: env var > user config.json > BLE discovery > default."""
     env = os.environ.get("CORTEX_PI_PORT", "")
     if env:
         return int(env)
+    user = _load_user_config()
+    if user.get("pi_port"):
+        return int(user["pi_port"])
     discovered = _load_discovery()
     return discovered.get("port", DEFAULT_PI_PORT)
 
 
 def get_pi_credentials():
-    """Get Pi HTTP Basic Auth credentials from env vars or defaults."""
-    username = os.environ.get("CORTEX_PI_USERNAME", DEFAULT_PI_USERNAME)
-    password = os.environ.get("CORTEX_PI_PASSWORD", DEFAULT_PI_PASSWORD)
+    """Get Pi Basic Auth credentials: env var > user config.json > default."""
+    user = _load_user_config()
+    username = os.environ.get(
+        "CORTEX_PI_USERNAME",
+        user.get("pi_username") or DEFAULT_PI_USERNAME)
+    password = os.environ.get(
+        "CORTEX_PI_PASSWORD",
+        user.get("pi_password") or DEFAULT_PI_PASSWORD)
     return username, password
 
 
