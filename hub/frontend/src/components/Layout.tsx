@@ -9,7 +9,6 @@ interface LayoutProps {
   setPage: (page: Page) => void
   status: StatusInfo
   petStatus: PetStatus | null
-  visionRunning?: boolean
   children: ReactNode
 }
 
@@ -17,16 +16,16 @@ interface NavItem {
   id: Page
   label: string
   icon: string
-  /** When true, only show this nav item when its plugin is registered + running */
-  pluginGated?: boolean
 }
 
+// UI redesign Phase 1 (2026-06-10): sections organized by what
+// things ARE, not which agent made them. Video lives under System.
 const navItems: NavItem[] = [
+  { id: 'search', label: 'Search', icon: '🔍' },
+  { id: 'corpus', label: 'Corpus', icon: '🧠' },
   { id: 'chat', label: 'Chat', icon: '💬' },
-  { id: 'pi', label: 'Pi', icon: '🥧' },
-  { id: 'data', label: 'Data', icon: '📊' },
-  { id: 'overseer', label: 'Overseer', icon: '🧭' },
-  { id: 'video', label: 'Video', icon: '🎥', pluginGated: true },
+  { id: 'journal', label: 'Journal', icon: '📓' },
+  { id: 'system', label: 'System', icon: '🛠️' },
   { id: 'settings', label: 'Settings', icon: '⚙️' },
 ]
 
@@ -35,13 +34,9 @@ export function Layout({
   setPage,
   status,
   petStatus,
-  visionRunning = false,
   children,
 }: LayoutProps) {
-  const visibleNav = navItems.filter((item) => {
-    if (item.id === 'video') return visionRunning
-    return !item.pluginGated
-  })
+  const visibleNav = navItems
   const [useVoxels, setUseVoxels] = useState(false)
 
   // v0.18.0-dev.25 (2026-05-19): show the running version in the
