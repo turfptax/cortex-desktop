@@ -354,19 +354,26 @@ def session_end(session_id: str, summary: str, projects: str = "") -> str:
 
 @mcp.tool()
 def get_context() -> str:
-    """Get full context for starting an informed AI session.
+    """Get the FULL working_memory + composite system state. Heavy.
 
-    Returns active projects, recent sessions, pending reminders,
-    recent decisions, open bugs, and computer info. Call this at the
-    start of every conversation to understand what the user is working on.
+    **For new AI sessions: prefer `cortex_intro` instead** — it's the
+    curated 30-second brief about Tory (who he is, what he's working
+    on, what he's thinking about) that's actually useful at session
+    boot. `get_context` returns 29 fields including a lot of
+    overseer-internal operational state (queue depths, sibling
+    counters, gist source distribution, automation rollups) most
+    consumers don't need.
 
-    The response includes a `working_memory` artifact assembled by the
-    Overseer plugin. Items in working_memory carry `token` fields like
-    "q:42" (question), "p:5" (pattern), "d:1" (drift), "g:75" (gist),
-    "r:18" (rollup), "n:1" (future-overseer note), "t:5" (theme),
-    "b:7" (blindspot), "j:1" (journal entry), "e:3" (episode),
-    "dial:2" (dialectic). Pass any of these to cortex_overseer_detail
-    to drill in.
+    Use `get_context` when you specifically need to reason about the
+    Cortex system's plumbing — overseer's own queue, journal, import
+    backlog, rollups, etc. Otherwise use `cortex_intro`.
+
+    Working memory items carry `token` fields like "q:42" (question),
+    "p:5" (pattern), "d:1" (drift), "g:75" (gist), "r:18" (rollup),
+    "n:1" (future-overseer note), "t:5" (theme), "b:7" (blindspot),
+    "j:1" (journal entry), "e:3" (episode), "dial:2" (dialectic),
+    "nar:1" (temporal narrative), "hj:1" (human journal entry).
+    Pass any of these to cortex_overseer_detail to drill in.
     """
     try:
         return send_command(_get_bridge_lazy(), "get_context", timeout=20)
@@ -438,6 +445,54 @@ def cortex_overseer_detail(token: str) -> str:
     )
     if err:
         return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def cortex_intro(format: str = "markdown") -> str:
+    """**START HERE.** Curated context brief about Tory (the user
+    Cortex serves) and what he's currently working on / thinking
+    about / deciding.
+
+    Call this FIRST when starting a new conversation. In ~30 seconds
+    of reading, you'll know:
+      - Who Tory is (name, role, neurotype, location, sensitive
+        topics, how to work with him)
+      - What he's actively working on (top projects with session +
+        time data)
+      - What he's thinking about (high-confidence open questions
+        with evidence counts + drill tokens)
+      - Recent decisions (with drill tokens to the source gists)
+      - Recent themes and key drift (his focus + behavior changes)
+      - Calibration notes for the AI reading this (blindspots
+        specifically about how YOUR model class misreads him)
+      - Institutional memory from prior AI/looper instances
+
+    This REPLACES the old `get_context` -> `working_memory` dump for
+    new-session boot. working_memory was 29 keys, ~half operational
+    chatter (queue depths, sibling stats, gist source distribution,
+    automation rollups). The intro brief leads with Tory-state +
+    demotes ops to a single sub-key.
+
+    Drill tokens (`q:N`, `g:N`, `t:N`, `d:N`, `b:N`, `n:N`) in the
+    brief work with `cortex_overseer_detail` for the full row.
+
+    Args:
+        format: 'markdown' (default — render as readable doc) or
+            'json' (structured dict for programmatic consumers).
+
+    Returns the brief as markdown or JSON.
+    """
+    import json as _json
+    payload = {"format": format} if format else {}
+    result, err = _overseer_plugin_call(
+        "GET", "/intro", payload, timeout=15,
+    )
+    if err:
+        return "Error: {}".format(err)
+    if format == "markdown" and isinstance(result, dict) \
+            and result.get("markdown"):
+        return result["markdown"]
     return _json.dumps(result, indent=2, default=str)
 
 
