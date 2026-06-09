@@ -1,21 +1,30 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Layout } from './components/Layout'
+import { SearchPage } from './components/search/SearchPage'
 import { ChatPage } from './components/chat/ChatPage'
-import { PiPage } from './components/pi/PiPage'
-import { DataPage } from './components/data/DataPage'
 import { SettingsPage } from './components/settings/SettingsPage'
 import { OverseerPage } from './components/overseer/OverseerPage'
-import { VideoPage } from './components/video/VideoPage'
+import { JournalPage } from './components/journal/JournalPage'
+import { SystemPage } from './components/system/SystemPage'
 import { apiFetch } from './lib/api'
 import { type PetStatus } from './components/PetWidget'
 import { useInstalledPlugins } from './hooks/useInstalledPlugins'
 
-export type Page = 'chat' | 'pi' | 'data' | 'overseer' | 'video' | 'settings'
+export type Page =
+  | 'search' | 'corpus' | 'chat' | 'journal' | 'system' | 'settings'
 
 const PAGES: readonly Page[] = [
-  'chat', 'pi', 'data', 'overseer', 'video', 'settings',
+  'search', 'corpus', 'chat', 'journal', 'system', 'settings',
 ]
+
+// Pre-redesign hashes keep working (bookmarks, muscle memory).
+const LEGACY_ALIASES: Record<string, Page> = {
+  overseer: 'corpus',
+  pi: 'system',
+  data: 'system',
+  video: 'system',
+}
 
 export interface StatusInfo {
   lmstudioOnline: boolean
@@ -24,10 +33,12 @@ export interface StatusInfo {
 
 /** The URL hash is the source of truth for the top-level tab, so
  * tabs survive a refresh and can be deep-linked / bookmarked
- * (e.g. http://localhost:8003/#/overseer). */
+ * (e.g. http://localhost:8003/#/search). */
 function pageFromHash(): Page {
   const h = window.location.hash.replace(/^#\/?/, '')
-  return (PAGES as readonly string[]).includes(h) ? (h as Page) : 'chat'
+  if ((PAGES as readonly string[]).includes(h)) return h as Page
+  if (h in LEGACY_ALIASES) return LEGACY_ALIASES[h]
+  return 'search'
 }
 
 function useHashPage(): [Page, (p: Page) => void] {
@@ -95,29 +106,20 @@ function App() {
   const visionRunning =
     plugins.find((p) => p.id === 'cortex-vision')?.is_running ?? false
 
-  // Deep-link guard: if user navigates to Video but the plugin isn't
-  // running (e.g. plugin was uninstalled in another tab), bounce them
-  // to Settings → Plugins. Half-broken pages age worse than missing
-  // ones.
-  useEffect(() => {
-    if (page === 'video' && !visionRunning) {
-      setPage('settings')
-    }
-  }, [page, visionRunning, setPage])
-
   return (
     <Layout
       page={page}
       setPage={setPage}
       status={status}
       petStatus={petStatus}
-      visionRunning={visionRunning}
     >
+      {page === 'search' && <SearchPage />}
+      {page === 'corpus' && <OverseerPage />}
       {page === 'chat' && <ChatPage petStatus={petStatus} />}
-      {page === 'pi' && <PiPage status={status} />}
-      {page === 'data' && <DataPage status={status} />}
-      {page === 'overseer' && <OverseerPage />}
-      {page === 'video' && visionRunning && <VideoPage />}
+      {page === 'journal' && <JournalPage />}
+      {page === 'system' && (
+        <SystemPage status={status} visionRunning={visionRunning} />
+      )}
       {page === 'settings' && <SettingsPage />}
     </Layout>
   )
