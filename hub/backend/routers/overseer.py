@@ -921,6 +921,22 @@ async def overseer_intro(format: str = "markdown"):
     )
 
 
+@router.get("/vector/status")
+async def vector_status():
+    """Vector index coverage: model, dim, embedded/total gists."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/vector/status", timeout=10.0)
+
+
+@router.get("/vector/search")
+async def vector_search(q: str, k: int = 10):
+    """Semantic (meaning) search over the gist corpus. Local
+    embeddings on the Pi; nothing leaves the host."""
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/vector/search", {"q": q, "k": k},
+        timeout=30.0)
+
+
 @router.get("/detail")
 async def overseer_detail(token: str):
     """Resolve a working-memory token (e.g. 'q:42', 'p:5') to its full
