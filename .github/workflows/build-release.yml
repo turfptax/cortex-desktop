@@ -31,6 +31,14 @@ jobs:
           pip install -e .
           pip install pyinstaller
 
+      # Run the test suite before spending CI minutes on Vulkan,
+      # whisper.cpp, and PyInstaller. A red test fails the build
+      # (and therefore blocks the release tag) early.
+      - name: Run tests
+        run: |
+          pip install pytest
+          python -m pytest tests/ -q
+
       - name: Install frontend dependencies
         working-directory: hub/frontend
         run: npm ci
