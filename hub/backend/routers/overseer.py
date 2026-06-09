@@ -910,6 +910,17 @@ async def import_paths(req: ImportRequest):
 # ── Slice 3g checkpoint 2: drill-down ──────────────────────────
 
 
+@router.get("/intro")
+async def overseer_intro(format: str = "markdown"):
+    """Curated 'who is Tory + what does he care about' brief for
+    new AI sessions. Replaces the working_memory dump as the
+    boot-context surface."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/intro", {"format": format},
+        timeout=15.0,
+    )
+
+
 @router.get("/detail")
 async def overseer_detail(token: str):
     """Resolve a working-memory token (e.g. 'q:42', 'p:5') to its full
