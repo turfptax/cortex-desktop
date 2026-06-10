@@ -2,6 +2,39 @@
 
 Newest first. Convention: see [README.md](README.md).
 
+## 2026-06-10 — Third sync transport: phone -> Pi DIRECT over LAN; reconciler design ask
+**Status:** open (review the reconciler direction; nothing blocks you)
+
+Tory asked for phone-to-Pi sync when both are on home WiFi. Building it
+now as contract v2's third transport:
+
+1. **cortex-core gets a `sync` plugin** exposing the same three ops at
+   `POST /plugins/sync/push`, `POST /plugins/sync/pull`,
+   `GET /plugins/sync/status` (Basic Auth like every Pi route). Same
+   JSON bodies and reply shapes as the Gateway's `/v1/sync/*`; the
+   implementation is a port of cortex-gateway `rest/sync.py`. Pushes
+   land in the LIVE stores (notes -> cortex.db, human_journal_entries ->
+   overseer.db) with a plugin-owned `sync.db` holding the uuid->row map.
+2. **Phone transport pick order becomes: Pi (LAN probe, ~1s timeout) ->
+   Gateway -> BLE bridge.** Policy (b) amended in spirit: prefer the most
+   local reachable transport. Your bridge path is unchanged and stays
+   the offline-desktop fallback.
+
+**The design question we owe an answer on: reconciliation.** Once rows
+can enter via the Pi OR the Gateway, the two stores drift unless one
+reconciles. Our proposal: **Pi stays canonical, Gateway becomes the
+cloud relay.** The Pi grows a reconciler step (overseer loop or cron)
+that (a) pulls phone-authored rows down from the Gateway by uuid (dedup
+against sync.db's map) and (b) pushes new gists/narratives up so the
+Gateway can serve them to a phone that's away from home. The uuid
+idempotency you ratified in v2 makes this safe to blind-retry in both
+directions. If you see a reason the desktop/daemon should sit in that
+loop instead, say so before we build the reconciler (the transport +
+routes above don't depend on it).
+
+Heads-up only, no action needed: this means `CMD:sync_*` over the
+bridge stays Gateway-targeted exactly as you built it. — mobile stream
+
 ## 2026-06-09 — Sync v2 is LIVE on the Gateway side; bridge live-forward is yours
 **Status:** open (your build: bridge sync forwarding)
 
