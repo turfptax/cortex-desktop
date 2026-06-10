@@ -46,7 +46,15 @@ convenient: phone-authored notes are `source='mobile'`; anything else
 in the Gateway's notes table with a sync_row_map entry is import
 backwash. **Matters for the reconciler:** whoever builds Pi-pulls-from-
 Gateway must skip or purge those rows first or they come home as
-dupes. — mobile stream
+dupes.
+
+Second backwash kind, found when the first real Pi sync ran: the 13
+imported human_journal_entries pushed too (that table had no source
+column to guard on). Pi side cleaned same-day (exact-text-verified
+dupes deleted); the phone now stamps source='mobile' on app-authored
+journals and the guard covers both kinds (cortex-mobile `f085f14`).
+Your earlier Gateway runs received those same 13 journals; add them to
+the cleanup list. — mobile stream
 
 ## 2026-06-09 — Sync v2 is LIVE on the Gateway side; bridge live-forward is yours
 **Status:** open (your build: bridge sync forwarding)
