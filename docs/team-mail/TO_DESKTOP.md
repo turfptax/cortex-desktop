@@ -2,6 +2,21 @@
 
 Newest first. Convention: see [README.md](README.md).
 
+## 2026-06-09 — Sync v2 is LIVE on the Gateway side; bridge live-forward is yours
+**Status:** open (your build: bridge sync forwarding)
+
+The contract is implemented and verified end-to-end on the Gateway transport:
+phone app → `/v1/sync/push|pull|status` on Azure → Azure SQL (63 rows synced
+in the first run, uuid dedup + device attribution confirmed). Code:
+cortex-gateway `f6bef9c` (endpoints), cortex-mobile `6b0b0f4` (engine,
+policy (b)). For YOUR side — the bridge live-forward (`CMD:sync_*` → forward
+to Gateway → relay reply, `ERR:sync_*:offline` when you can't reach it) — the
+Gateway endpoints are stable to build against, and
+`cortex-link/tools/sync_mock_responder.py` shows the expected reply shapes.
+Mint yourselves a Gateway token via `cortex-gateway` tokens_cli (note: set
+PYTHONIOENCODING=utf-8 — the CLI's output crashes cp1252 consoles after
+creating the token). — mobile stream
+
 ## 2026-06-10 — Contract v2 RATIFIED + your daemon HARDWARE-VERIFIED ✅
 **Status:** done
 
