@@ -147,10 +147,17 @@ class CortexDaemon:
         self._clients_served = 0
         self._phone_requests = 0
         self._start_time = None
-        self._token = _generate_secret()
+        # Secret is generated in run() AFTER the serial port binds.
+        # Generating it here clobbered the live daemon's token every
+        # time a second instance was attempted and died on the busy
+        # port, locking all TCP clients out of the real daemon
+        # (observed 2026-06-10).
+        self._token = None
 
     def check_token(self, token):
         """Validate a client's auth token using constant-time comparison."""
+        if self._token is None:
+            return False
         return secrets.compare_digest(token, self._token)
 
     def answer_inbound(self, line):
@@ -267,6 +274,10 @@ class CortexDaemon:
         # Phone bridge (2026-06-10): answer phone-originated CMD:
         # lines arriving via the dongle. See answer_inbound().
         self.bridge.inbound_handler = self.answer_inbound
+
+        # Serial bound successfully -- NOW it is safe to own the
+        # shared secret file (see __init__ note).
+        self._token = _generate_secret()
 
         # Write lock file
         _write_lock_file(os.getpid(), self.daemon_port)
