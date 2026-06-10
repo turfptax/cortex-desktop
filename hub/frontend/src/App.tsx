@@ -35,7 +35,9 @@ export interface StatusInfo {
  * tabs survive a refresh and can be deep-linked / bookmarked
  * (e.g. http://localhost:8003/#/search). */
 function pageFromHash(): Page {
-  const h = window.location.hash.replace(/^#\/?/, '')
+  // First segment is the page; sections own deeper segments
+  // (e.g. #/corpus/insights -> page 'corpus', sub-tab 'insights').
+  const h = window.location.hash.replace(/^#\/?/, '').split('/')[0]
   if ((PAGES as readonly string[]).includes(h)) return h as Page
   if (h in LEGACY_ALIASES) return LEGACY_ALIASES[h]
   return 'search'
