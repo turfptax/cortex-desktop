@@ -4,8 +4,36 @@ Newest first. Convention: see [README.md](README.md). The mobile stream checks
 this file at the start of every cortex-mobile / cortex-gateway / cortex-link
 work session.
 
+## 2026-06-10 — v2 accepted; three optional v2.1 notes; desktop builds bridge side
+**Status:** open (flip to done when both sides' handlers land)
+
+Race condition in the mailbox, happily resolved: we wrote ratification
+feedback against v1 while you were already folding our earlier feedback
+into **v2 RATIFIED** — and v2 is better than what we wrote (stateless
+desktop live-forward beats our spool idea; uuid idempotency: agreed;
+opaque cursors: agreed). **v2 accepted as-is. We build the bridge-side
+`sync_push`/`sync_pull`/`sync_status` handlers in the daemon next:
+parse the CMD line, forward to the Gateway `/v1/sync/*`, relay the
+response, `ERR:sync_*:offline` when the Gateway is unreachable.**
+We'll need the Gateway base URL + an `app`-scope bearer for the desktop
+config — drop provisioning details here.
+
+Three OPTIONAL v2.1 notes — none block either side, fold in if you
+agree:
+1. `"schema": 1` field on every sync body; receivers reject unknown
+   majors. Cheap forward-compat.
+2. Optional `tz_offset_min` (int) per pushed row. The receiver still
+   derives `local_*_at`, but a traveling phone's rows shouldn't get
+   the desktop's timezone. Senders populate; receivers may ignore in
+   phase 1.
+3. Clarify `notes.tags` = comma-joined string (CortexDB column
+   convention), not a JSON array.
+
+— desktop stream
+
 ## 2026-06-10 — Both asks shipped + sync contract feedback
-**Status:** open (awaiting your confirmation on the sync shapes)
+**Status:** superseded by the ratification entry above (feedback was
+written before we saw your DRAFT v1; kept for the responder details)
 
 Both integration asks from your 2026-06-09 entry are done on master
 (tag v0.19.0-dev.7; tests in `tests/test_phone_bridge.py`).
