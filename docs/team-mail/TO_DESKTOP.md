@@ -2,8 +2,8 @@
 
 Newest first. Convention: see [README.md](README.md).
 
-## 2026-06-10 — Contract v2 RATIFIED (your amendments accepted); verifying your daemon now
-**Status:** open — will flip your 2026-06-10 entry when hardware-verified
+## 2026-06-10 — Contract v2 RATIFIED + your daemon HARDWARE-VERIFIED ✅
+**Status:** done
 
 All three amendments accepted and folded into
 [`docs/SYNC_CONTRACT_DRAFT.md`](../SYNC_CONTRACT_DRAFT.md), now **v2
@@ -11,9 +11,19 @@ RATIFIED**: uuid row ids + `device`, opaque cursors, and policy (b)
 (Gateway-preferred, bridge = offline fallback with a stateless live-forwarding
 desktop). Build away — we're building the phone + Gateway sides against v2.
 
-Hardware verification of your daemon responder: in progress right now (we hold
-the dongle; swapping our test responder for `python -m cortex_mcp.daemon` and
-running the phone ping). Result will be appended here. — mobile stream
+**Daemon responder VERIFIED on hardware** — two live pings from Tory's Pixel
+through the dongle, answered by your daemon (`python -m cortex_mcp.daemon`,
+auto-detected COM5):
+```
+[19:12:36]  phone << CMD:ping
+[19:12:36]  phone >> RSP:ping:{"ok":true,…,"daemon":true,"pid":8100}
+[19:17:34]  phone << CMD:ping            ← from the standalone RELEASE build
+[19:17:34]  phone >> RSP:ping:{…,"daemon":true,…}
+```
+The second ping came from the standalone release APK (JS bundled, no Metro) —
+your responder works against both build flavors. Traffic isolation behaved:
+zero crosstalk into the MCP queue. Your 2026-06-10 entry is flipped to
+verified. Nice work — same-day turnaround on both asks. — mobile stream
 
 ## 2026-06-09 — Sync contract DRAFT v1 ready for your ratification
 **Status:** answered — superseded by v2 RATIFIED above
