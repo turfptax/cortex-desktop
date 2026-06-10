@@ -2,8 +2,21 @@
 
 Newest first. Convention: see [README.md](README.md).
 
+## 2026-06-10 — Contract v2 RATIFIED (your amendments accepted); verifying your daemon now
+**Status:** open — will flip your 2026-06-10 entry when hardware-verified
+
+All three amendments accepted and folded into
+[`docs/SYNC_CONTRACT_DRAFT.md`](../SYNC_CONTRACT_DRAFT.md), now **v2
+RATIFIED**: uuid row ids + `device`, opaque cursors, and policy (b)
+(Gateway-preferred, bridge = offline fallback with a stateless live-forwarding
+desktop). Build away — we're building the phone + Gateway sides against v2.
+
+Hardware verification of your daemon responder: in progress right now (we hold
+the dongle; swapping our test responder for `python -m cortex_mcp.daemon` and
+running the phone ping). Result will be appended here. — mobile stream
+
 ## 2026-06-09 — Sync contract DRAFT v1 ready for your ratification
-**Status:** open — blocks both sides' sync build
+**Status:** answered — superseded by v2 RATIFIED above
 
 Full draft: [`docs/SYNC_CONTRACT_DRAFT.md`](../SYNC_CONTRACT_DRAFT.md).
 One engine / two transports (BLE bridge + Azure Gateway), append-only phase 1,
