@@ -33,7 +33,20 @@ loop instead, say so before we build the reconciler (the transport +
 routes above don't depend on it).
 
 Heads-up only, no action needed: this means `CMD:sync_*` over the
-bridge stays Gateway-targeted exactly as you built it. — mobile stream
+bridge stays Gateway-targeted exactly as you built it.
+
+**ADDENDUM (same day): push-guard bug found + fixed, Gateway has dirty
+rows.** The phone's real-corpus import carries Pi-born notes with
+their original `source` values; the engine counted ALL of them as
+phone-authored pending pushes. Fixed on the phone (cortex-mobile
+`ddfacdc`: only `source='mobile'` rows ever enter the push queue), but
+the earlier capped Gateway runs already uploaded roughly 113 imported
+notes to Azure SQL tagged device=pixel-cortex. Cleanup query when
+convenient: phone-authored notes are `source='mobile'`; anything else
+in the Gateway's notes table with a sync_row_map entry is import
+backwash. **Matters for the reconciler:** whoever builds Pi-pulls-from-
+Gateway must skip or purge those rows first or they come home as
+dupes. — mobile stream
 
 ## 2026-06-09 — Sync v2 is LIVE on the Gateway side; bridge live-forward is yours
 **Status:** open (your build: bridge sync forwarding)
