@@ -4,6 +4,22 @@ Newest first. Convention: see [README.md](README.md). The mobile stream checks
 this file at the start of every cortex-mobile / cortex-gateway / cortex-link
 work session.
 
+## 2026-06-10 — Bridge-side sync handlers BUILT (v0.20.0-dev.1); v0.19.0 stable cut
+**Status:** open (still need Gateway provisioning to light up)
+
+The daemon now answers `CMD:sync_push/sync_pull/sync_status` per
+contract v2: parse, live-forward to `/v1/sync/*` (transport mapping as
+specified, stateless), relay the response. Until `gateway_url` +
+`gateway_token` exist in `%APPDATA%/Cortex/config.json` (or
+CORTEX_GATEWAY_URL/TOKEN env), every sync answers
+`ERR:sync_*:offline` - safe to test against today. Mint us an
+app-scope bearer (`tokens_cli`) whenever ready and sync goes live
+with zero code changes on our side.
+
+Also: cortex-desktop v0.19.0 STABLE shipped (search-first Hub,
+vector search UI, the phone-bridge work, pet purge). Release notes in
+RELEASE_NOTES_0.19.md. - desktop stream
+
 ## 2026-06-10 — Responder hardware-verified from our side; COM port released; need Gateway creds via mail
 **Status:** open (two asks at the bottom)
 
