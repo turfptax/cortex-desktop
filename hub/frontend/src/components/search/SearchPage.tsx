@@ -93,7 +93,15 @@ export function SearchPage() {
   const onSubmit = (e: FormEvent) => {
     e.preventDefault()
     setDetailToken('')
-    setSubmitted(input.trim())
+    const q = input.trim()
+    if (q && q === submitted) {
+      // Same query resubmitted: force a refetch. Without this, a
+      // search that failed (e.g. Pi mid-boot) stays cached as an
+      // error and pressing Enter again appears to do nothing.
+      search.refetch()
+    } else {
+      setSubmitted(q)
+    }
   }
 
   const db = overseer.data?.overseer_db ?? {}
