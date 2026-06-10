@@ -63,13 +63,20 @@ def _load_user_config():
 
 
 def get_pi_host():
-    """Get Pi IP: env var > user config.json > BLE discovery > default."""
+    """Get Pi IP: env var > user config.json > BLE discovery > default.
+
+    Phone-bridge ask 1 (2026-06-10): the Pi is OPTIONAL. An explicit
+    empty pi_host in config.json means "no Pi" and returns "" without
+    falling through to discovery/default; is_pi_reachable() then
+    short-circuits False and the transport picker goes straight to
+    the dongle/daemon path.
+    """
     env = os.environ.get("CORTEX_PI_HOST", "")
     if env:
         return env
     user = _load_user_config()
-    if user.get("pi_host"):
-        return user["pi_host"]
+    if "pi_host" in user:
+        return user["pi_host"] or ""
     discovered = _load_discovery()
     return discovered.get("ip", DEFAULT_PI_HOST)
 
@@ -110,8 +117,11 @@ def is_pi_reachable(host=None, port=None, timeout=1.0):
 
     Used by _get_bridge() to decide whether to use WiFi or BLE.
     The /health endpoint requires no auth and returns minimal JSON.
+    Empty host = Pi explicitly disabled = False with no network probe.
     """
     host = host or get_pi_host()
+    if not host:
+        return False
     port = port or get_pi_port()
     url = "http://{}:{}/health".format(host, port)
     try:

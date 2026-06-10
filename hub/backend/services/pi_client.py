@@ -49,8 +49,21 @@ def _headers() -> dict:
     return h
 
 
+# Phone-bridge ask 1 (2026-06-10): the Pi is OPTIONAL. An empty
+# pi_host means "no Pi configured" (Azure pivot; the app must run
+# with only the dongle and/or the Gateway). Every Pi call returns a
+# fast, consistent not-configured error instead of a network timeout.
+_NOT_CONFIGURED = "Pi not configured"
+
+
+def pi_configured() -> bool:
+    return bool(settings.pi_host)
+
+
 async def health() -> dict | None:
     """GET /health on the Pi."""
+    if not pi_configured():
+        return {"error": _NOT_CONFIGURED, "online": False}
     try:
         resp = await get_client().get(
             f"{settings.pi_base_url}/health", headers=_headers(),
@@ -64,6 +77,8 @@ async def health() -> dict | None:
 
 async def send_command(command: str, payload: dict | None = None) -> dict:
     """POST /api/cmd on the Pi."""
+    if not pi_configured():
+        return {"error": _NOT_CONFIGURED, "online": False}
     body = {"command": command}
     if payload:
         body["payload"] = payload
@@ -102,6 +117,8 @@ async def plugin_call(
     Slice 2c2c2 — replaces send_command_parsed("pet_*") for the 23 pet
     routes after slice 2c2c1 moved them out of the legacy CMD: protocol.
     """
+    if not pi_configured():
+        return {"ok": False, "error": _NOT_CONFIGURED}
     method = method.upper()
     url = f"{settings.pi_base_url}/plugins/{plugin}{route}"
     try:
@@ -286,6 +303,8 @@ async def delete_record(table: str, row_id) -> dict:
 
 async def check_online() -> bool:
     """Quick check if Pi is reachable."""
+    if not pi_configured():
+        return False
     try:
         resp = await get_client().get(
             f"{settings.pi_base_url}/health", headers=_headers(),

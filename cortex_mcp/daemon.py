@@ -145,12 +145,44 @@ class CortexDaemon:
         self._lock = threading.Lock()
         self._server = None
         self._clients_served = 0
+        self._phone_requests = 0
         self._start_time = None
         self._token = _generate_secret()
 
     def check_token(self, token):
         """Validate a client's auth token using constant-time comparison."""
         return secrets.compare_digest(token, self._token)
+
+    def answer_inbound(self, line):
+        """Answer a phone-originated CMD: line arriving on the dongle
+        serial port (phone -> BLE -> cortex-link -> USB-CDC -> here).
+
+        Productionizes cortex-link/tools/serial_ping_responder.py per
+        docs/CORTEX_LINK_PHONE_BRIDGE.md. Phase 1 commands only:
+        ping + echo. sync_push/sync_pull are deliberately NOT handled
+        until the contract is locked with the mobile stream (they get
+        the generic ACK so the phone sees receipt).
+
+        Called from the bridge reader thread; must be fast and never
+        raise (the bridge guards anyway). Returns the reply line or
+        None.
+        """
+        self._phone_requests += 1
+        ts = time.strftime("%H:%M:%S")
+        print("[{}]  phone << {}".format(ts, line[:80]))
+        if line == "CMD:ping" or line.startswith("CMD:ping:"):
+            reply = "RSP:ping:" + json.dumps({
+                "ok": True, "host": "desktop", "via": "cortex-link",
+                "daemon": True, "pid": os.getpid(),
+            }, separators=(",", ":"))
+        elif line.startswith("CMD:echo:"):
+            reply = "RSP:echo:" + line[len("CMD:echo:"):]
+        else:
+            parts = line.split(":", 2)
+            cmd = parts[1] if len(parts) > 1 and parts[1] else "unknown"
+            reply = "ACK:{}:received-by-desktop".format(cmd)
+        print("[{}]  phone >> {}".format(ts, reply[:80]))
+        return reply
 
     def handle_command(self, cmd, request):
         """Process a client command under the serial lock."""
@@ -166,6 +198,7 @@ class CortexDaemon:
                 "connected": self.bridge.is_connected,
                 "buffered": self.bridge.buffered_count,
                 "clients_served": self._clients_served,
+                "phone_requests": self._phone_requests,
                 "uptime": time.time() - self._start_time if self._start_time else 0,
                 "pid": os.getpid(),
             }
@@ -230,6 +263,10 @@ class CortexDaemon:
         except ConnectionError as e:
             print("Error: {}".format(e), file=sys.stderr)
             sys.exit(1)
+
+        # Phone bridge (2026-06-10): answer phone-originated CMD:
+        # lines arriving via the dongle. See answer_inbound().
+        self.bridge.inbound_handler = self.answer_inbound
 
         # Write lock file
         _write_lock_file(os.getpid(), self.daemon_port)
