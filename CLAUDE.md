@@ -2,6 +2,15 @@
 
 This file provides context for AI agents working in the cortex-desktop repository.
 
+## 📬 Team mail — check FIRST
+
+Two work streams build in parallel (desktop = this repo; mobile =
+cortex-mobile + cortex-gateway + cortex-link). Async messages live in
+`docs/team-mail/`: read **`TO_DESKTOP.md`** at the start of every session and
+write to **`TO_MOBILE.md`** instead of blocking on the other stream. Currently
+open for you: the phone↔dongle bridge integration asks — see
+`docs/CORTEX_LINK_PHONE_BRIDGE.md`.
+
 ## What This Repo Is
 
 Cortex Desktop is the PC-side control hub for the Cortex wearable AI companion system. It packages five main components:
