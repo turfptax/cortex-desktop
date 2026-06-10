@@ -338,6 +338,34 @@ export function WorkingMemoryView({
         </div>
       ) : null}
 
+      {((wm as any).recent_decisions?.length ?? 0) > 0 && (
+        <div>
+          <div className="text-text-muted uppercase tracking-wide mb-1">
+            Recent Decisions ({(wm as any).recent_decisions.length})
+            <span className="ml-2 normal-case text-[10px] italic">
+              (human judgment captured by the loop + looper)
+            </span>
+          </div>
+          <ul className="space-y-1.5">
+            {(wm as any).recent_decisions.slice(0, 8).map(
+              (d: { id: number; content: string; project?: string }) => (
+                <li key={d.id} className="flex items-baseline gap-2">
+                  <span className="text-text-secondary flex-1">
+                    {d.content.length > 180
+                      ? d.content.slice(0, 180) + '…'
+                      : d.content}
+                  </span>
+                  {d.project && (
+                    <span className="text-[10px] text-accent shrink-0">
+                      {d.project}
+                    </span>
+                  )}
+                </li>
+              ))}
+          </ul>
+        </div>
+      )}
+
       {wm.unfiled_recent_gists && wm.unfiled_recent_gists.length > 0 && (
         <div>
           <div className="text-text-muted uppercase tracking-wide mb-1">
