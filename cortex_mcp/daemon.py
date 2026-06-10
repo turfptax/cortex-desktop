@@ -184,12 +184,32 @@ class CortexDaemon:
             }, separators=(",", ":"))
         elif line.startswith("CMD:echo:"):
             reply = "RSP:echo:" + line[len("CMD:echo:"):]
+        elif line.startswith(("CMD:sync_push:", "CMD:sync_pull:",
+                              "CMD:sync_status:")):
+            reply = self._answer_sync(line)
         else:
             parts = line.split(":", 2)
             cmd = parts[1] if len(parts) > 1 and parts[1] else "unknown"
             reply = "ACK:{}:received-by-desktop".format(cmd)
         print("[{}]  phone >> {}".format(ts, reply[:80]))
         return reply
+
+    def _answer_sync(self, line):
+        """Sync contract v2: live-forward a phone sync message to the
+        Azure Gateway and relay the response. The desktop is STATELESS
+        here - no spooling. Gateway unreachable or unprovisioned ->
+        ERR:<cmd>:offline and the phone keeps its rows queued."""
+        from cortex_mcp.gateway import forward_sync
+        kind, _, raw = line[4:].partition(":")
+        try:
+            payload = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            return "ERR:{}:invalid json".format(kind)
+        result = forward_sync(kind, payload)
+        if result is None:
+            return "ERR:{}:offline".format(kind)
+        return "RSP:{}:{}".format(
+            kind, json.dumps(result, separators=(",", ":")))
 
     def handle_command(self, cmd, request):
         """Process a client command under the serial lock."""

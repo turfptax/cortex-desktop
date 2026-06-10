@@ -43,8 +43,8 @@ def test_echo_returns_payload_verbatim(daemon):
 
 
 def test_unknown_command_gets_ack(daemon):
-    reply = daemon.answer_inbound('CMD:sync_push:{"kind": "x"}')
-    assert reply == "ACK:sync_push:received-by-desktop"
+    reply = daemon.answer_inbound('CMD:provision:{"key": "x"}')
+    assert reply == "ACK:provision:received-by-desktop"
 
 
 def test_phone_request_counter(daemon):
@@ -122,3 +122,58 @@ def test_hub_pi_client_fast_fails_unconfigured(monkeypatch):
     assert r == {"ok": False, "error": "Pi not configured"}
     c = asyncio.run(pi_client.send_command("ping"))
     assert "not configured" in c["error"]
+
+
+# ── Sync forwarding (contract v2, 2026-06-10) ────────────────────
+
+
+def test_sync_offline_without_gateway_config(daemon, monkeypatch, tmp_path):
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("CORTEX_GATEWAY_URL", raising=False)
+    monkeypatch.delenv("CORTEX_GATEWAY_TOKEN", raising=False)
+    reply = daemon.answer_inbound(
+        'CMD:sync_push:{"device":"pixel","kind":"notes","rows":[]}')
+    assert reply == "ERR:sync_push:offline"
+
+
+def test_sync_invalid_json(daemon):
+    assert daemon.answer_inbound(
+        "CMD:sync_pull:{not json") == "ERR:sync_pull:invalid json"
+
+
+def test_sync_forward_relays_gateway_response(daemon, monkeypatch):
+    from cortex_mcp import gateway
+    seen = {}
+
+    def fake_forward(kind, payload):
+        seen["kind"] = kind
+        seen["payload"] = payload
+        return {"ok": True, "accepted": 2, "dupes": 0}
+
+    monkeypatch.setattr(gateway, "forward_sync", fake_forward)
+    reply = daemon.answer_inbound(
+        'CMD:sync_push:{"device":"pixel","kind":"notes","rows":[1,2]}')
+    assert reply == ('RSP:sync_push:'
+                     '{"ok":true,"accepted":2,"dupes":0}')
+    assert seen["kind"] == "sync_push"
+    assert seen["payload"]["device"] == "pixel"
+
+
+def test_gateway_config_resolution(monkeypatch, tmp_path):
+    import json as _json
+    from cortex_mcp.gateway import get_gateway_config
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("CORTEX_GATEWAY_URL", raising=False)
+    monkeypatch.delenv("CORTEX_GATEWAY_TOKEN", raising=False)
+    assert get_gateway_config() == ("", "")
+    cdir = tmp_path / "Cortex"
+    cdir.mkdir()
+    (cdir / "config.json").write_text(_json.dumps({
+        "gateway_url": "https://gw.example/",
+        "gateway_token": "tok123",
+    }))
+    assert get_gateway_config() == ("https://gw.example", "tok123")
+    monkeypatch.setenv("CORTEX_GATEWAY_URL", "https://env.example")
+    assert get_gateway_config()[0] == "https://env.example"
