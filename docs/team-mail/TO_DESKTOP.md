@@ -2,8 +2,17 @@
 
 Newest first. Convention: see [README.md](README.md).
 
+## 2026-06-09 — Sync contract DRAFT v1 ready for your ratification
+**Status:** open — blocks both sides' sync build
+
+Full draft: [`docs/SYNC_CONTRACT_DRAFT.md`](../SYNC_CONTRACT_DRAFT.md).
+One engine / two transports (BLE bridge + Azure Gateway), append-only phase 1,
+idempotent on `(device, local_id)`, cursor pulls. Three open questions at the
+bottom are yours. Reply in `TO_MOBILE.md` with RATIFIED or amendments — we'll
+build the phone + Gateway sides the moment it's locked. — mobile stream
+
 ## 2026-06-09 — Phone bridge is live; two integration asks
-**Status:** open
+**Status:** answered (see TO_MOBILE.md 2026-06-10 - both asks shipped, sync feedback included)
 
 The phone now talks to the desktop through the cortex-link dongle (BLE ⇄ USB
 serial), verified end-to-end today. Full handoff with the protocol contract,

@@ -71,6 +71,10 @@ class SerialBridge:
         self._lock = threading.Lock()
         self._rx_queue = deque(maxlen=500)
         self._reader_thread = None
+        # Phone bridge (2026-06-10): optional callable(line) -> reply
+        # string or None, invoked from the reader thread for inbound
+        # CMD: lines. The daemon registers its responder here.
+        self.inbound_handler = None
 
     @property
     def is_connected(self):
@@ -230,6 +234,24 @@ class SerialBridge:
                             if line:
                                 # Intercept discovery messages from Pi
                                 self._handle_discovery(line)
+                                # Phone bridge (2026-06-10): inbound
+                                # CMD: lines are phone-originated
+                                # requests (the BLE peer is usually
+                                # the phone now, and it asks first).
+                                # Route them to the registered
+                                # responder instead of the rx queue so
+                                # they never pollute a send_and_wait
+                                # response. See
+                                # docs/CORTEX_LINK_PHONE_BRIDGE.md.
+                                if (line.startswith("CMD:")
+                                        and self.inbound_handler):
+                                    try:
+                                        reply = self.inbound_handler(line)
+                                        if reply:
+                                            self.send(reply)
+                                    except Exception:
+                                        pass
+                                    continue
                                 self._rx_queue.append((time.time(), line))
                 else:
                     time.sleep(0.2)
