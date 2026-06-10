@@ -225,6 +225,38 @@ export function WorkingMemoryView({
           onClose={onCloseDetail}
         />
       )}
+      {((wm as any).relevant_context?.length ?? 0) > 0 && (
+        <div>
+          <div className="text-text-muted uppercase tracking-wide mb-1">
+            Relevant From The Whole Corpus (
+            {(wm as any).relevant_context.length})
+            <span className="ml-2 normal-case text-[10px] italic">
+              (semantic neighbors of the active questions/projects —
+              older material recency can't reach)
+            </span>
+          </div>
+          <ul className="space-y-1.5">
+            {(wm as any).relevant_context.map(
+              (r: { gist_id: number; token: string; similarity: number;
+                    relevant_to: string; snippet: string;
+                    created_at?: string }) => (
+                <li key={r.gist_id} className="flex items-baseline gap-2">
+                  <TokenChip token={r.token} onClick={onTokenClick} />
+                  <span className="text-text-secondary flex-1">
+                    {r.snippet}
+                  </span>
+                  <span className="text-[10px] text-accent shrink-0"
+                        title={`similarity ${r.similarity}`}>
+                    {r.relevant_to.length > 24
+                      ? r.relevant_to.slice(0, 24) + '…'
+                      : r.relevant_to}
+                  </span>
+                </li>
+              ))}
+          </ul>
+        </div>
+      )}
+
       {wm.top_projects && wm.top_projects.length > 0 && (
         <div>
           <div className="text-text-muted uppercase tracking-wide mb-1">
