@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useChat, TEMPLATE_VARIABLES } from '../../hooks/useChat'
+import { useChat } from '../../hooks/useChat'
 import { MessageBubble } from './MessageBubble'
 import { ChatInput } from './ChatInput'
 import { apiFetch } from '../../lib/api'
-import { type PetStatus } from '../PetWidget'
 
 interface ModelInfo {
   id: string
@@ -11,11 +10,7 @@ interface ModelInfo {
   owned_by: string
 }
 
-interface Props {
-  petStatus: PetStatus | null
-}
-
-export function ChatPage({ petStatus }: Props) {
+export function ChatPage() {
   const {
     messages,
     isStreaming,
@@ -33,7 +28,7 @@ export function ChatPage({ petStatus }: Props) {
     selectPreset,
     savePreset,
     deletePreset,
-  } = useChat(petStatus)
+  } = useChat()
 
   const [showSystemPrompt, setShowSystemPrompt] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
@@ -69,22 +64,6 @@ export function ChatPage({ petStatus }: Props) {
       selectedModel.includes('fine-tuned') ||
       selectedModel.includes('lora'))
 
-  // Insert a variable at cursor position in the textarea
-  const insertVariable = (varKey: string) => {
-    const ta = promptRef.current
-    if (!ta) return
-    const start = ta.selectionStart
-    const end = ta.selectionEnd
-    const before = systemPrompt.slice(0, start)
-    const after = systemPrompt.slice(end)
-    const insert = `{${varKey}}`
-    setSystemPrompt(before + insert + after)
-    requestAnimationFrame(() => {
-      ta.focus()
-      ta.selectionStart = ta.selectionEnd = start + insert.length
-    })
-  }
-
   // Handle save dialog
   const handleSavePreset = () => {
     const name = savePresetName.trim()
@@ -93,9 +72,6 @@ export function ChatPage({ petStatus }: Props) {
     setSaveDialogOpen(false)
     setSavePresetName('')
   }
-
-  // Check if template has any {variables}
-  const hasVariables = /\{\w+\}/.test(systemPrompt)
 
   return (
     <div className="flex flex-col h-full">
@@ -241,8 +217,7 @@ export function ChatPage({ petStatus }: Props) {
 
             {/* Delete — only for user presets */}
             {activePresetName &&
-              activePresetName !== 'Default' &&
-              activePresetName !== 'Tamagotchi' && (
+              activePresetName !== 'Default' && (
                 <button
                   onClick={() => deletePreset(activePresetName)}
                   className="text-xs px-2 py-1 rounded bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors cursor-pointer"
@@ -251,17 +226,6 @@ export function ChatPage({ petStatus }: Props) {
                 </button>
               )}
 
-            {/* Variable status indicator */}
-            {hasVariables && petStatus && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400 ml-auto">
-                variables active
-              </span>
-            )}
-            {hasVariables && !petStatus && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-warning/15 text-warning ml-auto">
-                Pi offline — variables won't resolve
-              </span>
-            )}
           </div>
 
           {/* Save dialog */}
@@ -292,26 +256,12 @@ export function ChatPage({ petStatus }: Props) {
             </div>
           )}
 
-          {/* Variable chips */}
-          <div className="flex flex-wrap gap-1">
-            {TEMPLATE_VARIABLES.map(({ key, desc }) => (
-              <button
-                key={key}
-                onClick={() => insertVariable(key)}
-                title={desc}
-                className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 transition-colors cursor-pointer font-mono"
-              >
-                {`{${key}}`}
-              </button>
-            ))}
-          </div>
-
           {/* Template textarea */}
           <textarea
             ref={promptRef}
             value={systemPrompt}
             onChange={(e) => setSystemPrompt(e.target.value)}
-            placeholder="System prompt template... Use {variable} for dynamic values"
+            placeholder="System prompt..."
             rows={4}
             className="w-full bg-surface text-text-primary text-sm rounded-lg p-3 border border-border focus:border-accent focus:outline-none resize-y font-mono"
           />

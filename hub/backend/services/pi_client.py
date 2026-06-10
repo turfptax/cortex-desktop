@@ -138,18 +138,6 @@ async def plugin_call(
         return {"ok": False, "error": str(e)}
 
 
-def to_legacy_shape(plugin_response: dict) -> dict:
-    """Adapt {ok: true, ...fields} -> {data: {...fields}, error: None}.
-
-    Matches the shape send_command_parsed returned so the existing
-    frontend (Pi page, etc.) keeps working without any React/TS changes.
-    """
-    if plugin_response.get("ok"):
-        data = {k: v for k, v in plugin_response.items() if k != "ok"}
-        return {"data": data, "error": None}
-    return {"data": None, "error": plugin_response.get("error", "unknown")}
-
-
 async def get_status() -> dict:
     """Get combined Pi status (health + get_status command)."""
     h = await health()
@@ -161,54 +149,6 @@ async def get_status() -> dict:
         "status": result.get("data") or {},
         "online": True,
     }
-
-
-async def pet_ask(prompt: str, poll_timeout: float = 120.0) -> dict:
-    """POST /plugins/pet/chat then poll /plugins/pet/responses for the result.
-
-    Pet inference is async on the Pi: /chat returns ACK with an interaction
-    ID, the response arrives later via /responses. We poll until we get our
-    specific response or the timeout expires.
-
-    Slice 2c2c2 — was previously send_command("pet_ask")+poll on pet_response.
-    """
-    import asyncio
-    import time
-
-    ack = await plugin_call("pet", "POST", "/chat", {"prompt": prompt})
-    if not ack.get("ok"):
-        return {
-            "response": "(failed to send to pet)",
-            "error": ack.get("error", "unknown"),
-        }
-    interaction_id = ack.get("interaction_id", 0) or 0
-    since_id = max(interaction_id - 1, 0)
-
-    deadline = time.monotonic() + poll_timeout
-    while time.monotonic() < deadline:
-        await asyncio.sleep(2.0)
-        poll = await plugin_call(
-            "pet", "GET", "/responses", {"since_id": since_id}, timeout=10.0
-        )
-        if not poll.get("ok"):
-            continue
-        items = poll.get("responses", []) or []
-        # Find our specific response by interaction ID
-        for item in items:
-            if item.get("id") == interaction_id:
-                return {"response": item.get("response", ""), "data": item}
-        # If no exact match but items exist, return the latest
-        if items:
-            latest = items[-1]
-            return {"response": latest.get("response", ""), "data": latest}
-
-    return {"response": "(no response — inference timed out)", "error": "timeout"}
-
-
-async def pet_history(limit: int = 20) -> dict:
-    """GET /plugins/pet/history?limit=N (returns legacy shape for compat)."""
-    raw = await plugin_call("pet", "GET", "/history", {"limit": limit})
-    return to_legacy_shape(raw)
 
 
 async def send_command_parsed(
@@ -237,17 +177,6 @@ async def send_command_parsed(
     if raw.get("error"):
         return {"data": None, "error": raw["error"]}
     return {"data": None, "error": f"Unexpected response for {command}"}
-
-
-async def pet_status() -> dict:
-    """GET /plugins/pet/status — remapped to {pet: ...} for frontend compat."""
-    raw = await plugin_call("pet", "GET", "/status")
-    if raw.get("ok"):
-        # The new endpoint returns engine_loaded/heartbeat_running/stats etc;
-        # the existing frontend reads pet_status's pet.X fields, which match
-        # the keys inside `stats`. Surface stats under "pet".
-        return {"pet": raw.get("stats"), "error": None}
-    return {"pet": None, "error": raw.get("error", "unknown")}
 
 
 async def send_note(

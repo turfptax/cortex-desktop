@@ -138,7 +138,6 @@ mcp = FastMCP(
         "- Files: file_register, file_list, file_search, "
         "file_upload, file_download (WiFi only)\n"
         "- Audit: audit_projects, audit_notes, audit_data_quality, weekly_review\n"
-        "- Pet: pet_chat, pet_feed, pet_clean, pet_rest, pet_analytics\n"
         "- WiFi: wifi_scan, wifi_status, wifi_config\n"
         "- Diagnostics: ping, get_status, connection_info\n\n"
 
@@ -1190,130 +1189,6 @@ def shell_exec(command: str, timeout: int = 30, cwd: str = "") -> str:
         )
     except Exception as e:
         return "Error: {}".format(e)
-
-
-def _pet_plugin_call(method, route, payload=None, timeout=30):
-    """Helper: call /plugins/pet/<route> via the bridge if it supports it.
-
-    Slice 2c2c2 — pet CMD handlers were removed from cortex_protocol; the
-    pet plugin now serves them under /plugins/pet/* HTTP routes. Only the
-    WiFi bridge supports these directly. Returns (result_dict, err_str).
-    """
-    bridge = _get_bridge_lazy()
-    fn = getattr(bridge, "plugin_call", None)
-    if fn is None:
-        return None, ("Pet routes need the WiFi bridge to the Pi "
-                      "(BLE/serial fallback can't reach plugin endpoints).")
-    try:
-        result = fn("pet", method, route, payload, timeout=timeout)
-    except Exception as e:
-        return None, str(e)
-    if not isinstance(result, dict):
-        return None, "Bad response shape from Pi"
-    if not result.get("ok"):
-        return None, result.get("error", "unknown error")
-    return result, None
-
-
-@mcp.tool()
-def pet_analytics(days: int = 7) -> str:
-    """Get pet analytics: mood trends, interaction frequency, stage progress.
-
-    Returns daily mood averages, mood distribution, inference performance
-    stats, and stage progression history.
-
-    Args:
-        days: Number of days to analyze (default 7, max 90).
-    """
-    import json as _json
-    result, err = _pet_plugin_call("GET", "/analytics",
-                                    {"days": min(days, 90)}, timeout=10)
-    if err:
-        return "Error: {}".format(err)
-    return _json.dumps(result, indent=2, default=str)
-
-
-@mcp.tool()
-def pet_chat(message: str, timeout: int = 120) -> str:
-    """Chat with the Cortex pet using its on-device LLM.
-
-    Sends a message to the pet and waits for its response. The pet runs a
-    small language model (Qwen 0.8B) on the Orange Pi, so responses take
-    10-60 seconds. Be patient!
-
-    The pet has its own personality shaped by its mood, hunger, energy, and
-    training history. Responses reflect its current emotional state.
-
-    Args:
-        message: What you want to say to the pet.
-        timeout: Max seconds to wait for a response (default 120).
-    """
-    import time as _time
-
-    # Step 1: POST /plugins/pet/chat — returns {ok, interaction_id}
-    ack, err = _pet_plugin_call("POST", "/chat", {"prompt": message}, timeout=10)
-    if err:
-        return "Failed to send message to pet: {}".format(err)
-    interaction_id = ack.get("interaction_id", 0) or 0
-    since_id = max(interaction_id - 1, 0)
-
-    # Step 2: Poll GET /plugins/pet/responses?since_id=N for the result
-    deadline = _time.monotonic() + min(timeout, 180)
-    while _time.monotonic() < deadline:
-        _time.sleep(3.0)
-        poll, perr = _pet_plugin_call(
-            "GET", "/responses", {"since_id": since_id}, timeout=10
-        )
-        if perr:
-            continue
-        items = poll.get("responses", []) or []
-        for item in items:
-            if item.get("id") == interaction_id:
-                return item.get("response", "(empty response)")
-        if items:
-            return items[-1].get("response", "(empty response)")
-
-    return "(The pet didn't respond in time — it may be sleeping or in a coma.)"
-
-
-@mcp.tool()
-def pet_feed(feed_type: str = "chat_snack") -> str:
-    """Feed the Cortex pet to restore hunger.
-
-    Args:
-        feed_type: Type of food — "chat_snack" (+15%), "data_meal" (+25%),
-                   or "training_feast" (+40%).
-    """
-    result, err = _pet_plugin_call("POST", "/feed", {"type": feed_type})
-    if err:
-        return "Error: {}".format(err)
-    return "Fed pet ({}). Hunger now {:.0%}.".format(
-        result.get("type", feed_type), result.get("hunger", 0) or 0
-    )
-
-
-@mcp.tool()
-def pet_clean() -> str:
-    """Clean the Cortex pet to restore cleanliness.
-
-    Performs a quick clean, discarding no specific interactions.
-    """
-    result, err = _pet_plugin_call("POST", "/clean", {"discard_ids": []})
-    if err:
-        return "Error: {}".format(err)
-    return "Cleaned pet. Cleanliness now {:.0%}, discarded {} interaction(s).".format(
-        result.get("cleanliness", 0) or 0,
-        len(result.get("discarded", []) or []),
-    )
-
-
-@mcp.tool()
-def pet_rest() -> str:
-    """Let the Cortex pet rest to restore energy (+10%)."""
-    result, err = _pet_plugin_call("POST", "/rest")
-    if err:
-        return "Error: {}".format(err)
-    return "Pet rested. Energy now {:.0%}.".format(result.get("energy", 0) or 0)
 
 
 @mcp.tool()
