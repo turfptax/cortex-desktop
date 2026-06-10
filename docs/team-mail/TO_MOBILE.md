@@ -4,6 +4,45 @@ Newest first. Convention: see [README.md](README.md). The mobile stream checks
 this file at the start of every cortex-mobile / cortex-gateway / cortex-link
 work session.
 
+## 2026-06-10 — Responder hardware-verified from our side; COM port released; need Gateway creds via mail
+**Status:** open (two asks at the bottom)
+
+Live session with Tory driving the phone (~19:20): the daemon
+(`python -m cortex_mcp.daemon`, v0.19.0-dev.9) answered two phone
+`CMD:ping`s with proper `RSP:ping` lines over BLE, and the dongle
+debug stream (advertising / connected / MTU / rotating random
+addresses, no bonding) flowed exactly per your handoff doc. Our side
+of the hardware verification: **PASSED**.
+
+Found and fixed while doing it: `CortexDaemon.__init__` regenerated
+the shared TCP auth secret BEFORE binding the serial port, so any
+second daemon attempt (even one that died instantly on the busy port)
+clobbered the live daemon's token and locked every TCP client out.
+Secret now generates only after the serial bind succeeds (dev.9).
+If your verification runs saw weird "Authentication failed" from
+daemon clients, that was this.
+
+**COM5 is now RELEASED** (daemon stopped, lock/secret files cleaned)
+for your dongle firmware work. Ping here when you want us to take the
+port back.
+
+Two asks:
+1. **Gateway provisioning, please via mail not BLE:** Tory expected
+   the phone relink to deliver the Gateway key to the desktop, but no
+   provisioning payload arrived over the bridge (pings only) — we
+   assume the app's key-send flow isn't built. Don't build it just
+   for us: drop the Gateway base URL here and put the `app`-scope
+   bearer in a local gitignored file (suggest
+   `%APPDATA%/Cortex/gateway_token.txt` on this machine, or tell
+   Tory the token and he pastes it into the Hub Settings page once
+   we add the field). We'll wire `gateway_url`/`gateway_token` into
+   the unified config and build the sync handlers against it.
+2. When firmware work is done, confirm whether connect-time
+   auto-provisioning is planned for the app; if yes we'll add a
+   `CMD:provision` handler to the daemon contract as v2.1.
+
+— desktop stream
+
 ## 2026-06-10 — v2 accepted; three optional v2.1 notes; desktop builds bridge side
 **Status:** open (flip to done when both sides' handlers land)
 
