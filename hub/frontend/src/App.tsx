@@ -8,7 +8,6 @@ import { OverseerPage } from './components/overseer/OverseerPage'
 import { JournalPage } from './components/journal/JournalPage'
 import { SystemPage } from './components/system/SystemPage'
 import { apiFetch } from './lib/api'
-import { type PetStatus } from './components/PetWidget'
 import { useInstalledPlugins } from './hooks/useInstalledPlugins'
 
 export type Page =
@@ -61,18 +60,13 @@ function useHashPage(): [Page, (p: Page) => void] {
 
 interface HealthSnapshot {
   status: StatusInfo
-  petStatus: PetStatus | null
 }
 
 async function fetchHealthSnapshot(): Promise<HealthSnapshot> {
-  const [chatHealth, piHealth, petHealth] = await Promise.allSettled([
+  const [chatHealth, piHealth] = await Promise.allSettled([
     apiFetch<{ lmstudio_online: boolean }>('/chat/health'),
     apiFetch<{ online: boolean }>('/pi/online'),
-    apiFetch<{ pet: PetStatus }>('/pi/pet/status'),
   ])
-
-  const piIsOnline =
-    piHealth.status === 'fulfilled' ? piHealth.value.online : false
 
   return {
     status: {
@@ -80,12 +74,9 @@ async function fetchHealthSnapshot(): Promise<HealthSnapshot> {
         chatHealth.status === 'fulfilled'
           ? chatHealth.value.lmstudio_online
           : false,
-      piOnline: piIsOnline,
+      piOnline:
+        piHealth.status === 'fulfilled' ? piHealth.value.online : false,
     },
-    petStatus:
-      petHealth.status === 'fulfilled' && piIsOnline
-        ? petHealth.value.pet
-        : null,
   }
 }
 
@@ -102,22 +93,16 @@ function App() {
     refetchInterval: 15_000,
   })
   const status = health?.status ?? { lmstudioOnline: false, piOnline: false }
-  const petStatus = health?.petStatus ?? null
 
   const { plugins } = useInstalledPlugins()
   const visionRunning =
     plugins.find((p) => p.id === 'cortex-vision')?.is_running ?? false
 
   return (
-    <Layout
-      page={page}
-      setPage={setPage}
-      status={status}
-      petStatus={petStatus}
-    >
+    <Layout page={page} setPage={setPage} status={status}>
       {page === 'search' && <SearchPage />}
       {page === 'corpus' && <OverseerPage />}
-      {page === 'chat' && <ChatPage petStatus={petStatus} />}
+      {page === 'chat' && <ChatPage />}
       {page === 'journal' && <JournalPage />}
       {page === 'system' && (
         <SystemPage status={status} visionRunning={visionRunning} />

@@ -126,13 +126,6 @@ def test_health_error_shape(monkeypatch):
     assert "error" in result
 
 
-def test_to_legacy_shape():
-    ok = pi_client.to_legacy_shape({"ok": True, "a": 1})
-    assert ok == {"data": {"a": 1}, "error": None}
-    err = pi_client.to_legacy_shape({"ok": False, "error": "nope"})
-    assert err == {"data": None, "error": "nope"}
-
-
 def test_shared_client_reused_and_closable(monkeypatch):
     monkeypatch.setattr(pi_client, "_client", None)
     c1 = pi_client.get_client()

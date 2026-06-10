@@ -105,15 +105,14 @@ export function useDreamCycle() {
     fetchAvailability()
   }, [fetchStatus, fetchAvailability])
 
-  // Start dream cycle: tuck in pet, then trigger dream on Hub
+  // Start dream cycle on the Hub (pet tuck-in step removed with
+  // the pet purge 2026-06-10; the dream cycle is the training
+  // trigger and stands alone)
   const startDream = useCallback(async (options: DataSourceOptions) => {
     setIsStarting(true)
     setError(null)
     try {
-      // 1. Tuck in the pet (put to sleep)
-      await apiFetch('/pi/pet/tuck-in', { method: 'POST' })
-
-      // 2. Start dream cycle directly on Hub with data source options
+      // Start dream cycle directly on Hub with data source options
       const res = await apiFetch<any>('/training/dream-cycle', {
         method: 'POST',
         body: JSON.stringify({

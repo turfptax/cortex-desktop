@@ -1,5 +1,4 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { type PetStatus } from '../components/PetWidget'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -25,62 +24,17 @@ const KEEP_RECENT = 6 // keep the last N messages uncompacted
 
 // ── Prompt Template System ──────────────────────────────────────
 
+// Pet purge (2026-06-10): the pet persona presets and the
+// {variable} template system (pet vitals substitution) left with
+// the pet. Presets remain a plain named-system-prompt store.
 const BUILTIN_PRESETS: Record<string, string> = {
   Default:
-    'You are Cortex Pet, a friendly AI companion. Respond naturally in 1-4 sentences.',
-  Tamagotchi: `You are Cortex Pet, a {stage_name}-stage AI companion. Your mood is {mood}.
-Vitals — hunger: {hunger}, cleanliness: {cleanliness}, energy: {energy}, happiness: {happiness}.
-Intelligence: {intelligence} IQ. You have had {interaction_count} conversations.
-Respond naturally in 1-4 sentences. Let your mood and vitals subtly influence your tone.`,
+    'You are Cortex, a helpful local assistant. Respond naturally ' +
+    'in 1-4 sentences.',
 }
 
 const STORAGE_KEY = 'cortex-prompt-presets'
 const ACTIVE_PRESET_KEY = 'cortex-active-preset'
-
-/** All available template variables with descriptions */
-export const TEMPLATE_VARIABLES: { key: string; desc: string }[] = [
-  { key: 'mood', desc: 'Current mood (happy, neutral, etc.)' },
-  { key: 'mood_score', desc: 'Mood score (-1 to 1)' },
-  { key: 'stage_name', desc: 'Evolution stage name' },
-  { key: 'stage', desc: 'Stage number (0-5)' },
-  { key: 'hunger', desc: 'Hunger percentage' },
-  { key: 'cleanliness', desc: 'Cleanliness percentage' },
-  { key: 'energy', desc: 'Energy percentage' },
-  { key: 'happiness', desc: 'Happiness percentage' },
-  { key: 'intelligence', desc: 'IQ score (0-100)' },
-  { key: 'is_coma', desc: 'Whether pet is in coma' },
-  { key: 'interaction_count', desc: 'Total conversations' },
-  { key: 'total_feeds', desc: 'Times fed' },
-  { key: 'total_cleans', desc: 'Times cleaned' },
-]
-
-/** Replace {variable} placeholders with real values from PetStatus */
-export function resolveTemplate(
-  template: string,
-  pet: PetStatus | null
-): string {
-  if (!pet) return template // Leave placeholders as-is if no pet data
-
-  const vars: Record<string, string> = {
-    mood: pet.mood ?? 'unknown',
-    mood_score: (pet.mood_score ?? 0).toFixed(2),
-    stage_name: pet.stage_name ?? 'Unknown',
-    stage: String(pet.stage ?? 0),
-    hunger: `${Math.round((pet.hunger ?? 1) * 100)}%`,
-    cleanliness: `${Math.round((pet.cleanliness ?? 1) * 100)}%`,
-    energy: `${Math.round((pet.energy ?? 1) * 100)}%`,
-    happiness: `${Math.round((pet.happiness ?? 0.5) * 100)}%`,
-    intelligence: String(Math.round(pet.intelligence ?? 0)),
-    is_coma: String(pet.is_coma ?? false),
-    interaction_count: String(pet.interaction_count ?? 0),
-    total_feeds: String(pet.total_feeds ?? 0),
-    total_cleans: String(pet.total_cleans ?? 0),
-  }
-
-  return template.replace(/\{(\w+)\}/g, (match, key) =>
-    key in vars ? vars[key] : match
-  )
-}
 
 function loadPresets(): Record<string, string> {
   try {
@@ -97,7 +51,10 @@ function savePresets(userPresets: Record<string, string>) {
 }
 
 function loadActivePresetName(): string {
-  return localStorage.getItem(ACTIVE_PRESET_KEY) || 'Tamagotchi'
+  const stored = localStorage.getItem(ACTIVE_PRESET_KEY)
+  // Migrate users whose active preset left with the pet.
+  if (!stored || stored === 'Tamagotchi') return 'Default'
+  return stored
 }
 
 function saveActivePresetName(name: string) {
@@ -180,7 +137,7 @@ async function requestSummary(
 
 // ── Main Hook ───────────────────────────────────────────────────
 
-export function useChat(petStatus?: PetStatus | null) {
+export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [isCompacting, setIsCompacting] = useState(false)
@@ -203,7 +160,7 @@ export function useChat(petStatus?: PetStatus | null) {
 
   // The template is the active preset's content
   const [systemPrompt, setSystemPrompt] = useState(
-    allPresets[activePresetName] ?? BUILTIN_PRESETS.Tamagotchi
+    allPresets[activePresetName] ?? BUILTIN_PRESETS.Default
   )
 
   // When user picks a different preset, load its template
@@ -240,7 +197,7 @@ export function useChat(petStatus?: PetStatus | null) {
       setUserPresets(updated)
       savePresets(updated)
       if (activePresetName === name) {
-        selectPreset('Tamagotchi')
+        selectPreset('Default')
       }
     },
     [userPresets, activePresetName, selectPreset]
@@ -257,8 +214,7 @@ export function useChat(petStatus?: PetStatus | null) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [systemPrompt])
 
-  // Resolve the template with current pet data
-  const resolvedPrompt = resolveTemplate(systemPrompt, petStatus ?? null)
+  const resolvedPrompt = systemPrompt
 
   // ── Build API Messages ──────────────────────────────────────
 
@@ -269,7 +225,7 @@ export function useChat(petStatus?: PetStatus | null) {
     ): ChatMessage[] => {
       const apiMessages: ChatMessage[] = []
 
-      // System prompt (resolved with pet variables)
+      // System prompt
       if (resolvedPrompt) {
         let sysContent = resolvedPrompt
         if (memoryContext) {

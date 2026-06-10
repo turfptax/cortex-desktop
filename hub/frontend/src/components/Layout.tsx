@@ -1,14 +1,11 @@
 import { type ReactNode, useEffect, useState } from 'react'
 import { type Page, type StatusInfo } from '../App'
-import { PetWidget, type PetStatus } from './PetWidget'
-import { DisplayEmulator } from './DisplayEmulator'
 import { apiFetch } from '../lib/api'
 
 interface LayoutProps {
   page: Page
   setPage: (page: Page) => void
   status: StatusInfo
-  petStatus: PetStatus | null
   children: ReactNode
 }
 
@@ -29,15 +26,8 @@ const navItems: NavItem[] = [
   { id: 'settings', label: 'Settings', icon: '⚙️' },
 ]
 
-export function Layout({
-  page,
-  setPage,
-  status,
-  petStatus,
-  children,
-}: LayoutProps) {
+export function Layout({ page, setPage, status, children }: LayoutProps) {
   const visibleNav = navItems
-  const [useVoxels, setUseVoxels] = useState(false)
 
   // v0.18.0-dev.25 (2026-05-19): show the running version in the
   // sidebar header so it's always visible. The /version endpoint
@@ -88,24 +78,8 @@ export function Layout({
           ))}
         </nav>
 
-        {/* Pi display emulator */}
-        <DisplayEmulator
-          petStatus={petStatus}
-          piOnline={status.piOnline}
-          useVoxels={useVoxels}
-        />
-        <button
-          onClick={() => setUseVoxels(v => !v)}
-          className="mx-2 mb-1 px-2 py-0.5 text-[10px] text-text-muted hover:text-accent rounded border border-border hover:border-accent/50 transition-colors cursor-pointer"
-        >
-          {useVoxels ? '🧊 Voxel View' : '🐱 Sprite View'}
-        </button>
-
         {/* Scrollable middle section */}
-        <div className="flex-1 overflow-y-auto min-h-0">
-          {/* Pet widget */}
-          {petStatus && <PetWidget pet={petStatus} />}
-        </div>
+        <div className="flex-1 overflow-y-auto min-h-0" />
 
         {/* Status indicators */}
         <div className="p-3 border-t border-border space-y-2">

@@ -1,10 +1,7 @@
 import { useEffect, useState } from 'react'
 import { usePi } from '../../hooks/usePi'
 import { StatusCard } from './StatusCard'
-import { PetChat } from './PetChat'
 import { NotesPanel } from './NotesPanel'
-import { PetCareTab } from './PetCareTab'
-import { HeartbeatTab } from './HeartbeatTab'
 import { FirmwareUpdate } from './FirmwareUpdate'
 import { TrainingPage } from '../training/TrainingPage'
 import { GamesPage } from '../games/GamesPage'
@@ -18,14 +15,11 @@ interface Props {
 // system-level). Was 8 tabs after sidebar reorg; this collapses to 7 and
 // the strip below uses overflow-x-auto so future additions don't break
 // layout on narrow widths.
-const PI_TABS = ['system', 'pet', 'care', 'thoughts', 'notes', 'training', 'games'] as const
+const PI_TABS = ['system', 'notes', 'training', 'games'] as const
 type PiTab = typeof PI_TABS[number]
 
 const TAB_LABELS: Record<PiTab, string> = {
   system: 'System',
-  pet: 'Pet Chat',
-  care: 'Pet Care',
-  thoughts: 'Thoughts',
   notes: 'Notes',
   training: 'Training',
   games: 'Games',
@@ -89,20 +83,6 @@ export function PiPage({ status }: Props) {
               <FirmwareUpdate isOnline={status.piOnline} />
             </div>
           </div>
-        )}
-        {activeTab === 'pet' && (
-          <PetChat
-            messages={pi.petMessages}
-            isLoading={pi.isPetLoading}
-            onSend={pi.sendPetMessage}
-            isOnline={status.piOnline}
-          />
-        )}
-        {activeTab === 'care' && (
-          <PetCareTab isOnline={status.piOnline} />
-        )}
-        {activeTab === 'thoughts' && (
-          <HeartbeatTab isOnline={status.piOnline} />
         )}
         {activeTab === 'notes' && (
           <NotesPanel
