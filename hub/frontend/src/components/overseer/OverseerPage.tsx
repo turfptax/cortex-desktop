@@ -2,9 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../../lib/api'
 import { ExplorerPanel, type GraphResp } from './ExplorerPanel'
 import { ProjectsTab } from './ProjectsTab'
-import { JournalTab } from './JournalTab'
 import { EcosystemMapPanel } from './EcosystemMapPanel'
-import { ActivityPanel } from './ActivityPanel'
 import { useVoiceMode } from '../../hooks/useVoiceMode'
 import { NotificationsPanel } from './panels/NotificationsPanel'
 import { ChatPanel } from './panels/ChatPanel'
@@ -43,8 +41,6 @@ import {
   type BudgetResp,
   type DialecticRow,
   type DialecticListResp,
-  type JournalEntry,
-  type JournalResp,
   type BlindspotRow,
   type PendingInterpretation,
   type InsightScanRow,
@@ -59,10 +55,33 @@ import {
 } from './shared'
 // ── Page ──────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'chat' | 'dialectic' | 'journal' | 'insights' | 'projects' | 'classify' | 'notifications' | 'explorer' | 'ecosystem' | 'activity'
+// UI redesign Phase 2 (2026-06-11): journal moved to the top-level
+// Journal section; activity moved to System. Sub-tab is hash-driven
+// (#/corpus/<tab>) so corpus views deep-link and survive refresh.
+type Tab = 'overview' | 'chat' | 'dialectic' | 'insights' | 'projects' | 'classify' | 'notifications' | 'explorer' | 'ecosystem'
+
+const CORPUS_TABS: readonly Tab[] = [
+  'overview', 'chat', 'dialectic', 'insights', 'projects',
+  'classify', 'explorer', 'ecosystem', 'notifications',
+]
+
+function tabFromHash(): Tab {
+  const seg = window.location.hash.replace(/^#\/?/, '').split('/')
+  const sub = seg[1] ?? ''
+  return (CORPUS_TABS as readonly string[]).includes(sub)
+    ? (sub as Tab) : 'overview'
+}
 
 export function OverseerPage() {
-  const [tab, setTab] = useState<Tab>('overview')
+  const [tab, setTabState] = useState<Tab>(tabFromHash)
+  useEffect(() => {
+    const onHash = () => setTabState(tabFromHash())
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+  const setTab = (t: Tab) => {
+    window.location.hash = `/corpus/${t}`
+  }
   const [status, setStatus] = useState<StatusResp | null>(null)
   const [wm, setWm] = useState<WorkingMemoryResp | null>(null)
   const [imports, setImports] = useState<ImportRow[]>([])
@@ -101,7 +120,6 @@ export function OverseerPage() {
   const [budget, setBudget] = useState<BudgetSnapshot | null>(null)
   const [dialectics, setDialectics] = useState<DialecticRow[]>([])
   const [dialecticCounts, setDialecticCounts] = useState<DialecticListResp['counts'] | null>(null)
-  const [journal, setJournal] = useState<JournalEntry[]>([])
   const [blindspots, setBlindspots] = useState<BlindspotRow[]>([])
   const [expandedDialecticId, setExpandedDialecticId] = useState<number | null>(null)
   const [expandedToken, setExpandedToken] = useState<string | null>(null)
@@ -178,15 +196,6 @@ export function OverseerPage() {
       setBlindspots(bs.blindspots || [])
     } catch (e: any) {
       setError(`Refresh failed: ${e?.message || e}`)
-    }
-  }
-
-  const refreshJournal = async () => {
-    try {
-      const r = await apiFetch<JournalResp>('/overseer/journal?limit=100')
-      setJournal(r.entries || [])
-    } catch (e: any) {
-      setError(`Journal refresh failed: ${e?.message || e}`)
     }
   }
 
@@ -372,7 +381,6 @@ export function OverseerPage() {
 
   useEffect(() => {
     if (tab === 'chat') refreshChat()
-    if (tab === 'journal') refreshJournal()
     if (tab === 'insights') refreshInsights(insightStatusFilter)
     if (tab === 'projects') refreshProjects()
     if (tab === 'explorer' && !graph) refreshGraph()
@@ -1224,13 +1232,11 @@ export function OverseerPage() {
                 ['overview', 'Overview'],
                 ['chat', 'Chat'],
                 ['dialectic', `Dialectic${dialecticCounts && dialecticCounts.open > 0 ? ` (${dialecticCounts.open})` : ''}`],
-                ['journal', 'Journal'],
                 ['insights', `Insights${insightCounts && insightCounts.pending > 0 ? ` (${insightCounts.pending})` : ''}`],
                 ['projects', 'Projects'],
                 ['classify', 'Classify'],
                 ['explorer', 'Explorer'],
                 ['ecosystem', 'Map'],
-                ['activity', 'Activity'],
                 ['notifications', `Bell${notificationsUnread > 0 ? ` (${notificationsUnread})` : ''}`],
               ] as const).map(([id, label]) => (
                 <button
@@ -1318,9 +1324,6 @@ export function OverseerPage() {
       {tab === 'ecosystem' && (
         <EcosystemMapPanel />
       )}
-      {tab === 'activity' && (
-        <ActivityPanel />
-      )}
       {tab === 'projects' && (
         <ProjectsTab />
       )}
@@ -1343,12 +1346,6 @@ export function OverseerPage() {
           setExpandedId={setExpandedDialecticId}
           onResolve={handleResolveDialectic}
           onRefresh={refreshAll}
-        />
-      )}
-      {tab === 'journal' && (
-        <JournalTab
-          overseerEntries={journal}
-          onRefreshOverseerJournal={refreshJournal}
         />
       )}
       {tab === 'insights' && (

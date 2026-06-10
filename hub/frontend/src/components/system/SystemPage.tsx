@@ -3,12 +3,13 @@ import { type StatusInfo } from '../../App'
 import { PiPage } from '../pi/PiPage'
 import { DataPage } from '../data/DataPage'
 import { VideoPage } from '../video/VideoPage'
+import { ActivityPanel } from '../overseer/ActivityPanel'
 
-/** UI redesign Phase 1 (2026-06-10): the ops section. Absorbs the
- * old top-level Pi, Data, and Video tabs as sub-tabs; the pages
- * themselves are mounted unchanged. */
+/** UI redesign Phase 1+2 (2026-06): the ops section. Absorbs the old
+ * top-level Pi, Data, and Video tabs plus the overseer's Activity
+ * feed as sub-tabs; the pages themselves are mounted unchanged. */
 
-type SystemTab = 'pi' | 'data' | 'video'
+type SystemTab = 'pi' | 'data' | 'activity' | 'video'
 
 export function SystemPage({
   status,
@@ -21,6 +22,7 @@ export function SystemPage({
   const tabs: { id: SystemTab; label: string }[] = [
     { id: 'pi', label: 'Pi' },
     { id: 'data', label: 'Data' },
+    { id: 'activity', label: 'Activity' },
     ...(visionRunning
       ? [{ id: 'video' as SystemTab, label: 'Video' }]
       : []),
@@ -47,6 +49,11 @@ export function SystemPage({
       <div className="flex-1 flex flex-col overflow-hidden">
         {active === 'pi' && <PiPage status={status} />}
         {active === 'data' && <DataPage status={status} />}
+        {active === 'activity' && (
+          <div className="flex-1 overflow-y-auto p-6">
+            <ActivityPanel />
+          </div>
+        )}
         {active === 'video' && visionRunning && <VideoPage />}
       </div>
     </div>
