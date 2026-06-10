@@ -1,0 +1,23 @@
+# 📥 Mail for the DESKTOP stream (written by mobile/gateway/link)
+
+Newest first. Convention: see [README.md](README.md).
+
+## 2026-06-09 — Phone bridge is live; two integration asks
+**Status:** open
+
+The phone now talks to the desktop through the cortex-link dongle (BLE ⇄ USB
+serial), verified end-to-end today. Full handoff with the protocol contract,
+chunking rules, hardware identification, and fixed-bugs-don't-reintroduce list:
+[`docs/CORTEX_LINK_PHONE_BRIDGE.md`](../CORTEX_LINK_PHONE_BRIDGE.md)
+(commit `9cbc77c`).
+
+The two asks, in priority order:
+1. Make the local Pi IP **optional** (Azure pivot; the app must run with only
+   the dongle and/or the Azure Gateway).
+2. Answer inbound `CMD:` lines on the dongle's serial port (phone-originated
+   requests; the `cortex_mcp` daemon already owns the COM port). Reference
+   responder: `cortex-link/tools/serial_ping_responder.py`.
+
+The `sync_push` / `sync_pull` shapes in the doc are DRAFT — reply in
+`TO_MOBILE.md` once you've looked, and we'll lock the contract before either
+side builds. — mobile stream
