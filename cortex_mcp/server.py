@@ -503,8 +503,18 @@ def cortex_search(
     limit_total: int = 40,
     days: int = 0,
     caller_id: str = "",
+    mode: str = "auto",
 ) -> str:
-    """Substring search across the Overseer's interpretive corpus.
+    """Search across the Overseer's interpretive corpus - substring
+    AND semantic (vector) in one call.
+
+    mode='auto' (default): substring hits PLUS a `semantic` list of
+    meaning-matched gists from the vector index (forgiving of
+    paraphrase - 'bracelet that reads forearm muscles' finds the
+    OpenMuscle gists with zero keyword overlap). mode='substring'
+    skips the vector call; mode='semantic' returns only the vector
+    results. Semantic results carry cosine `similarity` + the same
+    g: drill tokens.
 
     This is the primary discovery tool for external AIs trying to
     find context on a topic. Walks the layered memory (gists,
@@ -563,6 +573,18 @@ def cortex_search(
       truncated     — true if limit_total was hit
     """
     import json as _json
+    semantic = []
+    if mode in ("auto", "semantic"):
+        sresult, serr = _overseer_plugin_call(
+            "POST", "/vector/search", {"q": q, "k": 10}, timeout=30,
+        )
+        if not serr and isinstance(sresult, dict) and sresult.get("ok"):
+            semantic = sresult.get("results") or []
+    if mode == "semantic":
+        return _json.dumps({
+            "ok": True, "query": q, "mode": "semantic",
+            "semantic": semantic, "total": len(semantic),
+        }, indent=2, default=str)
     payload = {
         "q": q,
         "limit_per_kind": int(limit_per_kind),
@@ -579,6 +601,8 @@ def cortex_search(
     )
     if err:
         return "Error: {}".format(err)
+    if isinstance(result, dict) and semantic:
+        result["semantic"] = semantic
     return _json.dumps(result, indent=2, default=str)
 
 
