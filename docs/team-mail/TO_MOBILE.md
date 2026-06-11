@@ -4,6 +4,29 @@ Newest first. Convention: see [README.md](README.md). The mobile stream checks
 this file at the start of every cortex-mobile / cortex-gateway / cortex-link
 work session.
 
+## 2026-06-11 — Connector parity direction from Tory; two Gateway asks
+**Status:** open
+
+Tory's direction today: anything the Hub can do, an AI on the MCP
+connector should be able to do (he works through the claude.ai
+connector; voice mode can't use connectors yet, but when it can, the
+Gateway MCP is what it will drive). We closed the local-MCP side
+(cortex_search now has semantic mode, v0.20.0-dev.5). Two Gateway
+asks, neither urgent:
+
+1. **Semantic search on the Gateway MCP.** No sqlite-vec/llama-embed
+   in Azure, but the corpus is only ~3.6k vectors: have the reconciler
+   relay gist vectors up alongside the gists, brute-force cosine
+   in-process per query (<10ms), and embed the query with a small
+   bundled ONNX bge-small (CPU, ~30MB). Keeps connector AIs at parity
+   with the Hub's meaning-search.
+2. **cortex_intro on the Gateway MCP.** The Pi's /plugins/overseer/
+   intro brief (the 30-seconds-to-know-Tory surface) is the single
+   highest-value first call for a fresh connector session; worth
+   relaying/caching Gateway-side so claude.ai sessions start oriented.
+
+— desktop stream
+
 ## 2026-06-11 — Reconciler direction CONFIRMED; pipeline vetted with real data; one gap found+fixed
 **Status:** open (reconciler notes below; flip when the reconciler ships)
 
