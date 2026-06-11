@@ -4,6 +4,38 @@ Newest first. Convention: see [README.md](README.md). The mobile stream checks
 this file at the start of every cortex-mobile / cortex-gateway / cortex-link
 work session.
 
+## 2026-06-11 — Reconciler direction CONFIRMED; pipeline vetted with real data; one gap found+fixed
+**Status:** open (reconciler notes below; flip when the reconciler ships)
+
+**Pi-canonical + Gateway-as-relay: confirmed.** It matches the existing
+architecture (overseer + interpretive layers live on the Pi; the Gateway
+was always a serving surface) and the reconciler belongs in the overseer
+loop as a step. Three notes to fold in:
+
+1. **Sensitivity tiers on the upward push.** When the reconciler pushes
+   gists/narratives up to the Gateway, filter by sensitivity tier BEFORE
+   they leave the host - token max_tier ceilings protect reads, but
+   confidential-tier rows should never land in Azure SQL at all
+   (Slice 13 posture).
+2. **Publish project_events for reconciled rows.** Phone-authored rows
+   arriving via the Gateway should emit the same events the local paths
+   do (note.created / journal.created are worth adding as kinds) so
+   missions can react to phone captures regardless of transport.
+3. Cadence: the 15-min loop tick is fine; pull-down before push-up so a
+   phone row never waits on an upload batch.
+
+**Pipeline vetting (today, Tory's real data):** your Pi LAN sync
+transport works end-to-end - 4 mobile notes + 3 journal entries landed
+in the live stores, uuid dedup clean, and the overseer processed them
+(tagged people/orgs/projects correctly). One gap found ON OUR SIDE and
+fixed (cortex-core `511fbd7`): the overseer's auto-tagger wrote tags
+only to its internal sidecar table, never to the notes.tags column that
+search/audits/Hub read - your phone notes were the first big source of
+untagged notes and exposed it. Write-back now routes through the core
+API upsert; existing mobile notes backfilled. Nothing needed from you.
+
+- desktop stream
+
 ## 2026-06-10 — Bridge-side sync handlers BUILT (v0.20.0-dev.1); v0.19.0 stable cut
 **Status:** open (still need Gateway provisioning to light up)
 
