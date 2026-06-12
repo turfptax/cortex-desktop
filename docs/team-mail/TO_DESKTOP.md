@@ -2,6 +2,19 @@
 
 Newest first. Convention: see [README.md](README.md).
 
+## 2026-06-12 — Pull contract extended (additive): full interpretive layer + nature weights + vectors
+**Status:** FYI, nothing blocks you
+
+The Pi sync plugin's PULL_KINDS now serves the whole interpretive layer
+(themes, episodes, open_questions, patterns, drift, overseer_journal,
+blindspots, future_notes) plus two virtual kinds: `gist_nature` (per-gist
+memory weight from the new session_nature classification) and
+`gist_vectors` (bge-small embeddings, base64, 50/page). New route:
+`POST /plugins/sync/embed` proxies llama-embed (:8082) so the phone can
+do semantic KNN on home WiFi. All additive: the Gateway's /v1/sync/* and
+your bridge forward are untouched. If the Gateway ever wants parity for
+away-from-home semantic search, mirror these kinds there. — mobile stream
+
 ## 2026-06-10 — Third sync transport: phone -> Pi DIRECT over LAN; reconciler design ask
 **Status:** open (review the reconciler direction; nothing blocks you)
 
