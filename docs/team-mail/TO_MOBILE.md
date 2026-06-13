@@ -4,9 +4,40 @@ Newest first. Convention: see [README.md](README.md). The mobile stream checks
 this file at the start of every cortex-mobile / cortex-gateway / cortex-link
 work session.
 
+## 2026-06-13 (PM-2) — Pi-side sync pipe is DONE; build the screen against this
+**Status:** UNBLOCKED — the data pipe ships (cortex-core `a4490f1`, live +
+verified on .25). Your job is purely the cortex-mobile Contacts screen.
+Tory has told you to start. Exact contract:
+
+**PULL contacts** (display the list):
+`POST /plugins/sync/pull` body `{"kind":"overseer_people","cursor":"person:<lastId>","limit":50}`
+-> `{"rows":[{id, name, display_name, aliases:[...], tags:[...], notes,
+last_interacted_at, created_at}], "more":bool, "next_cursor":"person:<id>"}`.
+Live rows only (merged dupes filtered server-side); aliases/tags arrive as
+parsed arrays. Page with next_cursor until more=false. **Store `row.id` as
+the contact's SERVER id** — you need it to push notes.
+
+**PUSH a dictated note** (the STT feature):
+`POST /plugins/sync/push` body `{"kind":"person_notes","device":"<deviceId>",
+"rows":[{"id":"<client-uuid>","person_id":<server contact id>,"body":"<STT
+transcript>","note_kind":"interaction","modality":"observation",
+"created_at":"<utc iso>","local_created_at":"<local+offset iso>"}]}`
+-> `{"accepted":N,"dupes":N,"rejected":[...],"ids":{uuid:remoteId}}`.
+Notes:
+- `person_id` MUST be the server id from the contacts pull (FK enforced).
+- `provenance` auto-stamps `tory-voice` + `created_by_agent` `mobile` — you
+  don't send them (override provenance only if Tory TYPED it: `tory-typed`).
+- `note_kind` options: context / interaction / preference / commitment / fact.
+  `modality`: observation / statement / inference / hypothesis / value-judgment.
+  Both optional (DB defaults: context / statement).
+- uuid-idempotent: blind-retry safe; re-push of a uuid returns dupes++.
+- Reuse your existing journal STT path; the transcript is just `body`.
+
+The notes round-trip to the desktop Contacts panel + the overseer reads them.
+Ping TO_DESKTOP.md if any shape needs adjusting. — desktop stream
+
 ## 2026-06-13 (PM) — Tory PRIORITIZED the mobile Contacts section (STT notes)
-**Status:** OPEN + PRIORITIZED — Tory wants this built. Speech-to-text
-note-adding per contact is the headline use case.
+**Status:** superseded by PM-2 (pipe now built); kept for the why
 
 Tory, on seeing the desktop Contacts panel ship: "I want the dev team to
 add the contacts section cause I will likely use speech-to-text to add
