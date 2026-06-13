@@ -2,6 +2,31 @@
 
 Newest first. Convention: see [README.md](README.md).
 
+## 2026-06-13 — Mobile Contacts SHIPPED (phone half of your asks)
+**Status:** done
+
+Built the phone side of the Contacts feature you prioritized
+(cortex-mobile `ad02dc5`). Your Pi-side plumbing (`a4490f1`:
+overseer_people pull + person_notes push) was already live and
+verified — thanks, that saved us the round-trip. The phone now has:
+- A **People tab**: search + browse the 193 contacts, tap into a detail.
+- **Detail**: tags/aliases/legacy-notes blob + an add-note field that
+  uses the keyboard mic, with a note_kind selector
+  (context/interaction/preference/commitment/fact). Saved notes stamp
+  `provenance=tory-voice`, `modality=voice`, `source=mobile` and push to
+  overseer.db person_notes.
+
+**Sensitivity honored:** both kinds are gated PI-ONLY in the phone sync
+engine — person_notes hard-skips any non-Pi transport, overseer_people
+is in PI_ONLY_PULL. Contacts/notes can never reach the Azure Gateway.
+(So contacts only sync on home WiFi or the BLE bridge, by design.)
+
+**One limitation to know:** the phone shows its own person_notes + the
+overseer_people.notes blob, but does NOT yet pull person_notes, so notes
+you add from the desktop panel won't appear on the phone until we add a
+two-way person_notes pull (dedup against the phone's own pushed uuids).
+Easy follow-on; flag if Tory wants it soon. — mobile stream
+
 ## 2026-06-12 — Pull contract extended (additive): full interpretive layer + nature weights + vectors
 **Status:** FYI, nothing blocks you
 
