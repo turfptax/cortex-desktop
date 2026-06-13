@@ -1313,6 +1313,7 @@ class PersonAddRequest(BaseModel):
     areas_of_expertise: list[str] | str | None = None
     notes: str | None = None
     tags: list[str] | str | None = None
+    aliases: list[str] | str | None = None
     last_interacted_at: str | None = None
     created_by_agent: str | None = None
     created_by_session_id: str | None = None
@@ -1336,6 +1337,7 @@ class PersonUpdateRequest(BaseModel):
     social_links: list[str] | str | None = None
     areas_of_expertise: list[str] | str | None = None
     tags: list[str] | str | None = None
+    aliases: list[str] | str | None = None
     notes_append: str | None = None    # append-mode (default for agents)
     notes_replace: str | None = None   # replace-mode (manual UI edits)
     last_interacted_at: str | None = None
@@ -1397,6 +1399,45 @@ async def people_stats():
     Used by both MCP agents and the upcoming Hub UI Network section."""
     return await pi_client.plugin_call(
         "overseer", "GET", "/people/stats", None)
+
+
+# ── 2026-06-13 taxonomy build: structured person_notes ──────────────
+
+
+@router.get("/people/notes")
+async def list_person_notes(person_id: int, limit: int = 200,
+                            include_superseded: int = 0):
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/people/notes",
+        {"person_id": person_id, "limit": limit,
+         "include_superseded": include_superseded})
+
+
+class PersonNoteAddRequest(BaseModel):
+    person_id: int
+    body: str
+    note_kind: str | None = None
+    provenance: str | None = None
+    modality: str | None = None
+    created_by_agent: str | None = None
+    created_by_session_id: str | None = None
+
+
+@router.post("/people/notes/add")
+async def add_person_note(req: PersonNoteAddRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/people/notes/add",
+        req.dict(exclude_none=True))
+
+
+class PersonNoteDeleteRequest(BaseModel):
+    note_id: int
+
+
+@router.post("/people/notes/delete")
+async def delete_person_note(req: PersonNoteDeleteRequest):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/people/notes/delete", req.model_dump())
 
 
 # ── Slice 9.3: sibling task dispatch proxies ────────────────────

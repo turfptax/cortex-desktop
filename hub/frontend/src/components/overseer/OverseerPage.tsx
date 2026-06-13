@@ -12,6 +12,7 @@ import { WorkingMemoryView } from './panels/WorkingMemoryView'
 import { Card, SourceBadge } from './panels/widgets'
 import { StatCard, Row } from './panels/WorkingMemoryView'
 import { ProjectsPanel } from './panels/ProjectsPanel'
+import { ContactsPanel } from './panels/ContactsPanel'
 
 import {
   type StatusResp,
@@ -58,11 +59,11 @@ import {
 // UI redesign Phase 2 (2026-06-11): journal moved to the top-level
 // Journal section; activity moved to System. Sub-tab is hash-driven
 // (#/corpus/<tab>) so corpus views deep-link and survive refresh.
-type Tab = 'overview' | 'chat' | 'dialectic' | 'insights' | 'projects' | 'classify' | 'notifications' | 'explorer' | 'ecosystem'
+type Tab = 'overview' | 'chat' | 'dialectic' | 'insights' | 'projects' | 'classify' | 'notifications' | 'explorer' | 'ecosystem' | 'contacts'
 
 const CORPUS_TABS: readonly Tab[] = [
   'overview', 'chat', 'dialectic', 'insights', 'projects',
-  'classify', 'explorer', 'ecosystem', 'notifications',
+  'classify', 'explorer', 'ecosystem', 'notifications', 'contacts',
 ]
 
 function tabFromHash(): Tab {
@@ -1237,6 +1238,7 @@ export function OverseerPage() {
                 ['classify', 'Classify'],
                 ['explorer', 'Explorer'],
                 ['ecosystem', 'Map'],
+                ['contacts', 'Contacts'],
                 ['notifications', `Bell${notificationsUnread > 0 ? ` (${notificationsUnread})` : ''}`],
               ] as const).map(([id, label]) => (
                 <button
@@ -1298,6 +1300,7 @@ export function OverseerPage() {
           onToggleDirectMode={() => setDirectMode((v) => !v)}
         />
       )}
+      {tab === 'contacts' && <ContactsPanel />}
       {tab === 'notifications' && (
         <NotificationsPanel
           notifications={notifications}
