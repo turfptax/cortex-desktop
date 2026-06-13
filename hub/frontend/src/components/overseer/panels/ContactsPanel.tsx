@@ -35,6 +35,13 @@ interface PersonNote {
   created_by_agent?: string
 }
 
+interface PeopleStats {
+  total_people: number
+  orphans_count: number
+  multi_project_count: number
+  added_7d: number
+}
+
 const NOTE_KINDS = ['context', 'interaction', 'preference', 'commitment', 'fact']
 const PROVENANCES = ['tory-typed', 'tory-voice', 'overseer', 'ai-convo', 'import']
 const MODALITIES = [
@@ -51,6 +58,7 @@ function splitCsv(s: string): string[] {
 
 export function ContactsPanel() {
   const [people, setPeople] = useState<Person[]>([])
+  const [stats, setStats] = useState<PeopleStats | null>(null)
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -89,7 +97,11 @@ export function ContactsPanel() {
     }
   }, [])
 
-  useEffect(() => { loadList('') }, [loadList])
+  useEffect(() => {
+    loadList('')
+    apiFetch<{ ok: boolean } & PeopleStats>('/overseer/people/stats')
+      .then((s) => setStats(s)).catch(() => {})
+  }, [loadList])
 
   const loadDetail = useCallback(async (id: number) => {
     setSavedMsg('')
@@ -182,7 +194,23 @@ export function ContactsPanel() {
   }
 
   return (
-    <div className="flex gap-4 h-[calc(100vh-200px)]">
+    <div className="flex flex-col gap-3 h-[calc(100vh-180px)]">
+      {/* Stats header — aids triage / cleanup */}
+      {stats && (
+        <div className="flex items-center gap-2 text-xs">
+          <StatChip label="contacts" value={stats.total_people} />
+          <StatChip label="unlinked" value={stats.orphans_count}
+            hint="no project links — prune candidates" />
+          <StatChip label="connectors" value={stats.multi_project_count}
+            hint="linked to 2+ projects" />
+          <StatChip label="added 7d" value={stats.added_7d} />
+          <span className="ml-auto text-text-muted">
+            canonical store · overseer_people
+          </span>
+        </div>
+      )}
+
+      <div className="flex gap-4 flex-1 min-h-0">
       {/* Left: list */}
       <div className="w-72 shrink-0 flex flex-col bg-surface-secondary rounded-lg border border-border">
         <div className="p-2 border-b border-border">
@@ -341,6 +369,7 @@ export function ContactsPanel() {
           </div>
         )}
       </div>
+      </div>
     </div>
   )
 }
@@ -375,6 +404,18 @@ function Pill({ children }: { children: ReactNode }) {
   return (
     <span className="px-1.5 py-0.5 rounded bg-surface-secondary border border-border text-text-secondary">
       {children}
+    </span>
+  )
+}
+
+function StatChip({ label, value, hint }: {
+  label: string; value: number; hint?: string
+}) {
+  return (
+    <span title={hint}
+      className="inline-flex items-baseline gap-1 px-2 py-1 rounded-md bg-surface-secondary border border-border">
+      <span className="font-semibold text-text-primary">{value}</span>
+      <span className="text-text-muted">{label}</span>
     </span>
   )
 }
