@@ -1958,6 +1958,7 @@ def cortex_people_add(
     areas_of_expertise: str = "",
     notes: str = "",
     tags: str = "",
+    aliases: str = "",
     created_by_agent: str = "claude-code",
     created_by_session_id: str = "",
 ) -> str:
@@ -2002,6 +2003,7 @@ def cortex_people_add(
         "areas_of_expertise": areas_of_expertise,
         "notes": notes,
         "tags": tags,
+        "aliases": aliases,
         "created_by_agent": created_by_agent,
         "created_by_session_id": created_by_session_id,
     }
@@ -2020,6 +2022,7 @@ def cortex_people_update(
     social_links: str = "",
     areas_of_expertise: str = "",
     tags: str = "",
+    aliases: str = "",
     update_last_interacted: bool = True,
 ) -> str:
     """Update an existing person's record. Pass only the fields you
@@ -2061,6 +2064,8 @@ def cortex_people_update(
         payload["areas_of_expertise"] = areas_of_expertise
     if tags:
         payload["tags"] = tags
+    if aliases:
+        payload["aliases"] = aliases
     if update_last_interacted:
         from datetime import datetime, timezone
         payload["last_interacted_at"] = datetime.now(
@@ -2160,6 +2165,76 @@ def cortex_people_stats() -> str:
     """
     import json as _json
     result, err = _people_get("GET", "/stats", None)
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def cortex_people_note_add(
+    person_id: int,
+    body: str,
+    note_kind: str = "context",
+    provenance: str = "ai-convo",
+    modality: str = "statement",
+    created_by_agent: str = "claude-code",
+    created_by_session_id: str = "",
+) -> str:
+    """Add a STRUCTURED, taxonomy-tagged note about a person to the
+    canonical people store (overseer_people / person_notes).
+
+    The axis-aware companion to cortex_people_update(notes_append=...).
+    Each note is a queryable row carrying the integrity pair —
+    provenance (WHO authored) + modality (what KIND of claim) — plus a
+    lens-ish note_kind, so a future AI can separate "Tory-stated
+    preferences" from "inferences made about them" and never let an
+    inference read as fact.
+
+    Use for durable, attributable context/preferences/commitments. For a
+    quick free-form line, cortex_people_update(notes_append=...) is fine.
+
+    Args:
+        person_id: id from cortex_people_search / cortex_people_list.
+        body: the note text (one or two sentences).
+        note_kind: context | interaction | preference | commitment | fact
+              (default "context").
+        provenance: tory-voice | tory-typed | overseer | ai-convo |
+              import. Default "ai-convo" (an MCP agent is writing it);
+              use tory-voice/tory-typed only when relaying his words.
+        modality: observation | statement | inference | hypothesis |
+              value-judgment | external-claim | pattern (default
+              "statement"). Mark inferences honestly.
+        created_by_agent: which agent (default "claude-code").
+        created_by_session_id: session id for traceback.
+    """
+    import json as _json
+    payload = {
+        "person_id": person_id,
+        "body": body,
+        "note_kind": note_kind,
+        "provenance": provenance,
+        "modality": modality,
+        "created_by_agent": created_by_agent,
+        "created_by_session_id": created_by_session_id,
+    }
+    result, err = _people_get("POST", "/notes/add", payload, timeout=20)
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def cortex_people_notes(person_id: int, limit: int = 100) -> str:
+    """List the structured notes about a person (newest first, live
+    only). Each note carries provenance + modality + note_kind + time,
+    so you can see WHO said WHAT KIND of thing about them and when.
+
+    Use cortex_people_get for the person's core record + free-form notes
+    blob; this is the structured, axis-tagged channel on top of it.
+    """
+    import json as _json
+    result, err = _people_get(
+        "GET", "/notes", {"person_id": person_id, "limit": limit})
     if err:
         return "Error: {}".format(err)
     return _json.dumps(result, indent=2, default=str)
