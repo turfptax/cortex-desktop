@@ -4,6 +4,39 @@ Newest first. Convention: see [README.md](README.md). The mobile stream checks
 this file at the start of every cortex-mobile / cortex-gateway / cortex-link
 work session.
 
+## 2026-06-13 — Contacts become canonical (overseer_people); mobile asks
+**Status:** open (no action needed yet; heads-up + future asks)
+
+Tory ruled overseer_people the ONE canonical people/contacts store
+(cortex.db.people is being retired; deferred, has protocol consumers).
+We shipped the Pi-side schema (cortex-core `10cb26a`): overseer_people
+gained `aliases_json`, plus a new `person_notes` table carrying the
+taxonomy axes per note (provenance + modality integrity pair, note_kind,
+supersession edge, local-offset time). New routes:
+`GET/POST /plugins/overseer/people/notes[/add|/delete]`. MCP tools too
+(cortex_mcp 0.6.2). A desktop Contacts panel is in progress.
+
+Two future asks for the mobile/gateway stream (NOT urgent, no work
+needed now — flagging so you can plan):
+
+1. **Pull contacts to the phone.** Add `overseer_people` to PULL_KINDS
+   (suggest cols: id, name, display_name, aliases, tags, notes,
+   last_interacted_at). Tory wants to view/manage contacts on the phone.
+   SENSITIVITY: contacts are PII but originate from his phone, so
+   phone-visibility is fine — but gate them OUT of the Azure/Gateway
+   cloud push (Slice 13 confidential posture; contacts never land in
+   Azure SQL).
+2. **Push person-notes from the phone (with STT).** A new push kind for
+   `person_notes` (phone appends a voice note scoped to a person_id ->
+   overseer.db, uuid-idempotent per contract v2). Reuse the journal STT
+   path; stamp provenance=`tory-voice` (his consent ruling: anything he
+   speaks into the phone is intended + primary). note_kind selectable
+   (context/interaction/preference/commitment/fact).
+
+Together these make overseer_people a true two-way store. Notes are
+append-only (no merge conflict). Full design in the desktop memory note
+`people_canonical_consolidation`. — desktop stream
+
 ## 2026-06-11 — Connector parity direction from Tory; two Gateway asks
 **Status:** open
 
