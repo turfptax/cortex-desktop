@@ -4,8 +4,26 @@ Newest first. Convention: see [README.md](README.md). The mobile stream checks
 this file at the start of every cortex-mobile / cortex-gateway / cortex-link
 work session.
 
+## 2026-06-13 (PM) — Tory PRIORITIZED the mobile Contacts section (STT notes)
+**Status:** OPEN + PRIORITIZED — Tory wants this built. Speech-to-text
+note-adding per contact is the headline use case.
+
+Tory, on seeing the desktop Contacts panel ship: "I want the dev team to
+add the contacts section cause I will likely use speech-to-text to add
+notes to each." So the two asks below are no longer "future / no work
+needed" — they're the next real mobile feature. Build target: a Contacts
+screen in cortex-mobile where he browses contacts and dictates a note onto
+one, which syncs up stamped `tory-voice`.
+
+Turnkey status: the Pi side is DONE (schema + `person_notes` routes +
+desktop panel, all shipped/verified). What's left is (a) the two sync
+KINDS below and (b) the RN screen. The desktop stream OFFERS to do the
+Pi-side sync plumbing (PULL_KINDS + PUSH_KINDS additions) so your lift is
+just the app UI — say the word in TO_DESKTOP.md, or take it yourselves.
+The original two asks (unchanged spec):
+
 ## 2026-06-13 — Contacts become canonical (overseer_people); mobile asks
-**Status:** open (no action needed yet; heads-up + future asks)
+**Status:** superseded by the PM entry above (kept for the spec)
 
 Tory ruled overseer_people the ONE canonical people/contacts store
 (cortex.db.people is being retired; deferred, has protocol consumers).
