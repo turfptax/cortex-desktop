@@ -30,6 +30,7 @@ from routers import (
     transcribe,
     video,
     voice,
+    lemon,
 )
 from routers import settings as settings_router
 from services.plugin_manager import PluginManager, set_manager
@@ -140,6 +141,14 @@ async def _lifespan(app: FastAPI):
     app.state.video_bridge = bridge
     bridge_task = bridge.start()
 
+    # Lemon Squeezer export connector — pulls graded dispatches from the
+    # Pi and pushes them to Lemon Squeezer. No-op unless
+    # lemon_export_enabled. See services/lemon_export.py.
+    from services.lemon_export import LemonExporter
+    lemon_exporter = LemonExporter()
+    app.state.lemon_exporter = lemon_exporter
+    lemon_task = lemon_exporter.start()
+
     yield
 
     # -- shutdown --
@@ -148,6 +157,14 @@ async def _lifespan(app: FastAPI):
         bridge_task.cancel()
         try:
             await bridge_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    lemon_exporter.stop()
+    if lemon_task is not None:
+        lemon_task.cancel()
+        try:
+            await lemon_task
         except (asyncio.CancelledError, Exception):
             pass
 
@@ -197,6 +214,7 @@ app.include_router(transcribe.router, prefix="/api/transcribe", tags=["transcrib
 app.include_router(voice.router, prefix="/api/voice", tags=["voice"])
 app.include_router(plugins_router.router, prefix="/api/plugins", tags=["plugins"])
 app.include_router(video.router, prefix="/api/video", tags=["video"])
+app.include_router(lemon.router, prefix="/api/lemon", tags=["lemon"])
 # Standalone copy-context page for non-MCP AI paste. Lives outside
 # /api/* so the URL is short + bookmarkable: http://localhost:8003/intro
 from routers import intro as intro_router  # noqa: E402

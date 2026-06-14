@@ -50,6 +50,9 @@ _CONFIG_KEY_MAP = {
     "hub_port": "port",
     "whisper_model": "whisper_model",
     "whisper_force_cpu": "whisper_force_cpu",
+    "lemon_url": "lemon_url",
+    "lemon_export_enabled": "lemon_export_enabled",
+    "lemon_export_interval_s": "lemon_export_interval_s",
 }
 
 
@@ -113,6 +116,14 @@ class Settings(BaseSettings):
     # the persistent escape hatch (the runtime flag resets on
     # Hub restart).
     whisper_force_cpu: bool = False
+
+    # Lemon Squeezer dispatch export (2026-06-13). Desktop is the egress:
+    # it pulls graded dispatches from the Pi and POSTs them to Lemon
+    # Squeezer's ingest endpoint. Disabled by default — opt in once
+    # `lemon serve` is running. See services/lemon_export.py.
+    lemon_url: str = "http://localhost:8080"
+    lemon_export_enabled: bool = False
+    lemon_export_interval_s: int = 900
 
     model_config = SettingsConfigDict(env_prefix="CORTEX_HUB_")
 
