@@ -4,12 +4,13 @@ import { PiPage } from '../pi/PiPage'
 import { DataPage } from '../data/DataPage'
 import { VideoPage } from '../video/VideoPage'
 import { ActivityPanel } from '../overseer/ActivityPanel'
+import { LemonSyncPanel } from './LemonSyncPanel'
 
 /** UI redesign Phase 1+2 (2026-06): the ops section. Absorbs the old
  * top-level Pi, Data, and Video tabs plus the overseer's Activity
  * feed as sub-tabs; the pages themselves are mounted unchanged. */
 
-type SystemTab = 'pi' | 'data' | 'activity' | 'video'
+type SystemTab = 'pi' | 'data' | 'activity' | 'lemonsync' | 'video'
 
 export function SystemPage({
   status,
@@ -23,6 +24,7 @@ export function SystemPage({
     { id: 'pi', label: 'Pi' },
     { id: 'data', label: 'Data' },
     { id: 'activity', label: 'Activity' },
+    { id: 'lemonsync', label: 'Lemon Sync' },
     ...(visionRunning
       ? [{ id: 'video' as SystemTab, label: 'Video' }]
       : []),
@@ -54,6 +56,7 @@ export function SystemPage({
             <ActivityPanel />
           </div>
         )}
+        {active === 'lemonsync' && <LemonSyncPanel />}
         {active === 'video' && visionRunning && <VideoPage />}
       </div>
     </div>
