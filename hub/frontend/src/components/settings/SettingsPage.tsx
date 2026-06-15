@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { apiFetch } from '../../lib/api'
 import { PiConnectionCard } from './PiConnectionCard'
 import { McpSetupCard } from './McpSetupCard'
+import { LemonSyncCard } from './LemonSyncCard'
 import { GeneralCard } from './GeneralCard'
 import { UpdateCard } from './UpdateCard'
 import { DebugLogsCard } from './DebugLogsCard'
@@ -100,6 +101,7 @@ export function SettingsPage() {
 
         <PiConnectionCard config={config} onChange={handleChange} />
         <McpSetupCard />
+        <LemonSyncCard />
         <GeneralCard config={config} onChange={handleChange} />
         <PluginsTab />
         <UpdateCard />
