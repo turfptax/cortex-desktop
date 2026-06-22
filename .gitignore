@@ -7,6 +7,10 @@ dist/
 build/
 *.spec.bak
 
+# Internal scratch / proposed drafts (not public portfolio content)
+docs/team-mail/
+CLAUDE_proposed_merge_karpathy.md
+
 # Virtual environments
 .venv/
 venv/

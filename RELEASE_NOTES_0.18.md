@@ -56,14 +56,14 @@ A continuous spoken conversation with the overseer, on-device by default.
 
 ### Sensitivity tiers — confidential-IP handling (Slice 13)
 
-Cortex regularly sees confidential work (M&A, HIPAA-adjacent, executive comms). v0.18 ships a tiered system:
+Cortex regularly sees confidential professional work. v0.18 ships a tiered system:
 
 - New `imported_sessions.sensitivity` column: `public` / `internal` / `confidential` / `restricted`
 - New `sensitivity_rules` table: cwd-pattern based, promote-only (rules can only raise tier, never lower)
-- **Seeded rules:** `%ProjectX%` → `restricted/no-import` (deliberately never imported); `%ClientA%`, `%/home/workuser%`, `%exec-email%`, `%workuser%`, `%an employer%` → `confidential/gist-and-drop`; forward-looking rules for `rhd/hhs/nahm` contractor cwds.
+- **Seeded rules:** cwd-pattern rules promote confidential employer/client work to the right tier (e.g. an M&A path to `restricted/no-import`, employer/client paths to `confidential/gist-and-drop`). The concrete patterns are deployment-specific and kept out of the public repo.
 - **Sanitized gist prompt** runs for confidential/restricted sessions: captures work *kind* + workstream + milestone; never figures, contract terms, party names, PHI, credentials, verbatim quotes. *"Confidential work session — \<domain\> — detail withheld by sensitivity policy"* is an explicitly acceptable complete gist.
 - **Outbound sibling-dispatch filter**: scans the prompt + context_json for credentials, PII patterns, and references to confidential-tier session IDs before any `dispatch_sibling` call leaves the Pi. Refuses the dispatch on hit.
-- Tier definitions are **provisional pending Tory's HIPAA/security review** — the plumbing is shipped; the legal-threshold layer is the user's call.
+- Tier definitions are **provisional pending a security/compliance review**; the plumbing is shipped, the legal-threshold layer is the user's call.
 
 ### Voice journal entries via local Whisper (Slice 7)
 
