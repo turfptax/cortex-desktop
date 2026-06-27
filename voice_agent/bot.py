@@ -18,10 +18,8 @@ On Windows set PYTHONUTF8=1 so the runner's startup banner can print.
 """
 from __future__ import annotations
 
-import httpx
 from loguru import logger
 
-from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import LLMRunFrame
 from pipecat.pipeline.pipeline import Pipeline
@@ -34,59 +32,14 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.kokoro.tts import KokoroTTSService
-from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.whisper.stt import WhisperSTTService, WhisperSTTSettings
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.workers.runner import WorkerRunner
 
 from . import config as cfg
+from . import subagent, tools
 from .activity import record, start_monitor
-
-# ── ask_overseer: the deep-retrieval tool ───────────────────────────
-
-ASK_OVERSEER = FunctionSchema(
-    name="ask_overseer",
-    description=(
-        "Look up anything about the user's memory, life, work, people, projects, "
-        "notes, schedule, history, past or future. Use this for any factual or "
-        "personal question. The full Cortex overseer agent answers it."),
-    properties={
-        "question": {
-            "type": "string",
-            "description": "The user's question as a clear standalone query.",
-        },
-    },
-    required=["question"],
-)
-
-
-async def ask_overseer(params: FunctionCallParams) -> None:
-    """Send the question to the overseer (Pi /chat, voice_mode) and inject the
-    spoken-clean answer. Synchronous: a clean tool message the model relays."""
-    question = (params.arguments or {}).get("question") or ""
-    logger.info(f"[ask_overseer] -> {question!r}")
-    record("tool_call", question=question)
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            r = await client.post(
-                cfg.CHAT_URL,
-                headers={"Authorization": cfg.AUTH,
-                         "Content-Type": "application/json"},
-                json={"message": question, "voice_mode": True})
-            r.raise_for_status()
-            data = r.json()
-        reply = (data.get("reply") or "").strip()
-        model = str(data.get("model") or "overseer").split("/")[-1]
-        logger.info(f"[ask_overseer] <- ({model}) {reply[:90]!r}")
-        record("tool_result", answered_by=model, answer=reply[:300])
-        await params.result_callback({"answer": reply or "No answer found."})
-    except Exception:
-        logger.exception("ask_overseer failed")
-        record("tool_result", answered_by="error", answer="could not reach overseer")
-        await params.result_callback(
-            {"answer": "I could not reach your memory just now."})
-
 
 # ── Pipeline ─────────────────────────────────────────────────────────
 
@@ -112,11 +65,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     tts = _build_tts()
     llm = OpenAILLMService(
         model=cfg.TIER1_MODEL, api_key=cfg.OPENROUTER_KEY, base_url=cfg.TIER1_BASE)
-    llm.register_function("ask_overseer", ask_overseer)  # sync; barge-in cancels
+    tools.register_all(llm)
 
     context = LLMContext(
-        messages=[{"role": "system", "content": cfg.SYSTEM_PROMPT}],
-        tools=[ASK_OVERSEER])
+        messages=[{"role": "system", "content": cfg.build_system_prompt()}],
+        tools=tools.ALL_SCHEMAS)
     user_agg, assistant_agg = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()))
@@ -133,6 +86,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True))
+
+    # Surface a finished background sub-agent into the conversation: add a
+    # developer note the model relays on its next turn (no forced interruption).
+    subagent.set_announcer(
+        lambda text: context.add_message({"role": "developer", "content": text}))
 
     @user_agg.event_handler("on_user_turn_stopped")
     async def _on_user_turn(aggregator, strategy, message):
