@@ -49,6 +49,8 @@ from routers.transcribe import (
     _check_ffmpeg,
 )
 
+from services import voice_agent_manager
+
 log = logging.getLogger("hub.voice")
 router = APIRouter()
 
@@ -308,3 +310,32 @@ async def voice_config():
         "preferred_stt": cfg.get("voice_stt_backend") or "on-device",
         "preferred_tts": cfg.get("voice_tts_backend") or "on-device",
     }
+
+
+# ── Voice agent (pipecat sidecar) ───────────────────────────────────
+# The real-time two-tier voice agent runs as a separate process. The Hub
+# launches/supervises it; the browser connects to it directly over WebRTC.
+
+
+@router.get("/agent/status")
+async def voice_agent_status():
+    """Is the voice agent sidecar running, and where to reach it."""
+    return voice_agent_manager.status()
+
+
+@router.post("/agent/start")
+async def voice_agent_start():
+    """Launch the voice agent sidecar (idempotent)."""
+    return voice_agent_manager.start()
+
+
+@router.post("/agent/stop")
+async def voice_agent_stop():
+    """Stop the voice agent sidecar."""
+    return voice_agent_manager.stop()
+
+
+@router.get("/agent/logs")
+async def voice_agent_logs():
+    """Recent sidecar stdout (startup + errors), for the Hub UI."""
+    return {"lines": voice_agent_manager.log_tail()}

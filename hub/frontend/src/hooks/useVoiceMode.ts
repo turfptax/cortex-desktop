@@ -42,6 +42,12 @@ const MIN_SPEECH_MS = 350 // ignore blips shorter than this
 const MAX_TURN_MS = 30000 // hard cap on one utterance
 const VAD_POLL_MS = 100
 
+// ── Thinking-filler tuning (Slice 14 CP3 prelude) ───────────────
+// The overseer round-trip is multi-second; if "thinking" lingers past
+// this delay, speak a short on-device cue so the turn doesn't go dead.
+const FILLER_DELAY_MS = 500
+const THINKING_FILLERS = ['One sec.', 'Let me look that up.', 'Checking now.']
+
 interface UseVoiceModeArgs {
   /** Send a transcript through the overseer chat (voice_mode=true)
    *  and resolve with the reply text to speak. */
@@ -114,6 +120,13 @@ export function useVoiceMode({ sendVoiceTurn }: UseVoiceModeArgs) {
   // ── TTS ────────────────────────────────────────────────────────
   const speak = useCallback(async (text: string): Promise<void> => {
     if (!text.trim()) return
+    // Stop any in-progress thinking-filler before the real reply, for
+    // both TTS paths (the on-device branch cancels again below).
+    try {
+      window.speechSynthesis?.cancel()
+    } catch {
+      /* noop */
+    }
     const cfg = cfgRef.current
     const useEleven =
       cfg?.preferred_tts === 'elevenlabs' &&
@@ -164,6 +177,24 @@ export function useVoiceMode({ sendVoiceTurn }: UseVoiceModeArgs) {
     })
   }, [])
 
+  // ── Thinking filler (on-device, instant) ───────────────────────
+  // A short spoken cue while the overseer round-trips, so a multi-
+  // second reply doesn't leave dead air. Always browser speechSynthesis
+  // (instant, free) regardless of the configured TTS backend. The cue
+  // is a fixed canned phrase — never an invented fact.
+  const speakFiller = useCallback(() => {
+    try {
+      const phrase =
+        THINKING_FILLERS[Math.floor(Math.random() * THINKING_FILLERS.length)]
+      const u = new SpeechSynthesisUtterance(phrase)
+      u.rate = 1.05
+      window.speechSynthesis.cancel()
+      window.speechSynthesis.speak(u)
+    } catch {
+      /* noop */
+    }
+  }, [])
+
   // ── One full turn after a clip is captured ─────────────────────
   const handleClip = useCallback(
     async (blob: Blob) => {
@@ -195,11 +226,19 @@ export function useVoiceMode({ sendVoiceTurn }: UseVoiceModeArgs) {
       }
       setLastHeard(text)
       setState('thinking')
+      // Mask the multi-second overseer round-trip: if "thinking" lingers
+      // past a short delay, speak a brief on-device filler. speak(reply)
+      // cancels it when the real reply is ready.
+      const fillerTimer = window.setTimeout(() => {
+        if (activeRef.current && stateRef.current === 'thinking') speakFiller()
+      }, FILLER_DELAY_MS)
       let reply = ''
       try {
         reply = await sendVoiceTurn(text)
       } catch (e: any) {
         setLastError(`Overseer reply failed: ${e?.message || e}`)
+      } finally {
+        window.clearTimeout(fillerTimer)
       }
       if (!activeRef.current) return
       setState('speaking')
@@ -210,7 +249,7 @@ export function useVoiceMode({ sendVoiceTurn }: UseVoiceModeArgs) {
       startListeningTurn()
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sendVoiceTurn, speak, setState],
+    [sendVoiceTurn, speak, speakFiller, setState],
   )
 
   // ── Start one listening turn ───────────────────────────────────

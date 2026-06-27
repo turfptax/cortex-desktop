@@ -1,0 +1,6 @@
+# The sidecar's dedicated Python venv (created from requirements.txt) and any
+# locally cached models are machine-local, never committed.
+.venv/
+voice-models/
+__pycache__/
+*.pyc

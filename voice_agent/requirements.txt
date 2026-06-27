@@ -1,0 +1,14 @@
+# Cortex voice agent (pipecat sidecar) dependencies.
+# Install into a DEDICATED venv on Python 3.11+ (3.12 recommended). This is NOT
+# bundled into the Hub's PyInstaller exe; the Hub launches it as a sidecar.
+#
+#   py -3.12 -m venv .venv
+#   .venv/Scripts/python -m pip install -r requirements.txt
+#
+# Extras pulled: silero (VAD), webrtc (aiortc+av transport), kokoro (TTS),
+# whisper (faster-whisper STT, CPU torch), openai (LLM service for OpenRouter).
+pipecat-ai[silero,webrtc,kokoro,whisper,openai]
+pipecat-ai-prebuilt
+fastapi
+uvicorn[standard]
+httpx
