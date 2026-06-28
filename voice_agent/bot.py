@@ -38,7 +38,7 @@ from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.workers.runner import WorkerRunner
 
 from . import config as cfg
-from . import subagent, tools
+from . import session, subagent, tools
 from .activity import record, start_monitor
 
 # ── Pipeline ─────────────────────────────────────────────────────────
@@ -91,21 +91,30 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     # developer note the model relays on its next turn (no forced interruption).
     subagent.set_announcer(
         lambda text: context.add_message({"role": "developer", "content": text}))
+    session.bind(context)
 
     @user_agg.event_handler("on_user_turn_stopped")
     async def _on_user_turn(aggregator, strategy, message):
-        record("user", text=(getattr(message, "content", "") or ""))
+        text = getattr(message, "content", "") or ""
+        record("user", text=text)
+        session.record("user", text)
 
     @assistant_agg.event_handler("on_assistant_turn_stopped")
     async def _on_assistant_turn(aggregator, message):
-        record("assistant", text=(getattr(message, "content", "") or ""))
+        text = getattr(message, "content", "") or ""
+        record("assistant", text=text)
+        session.record("assistant", text)
 
     @worker.rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi):
-        context.add_message({
-            "role": "developer",
-            "content": "Greet me warmly in one short spoken sentence."})
-        await worker.queue_frames([LLMRunFrame()])
+        # Resume the active chat (so a reload continues where we left off);
+        # greet only when starting a genuinely fresh conversation.
+        session.load_active_into_context()
+        if not session.active_has_history():
+            context.add_message({
+                "role": "developer",
+                "content": "Greet me warmly in one short spoken sentence."})
+            await worker.queue_frames([LLMRunFrame()])
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
