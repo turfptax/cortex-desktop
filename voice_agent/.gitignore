@@ -4,3 +4,8 @@
 voice-models/
 __pycache__/
 *.pyc
+
+# Personal config must never be committed (the .example template is fine).
+*.local.toml
+secrets.toml
+voice-chats/

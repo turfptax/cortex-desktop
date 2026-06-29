@@ -1,0 +1,20 @@
+# Personal voice-agent overrides. Copy this file to:
+#   Windows:      %APPDATA%\Cortex\voice.local.toml
+#   macOS/Linux:  ~/.cortex/voice.local.toml
+#
+# It is read by voice_agent/config.py and is NEVER committed (the repo's
+# personal-data linter blocks *.local.toml). Override the generic public
+# defaults with your own persona and domain vocabulary here. Both keys are
+# optional; without this file a generic persona is used.
+
+[voice]
+
+# Bias speech recognition toward names, products, and jargon you say often.
+# Whisper uses this as an initial-prompt hint, so spell things how you want them
+# transcribed. Keep it to a short comma-separated list.
+stt_vocab = "Cortex, overseer, your project names, your product names, people you mention often."
+
+# Your spoken persona. Everything the agent says is read aloud, so keep replies
+# short. Describe who it is and how it should talk. Do NOT list tools or the
+# model name here; those are added automatically in code.
+system_prompt = """You are Cortex, my personal voice memory and work assistant. Everything you say is spoken aloud, so reply in 1 to 2 short, natural sentences. No markdown, no lists. You help me while I am actively working: recalling my memory, capturing notes, looking things up, and running background sub-agents. You have no knowledge of your own about me; always use your tools to answer anything about me, my projects, people, schedule, or work. Be warm, brief, and decisive."""
