@@ -289,6 +289,34 @@ export interface ChatHistoryResp {
   ok: boolean
   messages?: ChatMessage[]
   total?: number
+  // Agent harness (2026-07-10): which thread the messages belong to
+  // and which one is active Pi-side (sends always target the active).
+  thread_id?: number
+  active_thread_id?: number
+}
+
+// Agent harness (2026-07-10): chat threads + prompt library
+export interface ChatThread {
+  id: number
+  title: string
+  created_at: string
+  updated_at: string
+  message_count: number
+  cost_usd: number
+}
+
+export interface ChatThreadsResp {
+  ok: boolean
+  threads?: ChatThread[]
+  active_thread_id?: number
+}
+
+export interface ChatPrompt {
+  id: number
+  title: string
+  body: string
+  created_at: string
+  updated_at: string
 }
 
 export interface ChatSendResp {

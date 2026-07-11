@@ -236,6 +236,9 @@ class ChatRequest(BaseModel):
     # Slice 14: voice mode — when true the Pi appends a succinctness
     # directive to the system block (the reply will be spoken aloud).
     voice_mode: bool = False
+    # Agent harness: pin the turn to the thread the UI is rendering.
+    # None/0 = whatever thread is active on the Pi.
+    thread_id: int | None = None
 
 
 @router.post("/chat")
@@ -251,6 +254,8 @@ class QuickChatRequest(BaseModel):
     handles routine turns and escalates to /chat when needed."""
     message: str
     direct_override: bool = False
+    # Agent harness: same thread pinning as /chat.
+    thread_id: int | None = None
 
 
 @router.post("/quick-chat")
@@ -412,15 +417,86 @@ async def chat_upload(files: list[UploadFile] = File(...)):
 
 
 @router.get("/chat/history")
-async def chat_history(limit: int = 50):
+async def chat_history(limit: int = 50, thread_id: int = 0):
+    """thread_id=0 means the active thread (Pi resolves it)."""
+    params = {"limit": limit}
+    if thread_id:
+        params["thread_id"] = thread_id
     return await pi_client.plugin_call(
-        "overseer", "GET", "/chat/history", {"limit": limit})
+        "overseer", "GET", "/chat/history", params)
 
 
 @router.post("/chat/clear")
-async def chat_clear():
+async def chat_clear(req: Request):
+    """Body may carry {thread_id} so the wipe targets the thread the
+    UI was rendering, not whatever is active when the request lands."""
+    body = await _json_or_empty(req)
     return await pi_client.plugin_call(
-        "overseer", "POST", "/chat/clear", {})
+        "overseer", "POST", "/chat/clear", body)
+
+
+# ── Agent harness (2026-07-10): chat threads + prompt library ──────
+# Sends carry the thread_id the UI is rendering (pinned server-side);
+# the frontend still switches the active pointer via
+# /chat/threads/select so other surfaces follow along.
+
+
+async def _json_or_empty(req: Request) -> dict:
+    """Malformed/missing JSON becomes {} so the Pi handler returns a
+    clean ok:false instead of this proxy raising a 500."""
+    try:
+        body = await req.json()
+    except Exception:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+@router.get("/chat/threads")
+async def chat_threads():
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/chat/threads", {})
+
+
+@router.post("/chat/threads/new")
+async def chat_thread_new(req: Request):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/chat/threads/new", await _json_or_empty(req))
+
+
+@router.post("/chat/threads/select")
+async def chat_thread_select(req: Request):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/chat/threads/select", await _json_or_empty(req))
+
+
+@router.post("/chat/threads/rename")
+async def chat_thread_rename(req: Request):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/chat/threads/rename", await _json_or_empty(req))
+
+
+@router.post("/chat/threads/delete")
+async def chat_thread_delete(req: Request):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/chat/threads/delete", await _json_or_empty(req))
+
+
+@router.get("/chat/prompts")
+async def chat_prompts():
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/chat/prompts", {})
+
+
+@router.post("/chat/prompts/upsert")
+async def chat_prompt_upsert(req: Request):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/chat/prompts/upsert", await _json_or_empty(req))
+
+
+@router.post("/chat/prompts/delete")
+async def chat_prompt_delete(req: Request):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/chat/prompts/delete", await _json_or_empty(req))
 
 
 @router.post("/chat/compress")

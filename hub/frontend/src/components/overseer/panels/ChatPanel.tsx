@@ -6,13 +6,26 @@ import {
   type ChatStoredAttachment,
   type ChatToolCallSummary,
   type ChatMessage,
+  type ChatThread,
+  type ChatPrompt,
   type PendingAttachment,
   CHAT_MAX_FILES,
   CHAT_MAX_FILE_BYTES,
   CHAT_ALLOWED_EXTS,
   classifyKind,
   formatBytes,
+  fmtRelative,
 } from '../shared'
+
+// The Pi stores datetime('now') (UTC, no tz suffix). Normalize so
+// fmtRelative doesn't parse it as local time. Handles both the
+// space-separated and 'T'-separated forms; leaves strings that
+// already carry a zone (Z or +hh:mm) untouched.
+function utcIso(s?: string | null): string {
+  if (!s) return ''
+  const t = s.includes('T') ? s : s.replace(' ', 'T')
+  return /(Z|[+-]\d{2}:?\d{2})$/.test(t) ? t : t + 'Z'
+}
 
 export function ChatPanel({
   messages,
@@ -32,6 +45,15 @@ export function ChatPanel({
   onExitVoice,
   directMode,
   onToggleDirectMode,
+  threads,
+  activeThreadId,
+  onNewThread,
+  onSelectThread,
+  onRenameThread,
+  onDeleteThread,
+  prompts,
+  onSavePrompt,
+  onDeletePrompt,
 }: {
   messages: ChatMessage[]
   input: string
@@ -50,6 +72,15 @@ export function ChatPanel({
   onExitVoice: () => void
   directMode: boolean
   onToggleDirectMode: () => void
+  threads: ChatThread[]
+  activeThreadId: number
+  onNewThread: () => void
+  onSelectThread: (id: number) => void
+  onRenameThread: (id: number, title: string) => void
+  onDeleteThread: (id: number) => void
+  prompts: ChatPrompt[]
+  onSavePrompt: (title: string, body: string) => void
+  onDeletePrompt: (id: number) => void
 }) {
   const voiceActive = voiceState !== 'off'
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -57,6 +88,29 @@ export function ChatPanel({
   const messagesScrollRef = useRef<HTMLDivElement | null>(null)
   const [dragOver, setDragOver] = useState<boolean>(false)
   const [stickToBottom, setStickToBottom] = useState<boolean>(true)
+  const [showPrompts, setShowPrompts] = useState<boolean>(false)
+  const promptsPopoverRef = useRef<HTMLDivElement | null>(null)
+  const activeThread = threads.find((t) => t.id === activeThreadId)
+
+  // Close the prompt popover on outside click or Escape.
+  useEffect(() => {
+    if (!showPrompts) return
+    const onDown = (e: MouseEvent) => {
+      if (promptsPopoverRef.current &&
+          !promptsPopoverRef.current.contains(e.target as Node)) {
+        setShowPrompts(false)
+      }
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowPrompts(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [showPrompts])
 
   // Auto-scroll-to-bottom when new messages arrive — but only if the
   // user is already at (or near) the bottom. Reading older messages
@@ -101,12 +155,60 @@ export function ChatPanel({
   }
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex items-center justify-between px-6 py-2 border-b border-border">
-        <div className="text-xs text-text-muted">
-          {messages.length} message{messages.length === 1 ? '' : 's'} · single ongoing thread
+    <div className="flex-1 flex overflow-hidden">
+      {/* Agent harness (2026-07-10): thread sidebar. Selecting a
+          thread switches the Pi's active pointer, then reloads
+          history — sends always target the active thread. */}
+      <div className="w-56 shrink-0 border-r border-border flex flex-col bg-surface-secondary/40">
+        <div className="p-2 border-b border-border">
+          <button
+            onClick={onNewThread}
+            disabled={sending}
+            className="w-full px-3 py-1.5 rounded-md text-xs font-medium bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 cursor-pointer disabled:opacity-50"
+          >
+            + New chat
+          </button>
         </div>
-        <div className="flex gap-2">
+        <div className="flex-1 overflow-y-auto">
+          {threads.length === 0 ? (
+            <div className="px-3 py-4 text-[11px] text-text-muted">
+              No threads yet — send a message to start one.
+            </div>
+          ) : (
+            threads.map((t) => (
+              <ThreadRow
+                key={t.id}
+                thread={t}
+                active={t.id === activeThreadId}
+                disabled={sending}
+                onSelect={() => onSelectThread(t.id)}
+                onRename={() => {
+                  const title = window.prompt('Thread title:', t.title || '')
+                  if (title !== null && title.trim()) {
+                    onRenameThread(t.id, title.trim())
+                  }
+                }}
+                onDelete={() => {
+                  if (confirm(`Delete thread "${t.title || 'Untitled'}" and its ${t.message_count} message${t.message_count === 1 ? '' : 's'}? This cannot be undone.`)) {
+                    onDeleteThread(t.id)
+                  }
+                }}
+              />
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex items-center justify-between px-6 py-2 border-b border-border">
+        <div className="text-xs text-text-muted truncate">
+          <span className="font-medium text-text-secondary">
+            {activeThread?.title || 'Untitled thread'}
+          </span>
+          {' · '}
+          {messages.length} message{messages.length === 1 ? '' : 's'}
+        </div>
+        <div className="flex gap-2 shrink-0">
           <button
             onClick={onRefresh}
             disabled={sending}
@@ -282,6 +384,96 @@ export function ChatPanel({
           >
             {directMode ? 'Direct' : 'Router'}
           </button>
+          {/* Agent harness: prompt library picker. Click a prompt to
+              insert its body into the composer; save the current
+              composer text as a new prompt. */}
+          <div className="relative shrink-0" ref={promptsPopoverRef}>
+            <button
+              type="button"
+              onClick={() => setShowPrompts((v) => !v)}
+              disabled={sending || voiceActive}
+              title="Prompt library — insert a saved prompt"
+              className={`h-9 w-9 rounded-md flex items-center justify-center cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                showPrompts
+                  ? 'bg-accent text-white'
+                  : 'bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-muted hover:text-text-primary'
+              }`}
+              aria-label="Prompt library"
+              aria-expanded={showPrompts}
+            >
+              {/* Book icon */}
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                   strokeLinejoin="round">
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+              </svg>
+            </button>
+            {showPrompts && (
+              <div className="absolute bottom-11 left-0 w-80 max-h-72 overflow-y-auto rounded-md border border-border bg-surface-secondary shadow-lg z-20">
+                <div className="px-3 py-2 border-b border-border text-[10px] uppercase tracking-wide text-text-muted">
+                  Prompt library
+                </div>
+                {prompts.length === 0 ? (
+                  <div className="px-3 py-3 text-xs text-text-muted">
+                    No saved prompts yet. Type something below and save it.
+                  </div>
+                ) : (
+                  prompts.map((p) => (
+                    <div
+                      key={p.id}
+                      className="group flex items-start gap-2 px-3 py-2 hover:bg-surface-tertiary/60 cursor-pointer border-b border-border/40 last:border-b-0"
+                      onClick={() => {
+                        setInput(input.trim() ? input + '\n\n' + p.body : p.body)
+                        setShowPrompts(false)
+                      }}
+                      title="Insert into composer"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-medium text-text-primary truncate">
+                          {p.title}
+                        </div>
+                        <div className="text-[11px] text-text-muted truncate">
+                          {p.body.split('\n')[0]}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (confirm(`Delete prompt "${p.title}"?`)) {
+                            onDeletePrompt(p.id)
+                          }
+                        }}
+                        className="opacity-0 group-hover:opacity-100 text-text-muted hover:text-red-400 cursor-pointer text-xs shrink-0"
+                        aria-label={`Delete prompt ${p.title}`}
+                        title="Delete prompt"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))
+                )}
+                <div className="p-2 border-t border-border">
+                  <button
+                    type="button"
+                    disabled={!input.trim()}
+                    onClick={() => {
+                      const title = window.prompt('Save composer text as prompt — title:')
+                      if (title && title.trim()) {
+                        onSavePrompt(title.trim(), input.trim())
+                        setShowPrompts(false)
+                      }
+                    }}
+                    className="w-full px-2 py-1.5 rounded text-xs font-medium bg-surface-tertiary hover:bg-surface-tertiary/70 text-text-primary cursor-pointer disabled:opacity-40"
+                    title={input.trim() ? 'Save the current composer text as a reusable prompt' : 'Type something in the composer first'}
+                  >
+                    + Save composer text as prompt
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -310,6 +502,70 @@ export function ChatPanel({
             {sending ? 'Sending…' : 'Send'}
           </button>
         </div>
+      </div>
+      </div>
+    </div>
+  )
+}
+
+// Agent harness (2026-07-10): one row in the thread sidebar. Active
+// thread gets the accent treatment; rename/delete reveal on hover.
+function ThreadRow({
+  thread,
+  active,
+  disabled,
+  onSelect,
+  onRename,
+  onDelete,
+}: {
+  thread: ChatThread
+  active: boolean
+  disabled: boolean
+  onSelect: () => void
+  onRename: () => void
+  onDelete: () => void
+}) {
+  return (
+    <div
+      className={`group flex items-start gap-1 px-3 py-2 border-b border-border/40 cursor-pointer ${
+        active
+          ? 'bg-accent/10 border-l-2 border-l-accent'
+          : 'border-l-2 border-l-transparent hover:bg-surface-tertiary/50'
+      } ${disabled ? 'opacity-60 pointer-events-none' : ''}`}
+      onClick={onSelect}
+      title={thread.title || 'Untitled'}
+    >
+      <div className="min-w-0 flex-1">
+        <div className={`text-xs truncate ${
+          active ? 'font-semibold text-text-primary' : 'font-medium text-text-secondary'
+        }`}>
+          {thread.title || 'Untitled'}
+        </div>
+        <div className="text-[10px] text-text-muted">
+          {thread.message_count} msg{thread.message_count === 1 ? '' : 's'}
+          {' · '}
+          {fmtRelative(utcIso(thread.updated_at))}
+        </div>
+      </div>
+      <div className="flex gap-1 opacity-0 group-hover:opacity-100 shrink-0">
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onRename() }}
+          className="text-text-muted hover:text-text-primary cursor-pointer text-[11px]"
+          aria-label="Rename thread"
+          title="Rename"
+        >
+          ✎
+        </button>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onDelete() }}
+          className="text-text-muted hover:text-red-400 cursor-pointer text-[11px]"
+          aria-label="Delete thread"
+          title="Delete"
+        >
+          ×
+        </button>
       </div>
     </div>
   )

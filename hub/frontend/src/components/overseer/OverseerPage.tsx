@@ -29,6 +29,9 @@ import {
   type ChatHistoryResp,
   type ChatSendResp,
   type ChatUploadResp,
+  type ChatThread,
+  type ChatThreadsResp,
+  type ChatPrompt,
   type PendingAttachment,
   CHAT_MAX_FILES,
   CHAT_MAX_FILE_BYTES,
@@ -103,6 +106,13 @@ export function OverseerPage() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatInput, setChatInput] = useState<string>('')
   const [chatSending, setChatSending] = useState<boolean>(false)
+  // Agent harness (2026-07-10): chat threads + prompt library. The
+  // Pi owns the active-thread pointer; the sidebar switches it via
+  // /chat/threads/select before reloading history. Sends always go
+  // to the active thread, which keeps voice mode + MCP chat coherent.
+  const [chatThreads, setChatThreads] = useState<ChatThread[]>([])
+  const [activeThreadId, setActiveThreadId] = useState<number>(0)
+  const [chatPrompts, setChatPrompts] = useState<ChatPrompt[]>([])
   // Slice 8: pending file attachments queued in the composer
   const [chatPending, setChatPending] = useState<PendingAttachment[]>([])
   // Slice 14.7 CP4: direct-overseer mode. When false (default), the
@@ -235,8 +245,146 @@ export function OverseerPage() {
         return out
       })
       setChatMessages(parsed)
+      if (typeof r.active_thread_id === 'number') {
+        setActiveThreadId(r.active_thread_id)
+      }
     } catch (e: any) {
       setError(`Chat refresh failed: ${e?.message || e}`)
+    }
+  }
+
+  // Agent harness (2026-07-10): thread sidebar + prompt library data.
+  // Threads refresh alongside chat history (titles/counts move on
+  // every send); prompts only on tab open + after CRUD.
+  const refreshThreads = async () => {
+    try {
+      const r = await apiFetch<ChatThreadsResp>('/overseer/chat/threads')
+      setChatThreads(r.threads || [])
+      if (typeof r.active_thread_id === 'number') {
+        setActiveThreadId(r.active_thread_id)
+      }
+    } catch (e: any) {
+      setError(`Threads refresh failed: ${e?.message || e}`)
+    }
+  }
+
+  const refreshPrompts = async () => {
+    try {
+      const r = await apiFetch<{ ok: boolean; prompts?: ChatPrompt[] }>(
+        '/overseer/chat/prompts',
+      )
+      setChatPrompts(r.prompts || [])
+    } catch (e: any) {
+      setError(`Prompts refresh failed: ${e?.message || e}`)
+    }
+  }
+
+  // Thread mutations reuse chatSending as a global in-flight guard:
+  // the sidebar rows + New chat disable while true, which closes the
+  // double-click-new and switch-mid-operation races in this window.
+  // (Cross-window/cross-surface races are handled server-side by
+  // thread pinning.)
+  const handleNewThread = async () => {
+    if (chatSending) return
+    setChatSending(true)
+    try {
+      const r = await apiFetch<{ ok: boolean; error?: string }>(
+        '/overseer/chat/threads/new', {
+          method: 'POST', body: JSON.stringify({}),
+        })
+      if (!r.ok) {
+        setError(`New thread failed: ${r.error || 'unknown'}`)
+        return
+      }
+      setChatMessages([])
+      await Promise.all([refreshChat(), refreshThreads()])
+    } catch (e: any) {
+      setError(`New thread failed: ${e?.message || e}`)
+    } finally {
+      setChatSending(false)
+    }
+  }
+
+  const handleSelectThread = async (id: number) => {
+    if (id === activeThreadId || chatSending) return
+    setChatSending(true)
+    try {
+      const r = await apiFetch<{ ok: boolean; error?: string }>(
+        '/overseer/chat/threads/select', {
+          method: 'POST', body: JSON.stringify({ thread_id: id }),
+        })
+      if (!r.ok) {
+        setError(`Switch thread failed: ${r.error || 'unknown'}`)
+        await refreshThreads()
+        return
+      }
+      setActiveThreadId(id)
+      // Blank immediately so the old thread's messages never render
+      // under the new thread's header while history loads.
+      setChatMessages([])
+      await refreshChat()
+    } catch (e: any) {
+      setError(`Switch thread failed: ${e?.message || e}`)
+    } finally {
+      setChatSending(false)
+    }
+  }
+
+  const handleRenameThread = async (id: number, title: string) => {
+    try {
+      const r = await apiFetch<{ ok: boolean; error?: string }>(
+        '/overseer/chat/threads/rename', {
+          method: 'POST', body: JSON.stringify({ thread_id: id, title }),
+        })
+      if (!r.ok) setError(`Rename thread failed: ${r.error || 'unknown'}`)
+      await refreshThreads()
+    } catch (e: any) {
+      setError(`Rename thread failed: ${e?.message || e}`)
+    }
+  }
+
+  const handleDeleteThread = async (id: number) => {
+    if (chatSending) return
+    setChatSending(true)
+    try {
+      const r = await apiFetch<{ ok: boolean; error?: string }>(
+        '/overseer/chat/threads/delete', {
+          method: 'POST', body: JSON.stringify({ thread_id: id }),
+        })
+      if (!r.ok) setError(`Delete thread failed: ${r.error || 'unknown'}`)
+      // The Pi heals the active pointer; reload both.
+      setChatMessages([])
+      await Promise.all([refreshChat(), refreshThreads()])
+    } catch (e: any) {
+      setError(`Delete thread failed: ${e?.message || e}`)
+    } finally {
+      setChatSending(false)
+    }
+  }
+
+  const handleSavePrompt = async (title: string, body: string) => {
+    try {
+      const r = await apiFetch<{ ok: boolean; error?: string }>(
+        '/overseer/chat/prompts/upsert', {
+          method: 'POST', body: JSON.stringify({ title, body }),
+        })
+      if (!r.ok) setError(`Save prompt failed: ${r.error || 'unknown'}`)
+      await refreshPrompts()
+    } catch (e: any) {
+      setError(`Save prompt failed: ${e?.message || e}`)
+    }
+  }
+
+  const handleDeletePrompt = async (id: number) => {
+    try {
+      const r = await apiFetch<{ ok: boolean; error?: string }>(
+        '/overseer/chat/prompts/delete', {
+          method: 'POST', body: JSON.stringify({ id }),
+        })
+      if (!r.ok) setError(`Delete prompt failed: ${r.error || 'unknown'}`)
+      await refreshPrompts()
+    } catch (e: any) {
+      setError(`Delete prompt failed: ${e?.message || e}`)
     }
   }
 
@@ -383,7 +531,11 @@ export function OverseerPage() {
   }, [])
 
   useEffect(() => {
-    if (tab === 'chat') refreshChat()
+    if (tab === 'chat') {
+      refreshChat()
+      refreshThreads()
+      refreshPrompts()
+    }
     if (tab === 'insights') refreshInsights(insightStatusFilter)
     if (tab === 'explorer' && !graph) refreshGraph()
   }, [tab])
@@ -566,13 +718,18 @@ export function OverseerPage() {
         return true
       }
       case '/clear': {
-        if (!confirm('Clear the entire chat thread? This cannot be undone.')) return true
+        if (!confirm('Clear all messages in this thread? The thread itself stays. This cannot be undone.')) return true
         try {
-          await apiFetch<any>('/overseer/chat/clear', { method: 'POST' })
+          await apiFetch<any>('/overseer/chat/clear', {
+            method: 'POST',
+            body: JSON.stringify(
+              activeThreadId ? { thread_id: activeThreadId } : {}),
+          })
           setChatMessages([])
           chatPending.forEach((p) => p.previewUrl && URL.revokeObjectURL(p.previewUrl))
           setChatPending([])
           setLastAction('Chat thread cleared')
+          await refreshThreads()
         } catch (e: any) {
           pushSlashSystemMessage(`**/clear failed:** ${e?.message || e}`)
         }
@@ -587,7 +744,11 @@ export function OverseerPage() {
             compressed_summary?: string
             cost_usd?: number
             error?: string
-          }>('/overseer/chat/compress', { method: 'POST', body: JSON.stringify({}) })
+          }>('/overseer/chat/compress', {
+            method: 'POST',
+            body: JSON.stringify(
+              activeThreadId ? { thread_id: activeThreadId } : {}),
+          })
           if (!r.ok) {
             pushSlashSystemMessage(`**/compress failed:** ${r.error || 'unknown'}`)
           } else {
@@ -765,12 +926,20 @@ export function OverseerPage() {
       created_at: new Date().toISOString(),
     }
     setChatMessages((prev) => [...prev, optimistic])
+    // Voice turns must also set chatSending so the thread sidebar
+    // locks while the turn is in flight, and pin the rendered thread
+    // so the exchange can't split across threads.
+    setChatSending(true)
     try {
       const r = await apiFetch<ChatSendResp>('/overseer/chat', {
         method: 'POST',
-        body: JSON.stringify({ message: text, voice_mode: true }),
+        body: JSON.stringify({
+          message: text,
+          voice_mode: true,
+          ...(activeThreadId ? { thread_id: activeThreadId } : {}),
+        }),
       })
-      await refreshChat()
+      await Promise.all([refreshChat(), refreshThreads()])
       if (!r.ok) {
         setError(`Voice chat error: ${r.error || 'unknown'}`)
         return ''
@@ -779,6 +948,8 @@ export function OverseerPage() {
     } catch (e: any) {
       setError(`Voice chat failed: ${e?.message || e}`)
       return ''
+    } finally {
+      setChatSending(false)
     }
   }
 
@@ -856,12 +1027,17 @@ export function OverseerPage() {
           body: JSON.stringify({
             message: message || '',
             direct_override: false,
+            // Pin the thread this window is rendering: without it,
+            // a pointer move from another surface mid-request would
+            // redirect the turn.
+            ...(activeThreadId ? { thread_id: activeThreadId } : {}),
           }),
         })
         if (!r.ok) setError(`Chat error: ${r.error || 'unknown'}`)
       } else {
         const body: any = { message: message || '' }
         if (attachmentRefs.length) body.attachments = attachmentRefs
+        if (activeThreadId) body.thread_id = activeThreadId
         const r = await apiFetch<ChatSendResp>('/overseer/chat', {
           method: 'POST',
           body: JSON.stringify(body),
@@ -870,8 +1046,9 @@ export function OverseerPage() {
       }
       // Always re-fetch so we get the persisted IDs + assistant reply +
       // attachments-from-DB + the answered_by tag (replaces the
-      // optimistic stub above).
-      await refreshChat()
+      // optimistic stub above). Threads too — the send may have
+      // auto-titled the thread and bumped its count.
+      await Promise.all([refreshChat(), refreshThreads()])
     } catch (e: any) {
       setError(`Chat failed: ${e?.message || e}`)
     } finally {
@@ -880,14 +1057,21 @@ export function OverseerPage() {
   }
 
   const handleClearChat = async () => {
-    if (!confirm('Clear the entire chat thread? This cannot be undone.')) return
+    if (!confirm('Clear all messages in this thread? The thread itself stays. This cannot be undone.')) return
     try {
-      await apiFetch<any>('/overseer/chat/clear', { method: 'POST' })
+      // Pin the rendered thread: the confirm dialog holds the user
+      // for seconds, plenty of time for the active pointer to move.
+      await apiFetch<any>('/overseer/chat/clear', {
+        method: 'POST',
+        body: JSON.stringify(
+          activeThreadId ? { thread_id: activeThreadId } : {}),
+      })
       setChatMessages([])
       // Clear any in-flight composer attachments too.
       chatPending.forEach((p) => p.previewUrl && URL.revokeObjectURL(p.previewUrl))
       setChatPending([])
       setLastAction('Chat thread cleared')
+      await refreshThreads()
     } catch (e: any) {
       setError(`Clear failed: ${e?.message || e}`)
     }
@@ -1236,6 +1420,15 @@ export function OverseerPage() {
           onExitVoice={voice.exitVoiceMode}
           directMode={directMode}
           onToggleDirectMode={() => setDirectMode((v) => !v)}
+          threads={chatThreads}
+          activeThreadId={activeThreadId}
+          onNewThread={handleNewThread}
+          onSelectThread={handleSelectThread}
+          onRenameThread={handleRenameThread}
+          onDeleteThread={handleDeleteThread}
+          prompts={chatPrompts}
+          onSavePrompt={handleSavePrompt}
+          onDeletePrompt={handleDeletePrompt}
         />
       )}
       {tab === 'contacts' && <ContactsPanel />}
