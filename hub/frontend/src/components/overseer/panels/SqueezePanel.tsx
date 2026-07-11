@@ -58,16 +58,49 @@ function aggregate(rows: DispatchRow[], keyOf: (r: DispatchRow) => string): Agg[
     .sort((a, b) => b.n - a.n || b.avg - a.avg)
 }
 
+// Squeeze v2 (2026-07-11, Tory's ask): conversations are data points
+// too. The interaction_feedback layer (Hub chat thumbs + phone voice
+// chat / Bell ratings, with notes) joins the report card alongside
+// the graded dispatches.
+interface FeedbackSummary {
+  ok: boolean
+  totals?: { count: number; up: number; down: number; with_notes: number }
+  by_kind?: Record<string, { up: number; down: number; n: number }>
+  by_model?: Record<string, { up: number; down: number; n: number }>
+  recent?: {
+    id: number
+    target_kind: string
+    rating: number
+    note: string
+    model: string
+    source: string
+    created_at: string
+  }[]
+}
+
+const KIND_LABEL: Record<string, string> = {
+  chat_turn: 'Hub chat',
+  chat_thread: 'Hub thread',
+  voice_chat: 'Phone voice',
+  bell_notification: 'Bell',
+  dispatch: 'Dispatch',
+  screen: 'Screen',
+}
+
 export function SqueezePanel() {
   const [rows, setRows] = useState<DispatchRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [fb, setFb] = useState<FeedbackSummary | null>(null)
 
   useEffect(() => {
     apiFetch<ExportResp>('/overseer/dispatch-export?limit=1000')
       .then((r) => setRows(r.dispatches || r.rows || []))
       .catch((e) => setError(e?.message || String(e)))
       .finally(() => setLoading(false))
+    apiFetch<FeedbackSummary>('/overseer/feedback/summary')
+      .then((r) => { if (r.ok) setFb(r) })
+      .catch(() => { /* feedback section just stays hidden */ })
   }, [])
 
   const byModel = aggregate(rows, (r) => normModel(r.model))
@@ -109,6 +142,90 @@ export function SqueezePanel() {
       {!loading && !error && rows.length === 0 && (
         <div className="text-xs text-text-muted">
           No graded dispatches yet.
+        </div>
+      )}
+
+      {/* Squeeze v2: the conversations report card. Thumbs + notes from
+          Hub chat, phone voice chats, and Bell interactions. */}
+      {fb?.totals && fb.totals.count > 0 && (
+        <div className="bg-surface-secondary rounded-lg p-4 space-y-4">
+          <div>
+            <h4 className="text-xs font-semibold text-text-primary">
+              Conversations &amp; feedback
+            </h4>
+            <p className="text-xs text-text-muted mt-1">
+              Your thumbs + notes on live interactions (Hub chat, phone
+              voice, Bell) — {fb.totals.count} total: 👍 {fb.totals.up} ·
+              👎 {fb.totals.down} · {fb.totals.with_notes} with notes.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-text-muted mb-1">
+                By surface
+              </div>
+              <table className="w-full text-xs">
+                <tbody>
+                  {Object.entries(fb.by_kind || {}).map(([k, v]) => (
+                    <tr key={k} className="border-t border-border/40">
+                      <td className="py-1 pr-3">{KIND_LABEL[k] || k}</td>
+                      <td className="py-1 pr-3 text-emerald-300">👍 {v.up}</td>
+                      <td className="py-1 pr-3 text-red-300">👎 {v.down}</td>
+                      <td className="py-1 text-text-muted">{v.n} total</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {Object.keys(fb.by_model || {}).length > 0 && (
+              <div>
+                <div className="text-[10px] uppercase tracking-wide text-text-muted mb-1">
+                  By model
+                </div>
+                <table className="w-full text-xs">
+                  <tbody>
+                    {Object.entries(fb.by_model || {})
+                      .sort((a, b) => b[1].n - a[1].n)
+                      .map(([k, v]) => (
+                        <tr key={k} className="border-t border-border/40">
+                          <td className="py-1 pr-3 font-mono">{normModel(k)}</td>
+                          <td className="py-1 pr-3 text-emerald-300">👍 {v.up}</td>
+                          <td className="py-1 pr-3 text-red-300">👎 {v.down}</td>
+                          <td className="py-1 text-text-muted">{v.n}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {(fb.recent || []).some((r) => r.note) && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-text-muted mb-1">
+                Recent notes
+              </div>
+              <div className="space-y-1.5">
+                {(fb.recent || [])
+                  .filter((r) => r.note)
+                  .slice(0, 8)
+                  .map((r) => (
+                    <div
+                      key={r.id}
+                      className="flex items-start gap-2 text-xs rounded border border-border/40 bg-surface-tertiary/40 px-2 py-1.5"
+                    >
+                      <span>{r.rating > 0 ? '👍' : r.rating < 0 ? '👎' : '✎'}</span>
+                      <span className="flex-1 text-text-primary">{r.note}</span>
+                      <span className="text-text-muted shrink-0">
+                        {KIND_LABEL[r.target_kind] || r.target_kind}
+                        {r.model ? ` · ${normModel(r.model)}` : ''}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

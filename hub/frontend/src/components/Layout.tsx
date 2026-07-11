@@ -21,6 +21,7 @@ const navItems: NavItem[] = [
   { id: 'search', label: 'Search', icon: '🔍' },
   { id: 'corpus', label: 'Corpus', icon: '🧠' },
   { id: 'chat', label: 'Chat', icon: '💬' },
+  { id: 'simples', label: 'Simples', icon: '📅' },
   { id: 'journal', label: 'Journal', icon: '📓' },
   { id: 'system', label: 'System', icon: '🛠️' },
   { id: 'settings', label: 'Settings', icon: '⚙️' },

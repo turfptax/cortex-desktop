@@ -529,6 +529,19 @@ async def feedback_discuss(req: Request):
         "overseer", "POST", "/feedback/discuss", await _json_or_empty(req))
 
 
+@router.get("/feedback/summary")
+async def feedback_summary():
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/feedback/summary", {})
+
+
+@router.get("/simples/snapshot")
+async def simples_snapshot():
+    """Read-only mirror of the phone's Simples plan (display state)."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/simples/snapshot", {})
+
+
 @router.get("/mcp/connectors")
 async def mcp_connectors():
     return await pi_client.plugin_call(

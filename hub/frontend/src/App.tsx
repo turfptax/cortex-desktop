@@ -4,16 +4,18 @@ import { Layout } from './components/Layout'
 import { SearchPage } from './components/search/SearchPage'
 import { SettingsPage } from './components/settings/SettingsPage'
 import { OverseerPage } from './components/overseer/OverseerPage'
+import { SimplesPage } from './components/simples/SimplesPage'
 import { JournalPage } from './components/journal/JournalPage'
 import { SystemPage } from './components/system/SystemPage'
 import { apiFetch } from './lib/api'
 import { useInstalledPlugins } from './hooks/useInstalledPlugins'
 
 export type Page =
-  | 'search' | 'corpus' | 'chat' | 'journal' | 'system' | 'settings'
+  | 'search' | 'corpus' | 'chat' | 'simples' | 'journal' | 'system'
+  | 'settings'
 
 const PAGES: readonly Page[] = [
-  'search', 'corpus', 'chat', 'journal', 'system', 'settings',
+  'search', 'corpus', 'chat', 'simples', 'journal', 'system', 'settings',
 ]
 
 // Pre-redesign hashes keep working (bookmarks, muscle memory).
@@ -105,6 +107,7 @@ function App() {
         * so switching corpus <-> chat never drops composer state. The
         * legacy LM Studio chat lives under System > Local LM. */}
       {(page === 'corpus' || page === 'chat') && <OverseerPage />}
+      {page === 'simples' && <SimplesPage />}
       {page === 'journal' && <JournalPage />}
       {page === 'system' && (
         <SystemPage status={status} visionRunning={visionRunning} />
