@@ -415,44 +415,9 @@ export interface BudgetResp {
   budget?: BudgetSnapshot
 }
 
-// ── Slice 3f + 3f.5 types ─────────────────────────────────────
-
-export interface DialecticRow {
-  id: number
-  artifact_type: string
-  artifact_id: number | null
-  purpose: string
-  opus_model: string
-  gemma_model: string
-  opus_text: string
-  gemma_text: string
-  opus_confidence: string
-  gemma_confidence: string
-  severity: 'none' | 'minor' | 'significant'
-  similarity: number
-  diff_summary: string
-  source_context: string
-  status: 'open' | 'resolved' | 'productive'
-  resolution: string
-  resolution_text: string
-  resolved_at: string | null
-  opus_cost_usd: number
-  gemma_cost_usd: number
-  created_at: string
-}
-
-export interface DialecticListResp {
-  ok: boolean
-  dialectics?: DialecticRow[]
-  counts?: {
-    open: number
-    open_significant: number
-    open_minor: number
-    resolved: number
-    productive: number
-    total: number
-  }
-}
+// ── Slice 3f.5 types ──────────────────────────────────────────
+// (Dialectic types removed 2026-07-10 with the tab sunset; the Pi
+// keeps the frozen dialectic_open data, the UI no longer reads it.)
 
 export interface JournalEntry {
   id: number

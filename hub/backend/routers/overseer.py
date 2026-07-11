@@ -499,7 +499,22 @@ async def budget():
     return await pi_client.plugin_call("overseer", "GET", "/budget")
 
 
+# ── Squeeze (IA overhaul 2026-07-10): graded-dispatch report card ──
+# The Pi route already exists (it feeds the Lemon export connector);
+# this proxy lets the Squeeze tab render the same rows directly.
+
+@router.get("/dispatch-export")
+async def dispatch_export(since: int = 0, limit: int = 1000):
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/dispatch-export",
+        {"since": since, "limit": limit})
+
+
 # ── Slice 3f: dialectic ─────────────────────────────────────────
+# SUNSET 2026-07-10: the Dialectic tab is gone from the frontend
+# (writer disabled on the Pi since 2026-05-24; data frozen). These
+# proxies stay one release so older installed Hubs don't 404, then
+# they and the Pi routes can go.
 
 @router.get("/dialectic")
 async def list_dialectic(status: str = "", severity: str = "",

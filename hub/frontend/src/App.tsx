@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Layout } from './components/Layout'
 import { SearchPage } from './components/search/SearchPage'
-import { ChatPage } from './components/chat/ChatPage'
 import { SettingsPage } from './components/settings/SettingsPage'
 import { OverseerPage } from './components/overseer/OverseerPage'
 import { JournalPage } from './components/journal/JournalPage'
@@ -101,8 +100,11 @@ function App() {
   return (
     <Layout page={page} setPage={setPage} status={status}>
       {page === 'search' && <SearchPage />}
-      {page === 'corpus' && <OverseerPage />}
-      {page === 'chat' && <ChatPage />}
+      {/* Chat is the overseer chat promoted to a top-level surface
+        * (IA overhaul 2026-07-10); it shares the OverseerPage instance
+        * so switching corpus <-> chat never drops composer state. The
+        * legacy LM Studio chat lives under System > Local LM. */}
+      {(page === 'corpus' || page === 'chat') && <OverseerPage />}
       {page === 'journal' && <JournalPage />}
       {page === 'system' && (
         <SystemPage status={status} visionRunning={visionRunning} />

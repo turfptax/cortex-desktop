@@ -5,12 +5,15 @@ import { DataPage } from '../data/DataPage'
 import { VideoPage } from '../video/VideoPage'
 import { ActivityPanel } from '../overseer/ActivityPanel'
 import { LemonSyncPanel } from './LemonSyncPanel'
+import { ChatPage } from '../chat/ChatPage'
 
 /** UI redesign Phase 1+2 (2026-06): the ops section. Absorbs the old
  * top-level Pi, Data, and Video tabs plus the overseer's Activity
- * feed as sub-tabs; the pages themselves are mounted unchanged. */
+ * feed as sub-tabs; the pages themselves are mounted unchanged.
+ * IA overhaul 2026-07-10: the legacy LM Studio chat demoted here as
+ * Local LM (top-level Chat is now the Cortex memory chat). */
 
-type SystemTab = 'pi' | 'data' | 'activity' | 'lemonsync' | 'video'
+type SystemTab = 'pi' | 'data' | 'activity' | 'lemonsync' | 'locallm' | 'video'
 
 export function SystemPage({
   status,
@@ -25,6 +28,7 @@ export function SystemPage({
     { id: 'data', label: 'Data' },
     { id: 'activity', label: 'Activity' },
     { id: 'lemonsync', label: 'Lemon Sync' },
+    { id: 'locallm', label: 'Local LM' },
     ...(visionRunning
       ? [{ id: 'video' as SystemTab, label: 'Video' }]
       : []),
@@ -57,6 +61,7 @@ export function SystemPage({
           </div>
         )}
         {active === 'lemonsync' && <LemonSyncPanel />}
+        {active === 'locallm' && <ChatPage />}
         {active === 'video' && visionRunning && <VideoPage />}
       </div>
     </div>

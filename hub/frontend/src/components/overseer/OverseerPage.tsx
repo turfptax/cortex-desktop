@@ -7,11 +7,10 @@ import { useVoiceMode } from '../../hooks/useVoiceMode'
 import { NotificationsPanel } from './panels/NotificationsPanel'
 import { ChatPanel } from './panels/ChatPanel'
 import { InsightsPanel } from './panels/InsightsPanel'
-import { DialecticPanel } from './panels/DialecticPanel'
 import { WorkingMemoryView } from './panels/WorkingMemoryView'
 import { Card, SourceBadge } from './panels/widgets'
 import { StatCard, Row } from './panels/WorkingMemoryView'
-import { ProjectsPanel } from './panels/ProjectsPanel'
+import { SqueezePanel } from './panels/SqueezePanel'
 import { ContactsPanel } from './panels/ContactsPanel'
 import { VoicePanel } from './panels/VoicePanel'
 
@@ -41,14 +40,10 @@ import {
   type NotificationsResp,
   type BudgetSnapshot,
   type BudgetResp,
-  type DialecticRow,
-  type DialecticListResp,
   type BlindspotRow,
   type PendingInterpretation,
   type InsightScanRow,
   type InsightScansResp,
-  type ProjectClassRow,
-  type ProjectsListResp,
   type InsightPendingResp,
   type InsightScanResp,
   fmtBytes,
@@ -60,18 +55,32 @@ import {
 // UI redesign Phase 2 (2026-06-11): journal moved to the top-level
 // Journal section; activity moved to System. Sub-tab is hash-driven
 // (#/corpus/<tab>) so corpus views deep-link and survive refresh.
-type Tab = 'overview' | 'chat' | 'dialectic' | 'insights' | 'projects' | 'classify' | 'notifications' | 'explorer' | 'ecosystem' | 'contacts' | 'voice'
+// IA overhaul 2026-07-10: chat promoted to the top-level #/chat surface
+// (still this component, so composer state survives section switches);
+// Dialectic sunset (writer off since 2026-05-24) and replaced by
+// Squeeze (AI report card from graded dispatches); Classify folded
+// into the Projects tab.
+type Tab = 'overview' | 'chat' | 'squeeze' | 'insights' | 'projects' | 'notifications' | 'explorer' | 'ecosystem' | 'contacts' | 'voice'
 
 const CORPUS_TABS: readonly Tab[] = [
-  'overview', 'chat', 'dialectic', 'insights', 'projects',
-  'classify', 'explorer', 'ecosystem', 'notifications', 'contacts', 'voice',
+  'overview', 'insights', 'projects', 'squeeze',
+  'ecosystem', 'explorer', 'notifications', 'contacts', 'voice',
 ]
+
+// Old bookmarks keep landing somewhere sensible.
+const LEGACY_TAB_ALIASES: Record<string, Tab> = {
+  chat: 'chat',
+  dialectic: 'squeeze',
+  classify: 'projects',
+}
 
 function tabFromHash(): Tab {
   const seg = window.location.hash.replace(/^#\/?/, '').split('/')
+  if (seg[0] === 'chat') return 'chat'
   const sub = seg[1] ?? ''
-  return (CORPUS_TABS as readonly string[]).includes(sub)
-    ? (sub as Tab) : 'overview'
+  if ((CORPUS_TABS as readonly string[]).includes(sub)) return sub as Tab
+  if (sub in LEGACY_TAB_ALIASES) return LEGACY_TAB_ALIASES[sub]
+  return 'overview'
 }
 
 export function OverseerPage() {
@@ -82,7 +91,7 @@ export function OverseerPage() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
   const setTab = (t: Tab) => {
-    window.location.hash = `/corpus/${t}`
+    window.location.hash = t === 'chat' ? '/chat' : `/corpus/${t}`
   }
   const [status, setStatus] = useState<StatusResp | null>(null)
   const [wm, setWm] = useState<WorkingMemoryResp | null>(null)
@@ -120,10 +129,7 @@ export function OverseerPage() {
   const [notifications, setNotifications] = useState<NotificationRow[]>([])
   const [notificationsUnread, setNotificationsUnread] = useState<number>(0)
   const [budget, setBudget] = useState<BudgetSnapshot | null>(null)
-  const [dialectics, setDialectics] = useState<DialecticRow[]>([])
-  const [dialecticCounts, setDialecticCounts] = useState<DialecticListResp['counts'] | null>(null)
   const [blindspots, setBlindspots] = useState<BlindspotRow[]>([])
-  const [expandedDialecticId, setExpandedDialecticId] = useState<number | null>(null)
   const [expandedToken, setExpandedToken] = useState<string | null>(null)
   // Slice 3h: insight queue state
   const [insights, setInsights] = useState<PendingInterpretation[]>([])
@@ -135,8 +141,6 @@ export function OverseerPage() {
   const [editTitle, setEditTitle] = useState<string>('')
   const [editBody, setEditBody] = useState<string>('')
   const [insightScansHistory, setInsightScansHistory] = useState<InsightScanRow[]>([])
-  const [projects, setProjects] = useState<ProjectClassRow[]>([])
-  const [projectFilter, setProjectFilter] = useState<string>('')
   // Polish CP1: Explorer tab state
   const [graph, setGraph] = useState<GraphResp | null>(null)
   const [graphLoading, setGraphLoading] = useState(false)
@@ -158,7 +162,7 @@ export function OverseerPage() {
   const refreshAll = async () => {
     setError('')
     try {
-      const [s, w, l, ls, im, n, b, d, bs] = await Promise.all([
+      const [s, w, l, ls, im, n, b, bs] = await Promise.all([
         apiFetch<StatusResp>('/overseer/status'),
         apiFetch<WorkingMemoryResp>('/overseer/working-memory'),
         apiFetch<LoopResp>('/overseer/loop'),
@@ -166,7 +170,6 @@ export function OverseerPage() {
         apiFetch<ImportsResp>('/overseer/imports?limit=200'),
         apiFetch<NotificationsResp>('/overseer/notifications'),
         apiFetch<BudgetResp>('/overseer/budget'),
-        apiFetch<DialecticListResp>('/overseer/dialectic?limit=100'),
         apiFetch<{ ok: boolean; blindspots?: BlindspotRow[] }>(
           '/overseer/blindspots?active_only=1'
         ),
@@ -193,8 +196,6 @@ export function OverseerPage() {
       setNotifications(parsedNotifs)
       setNotificationsUnread(n.unread_count || 0)
       setBudget(b.budget || null)
-      setDialectics(d.dialectics || [])
-      setDialecticCounts(d.counts || null)
       setBlindspots(bs.blindspots || [])
     } catch (e: any) {
       setError(`Refresh failed: ${e?.message || e}`)
@@ -384,7 +385,6 @@ export function OverseerPage() {
   useEffect(() => {
     if (tab === 'chat') refreshChat()
     if (tab === 'insights') refreshInsights(insightStatusFilter)
-    if (tab === 'projects') refreshProjects()
     if (tab === 'explorer' && !graph) refreshGraph()
   }, [tab])
 
@@ -917,15 +917,6 @@ export function OverseerPage() {
     }
   }
 
-  const refreshProjects = async () => {
-    try {
-      const r = await apiFetch<ProjectsListResp>('/overseer/projects')
-      setProjects(r.projects || [])
-    } catch (e: any) {
-      setError(`Projects refresh failed: ${e?.message || e}`)
-    }
-  }
-
   const refreshGraph = async () => {
     setGraphLoading(true)
     setGraphError('')
@@ -940,44 +931,6 @@ export function OverseerPage() {
       setGraphError(e?.message || String(e))
     } finally {
       setGraphLoading(false)
-    }
-  }
-
-  const handleSetProjectClass = async (
-    project: string,
-    treat_as: 'auto' | 'human' | 'automation' | 'ignore',
-  ) => {
-    try {
-      await apiFetch<any>('/overseer/projects/setting', {
-        method: 'POST',
-        body: JSON.stringify({ project, treat_as }),
-      })
-      await refreshProjects()
-      setLastAction(
-        `Set ${project} → ${treat_as}` +
-        (treat_as === 'auto' ? ' (cleared override)' : ''),
-      )
-    } catch (e: any) {
-      setError(`Project update failed: ${e?.message || e}`)
-    }
-  }
-
-  const handleClassifyNow = async () => {
-    setBusy('Classifying…')
-    try {
-      const r = await apiFetch<{ ok: boolean; changes?: any }>(
-        '/overseer/projects/classify',
-        { method: 'POST' },
-      )
-      if (r.ok) {
-        const changed = (r.changes && r.changes.changed) || 0
-        setLastAction(`Classifier ran. ${changed} project(s) changed.`)
-      }
-      await refreshProjects()
-    } catch (e: any) {
-      setError(`Classify-now failed: ${e?.message || e}`)
-    } finally {
-      setBusy('')
     }
   }
 
@@ -1039,23 +992,6 @@ export function OverseerPage() {
       }
     } catch (e: any) {
       setError(`Notification ${action} failed: ${e?.message || e}`)
-    }
-  }
-
-  const handleResolveDialectic = async (
-    id: number,
-    resolution: 'opus' | 'gemma' | 'third' | 'productive',
-    resolution_text = ''
-  ) => {
-    try {
-      await apiFetch<any>('/overseer/dialectic/resolve', {
-        method: 'POST',
-        body: JSON.stringify({ id, resolution, resolution_text }),
-      })
-      setExpandedDialecticId(null)
-      await refreshAll()
-    } catch (e: any) {
-      setError(`Resolve failed: ${e?.message || e}`)
     }
   }
 
@@ -1205,7 +1141,7 @@ export function OverseerPage() {
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-3 flex-wrap">
             <h2 className="text-base font-semibold text-text-primary">
-              Overseer
+              {tab === 'chat' ? 'Chat' : 'Corpus'}
             </h2>
             {status?.loop_running ? (
               <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-success/20 text-success">
@@ -1229,16 +1165,15 @@ export function OverseerPage() {
             {busy && (
               <span className="text-xs text-text-muted">{busy}</span>
             )}
+            {tab !== 'chat' && (
             <div className="flex gap-1 bg-surface-tertiary rounded-lg p-0.5">
               {([
                 ['overview', 'Overview'],
-                ['chat', 'Chat'],
-                ['dialectic', `Dialectic${dialecticCounts && dialecticCounts.open > 0 ? ` (${dialecticCounts.open})` : ''}`],
                 ['insights', `Insights${insightCounts && insightCounts.pending > 0 ? ` (${insightCounts.pending})` : ''}`],
                 ['projects', 'Projects'],
-                ['classify', 'Classify'],
-                ['explorer', 'Explorer'],
+                ['squeeze', 'Squeeze'],
                 ['ecosystem', 'Map'],
+                ['explorer', 'Explorer'],
                 ['contacts', 'Contacts'],
                 ['voice', 'Voice'],
                 ['notifications', `Bell${notificationsUnread > 0 ? ` (${notificationsUnread})` : ''}`],
@@ -1256,6 +1191,7 @@ export function OverseerPage() {
                 </button>
               ))}
             </div>
+            )}
             <button
               onClick={refreshAll}
               disabled={!!busy}
@@ -1333,26 +1269,8 @@ export function OverseerPage() {
       {tab === 'projects' && (
         <ProjectsTab />
       )}
-      {tab === 'classify' && (
-        <ProjectsPanel
-          projects={projects}
-          filter={projectFilter}
-          setFilter={setProjectFilter}
-          onSetClass={handleSetProjectClass}
-          onClassifyNow={handleClassifyNow}
-          onRefresh={refreshProjects}
-          busy={busy}
-        />
-      )}
-      {tab === 'dialectic' && (
-        <DialecticPanel
-          dialectics={dialectics}
-          counts={dialecticCounts}
-          expandedId={expandedDialecticId}
-          setExpandedId={setExpandedDialecticId}
-          onResolve={handleResolveDialectic}
-          onRefresh={refreshAll}
-        />
+      {tab === 'squeeze' && (
+        <SqueezePanel />
       )}
       {tab === 'insights' && (
         <InsightsPanel

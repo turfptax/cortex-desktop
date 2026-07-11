@@ -21,6 +21,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { apiFetch } from '../../lib/api'
+import { ProjectsPanel } from './panels/ProjectsPanel'
+import { type ProjectClassRow, type ProjectsListResp } from './shared'
 
 // ── Types matching the backend project_summaries shape ──────────
 
@@ -748,6 +750,108 @@ export function ProjectsTab() {
           onRegenerate={() => handleRegenerate(p.project)}
         />
       ))}
+
+      <ClassificationSection />
+    </div>
+  )
+}
+
+// ── Classification (IA overhaul 2026-07-10) ──────────────────────
+// The old standalone Classify tab, folded in here as a collapsed
+// section: per-project treat-as overrides (human / automation /
+// ignore) live next to the projects they classify. Self-contained
+// state so ProjectsTab stays independent of OverseerPage.
+
+function ClassificationSection() {
+  const [open, setOpen] = useState(false)
+  const [projects, setProjects] = useState<ProjectClassRow[]>([])
+  const [filter, setFilter] = useState('')
+  const [busy, setBusy] = useState('')
+  const [error, setError] = useState('')
+  const [lastAction, setLastAction] = useState('')
+
+  const refresh = useCallback(async () => {
+    try {
+      const r = await apiFetch<ProjectsListResp>('/overseer/projects')
+      setProjects(r.projects || [])
+    } catch (e: any) {
+      setError(`Classification refresh failed: ${e?.message || e}`)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (open && projects.length === 0) refresh()
+  }, [open, projects.length, refresh])
+
+  const handleSetClass = async (
+    project: string,
+    treat_as: 'auto' | 'human' | 'automation' | 'ignore',
+  ) => {
+    try {
+      await apiFetch<any>('/overseer/projects/setting', {
+        method: 'POST',
+        body: JSON.stringify({ project, treat_as }),
+      })
+      await refresh()
+      setLastAction(
+        `Set ${project} → ${treat_as}` +
+        (treat_as === 'auto' ? ' (cleared override)' : ''),
+      )
+    } catch (e: any) {
+      setError(`Project update failed: ${e?.message || e}`)
+    }
+  }
+
+  const handleClassifyNow = async () => {
+    setBusy('Classifying…')
+    try {
+      const r = await apiFetch<{ ok: boolean; changes?: any }>(
+        '/overseer/projects/classify',
+        { method: 'POST' },
+      )
+      if (r.ok) {
+        const changed = (r.changes && r.changes.changed) || 0
+        setLastAction(`Classifier ran. ${changed} project(s) changed.`)
+      }
+      await refresh()
+    } catch (e: any) {
+      setError(`Classify-now failed: ${e?.message || e}`)
+    } finally {
+      setBusy('')
+    }
+  }
+
+  return (
+    <div className="border-t border-border pt-4 mt-2">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 text-sm font-medium text-text-secondary hover:text-text-primary cursor-pointer"
+      >
+        <span>{open ? '▾' : '▸'}</span>
+        <span>Classification</span>
+        <span className="text-xs text-text-muted font-normal">
+          per-project treat-as: human / automation / ignore
+        </span>
+      </button>
+      {(lastAction || error) && open && (
+        <div className="mt-2 text-xs">
+          {lastAction && <span className="text-success">{lastAction}</span>}
+          {error && <span className="text-red-400 ml-2">{error}</span>}
+        </div>
+      )}
+      {open && (
+        <div className="mt-3">
+          <ProjectsPanel
+            projects={projects}
+            filter={filter}
+            setFilter={setFilter}
+            onSetClass={handleSetClass}
+            onClassifyNow={handleClassifyNow}
+            onRefresh={refresh}
+            busy={busy}
+          />
+        </div>
+      )}
     </div>
   )
 }
