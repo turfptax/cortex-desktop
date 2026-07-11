@@ -1,14 +1,21 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../../lib/api'
-import { ExplorerPanel, type GraphResp } from './ExplorerPanel'
+import type { GraphResp } from './ExplorerPanel'
 import { ProjectsTab } from './ProjectsTab'
-import { EcosystemMapPanel } from './EcosystemMapPanel'
+
+// Perf (2026-07-11): the graph tabs pull @xyflow/react + d3-force,
+// the heaviest deps in the app. Lazy-load them so the initial bundle
+// (Chat/Search/Corpus overview) ships without the graph stack.
+const ExplorerPanel = lazy(() =>
+  import('./ExplorerPanel').then((m) => ({ default: m.ExplorerPanel })))
+const EcosystemMapPanel = lazy(() =>
+  import('./EcosystemMapPanel').then((m) => ({ default: m.EcosystemMapPanel })))
 import { useVoiceMode } from '../../hooks/useVoiceMode'
 import { NotificationsPanel } from './panels/NotificationsPanel'
 import { ChatPanel } from './panels/ChatPanel'
 import { InsightsPanel } from './panels/InsightsPanel'
 import { WorkingMemoryView } from './panels/WorkingMemoryView'
-import { Card, SourceBadge } from './panels/widgets'
+import { Card, PanelLoading, SourceBadge } from './panels/widgets'
 import { StatCard, Row } from './panels/WorkingMemoryView'
 import { SqueezePanel } from './panels/SqueezePanel'
 import { ContactsPanel } from './panels/ContactsPanel'
@@ -593,8 +600,20 @@ export function OverseerPage() {
 
   useEffect(() => {
     refreshAll()
-    const t = setInterval(refreshAll, 30000)
-    return () => clearInterval(t)
+    // Perf (2026-07-11): refreshAll is 8 Pi-proxied calls. Skip the
+    // 30s tick while the window is hidden (tray-minimized app,
+    // background tab) and catch up immediately on return.
+    const t = setInterval(() => {
+      if (!document.hidden) refreshAll()
+    }, 30000)
+    const onVisible = () => {
+      if (!document.hidden) refreshAll()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [])
 
   useEffect(() => {
@@ -1513,20 +1532,24 @@ export function OverseerPage() {
         />
       )}
       {tab === 'explorer' && (
-        <ExplorerPanel
-          graph={graph}
-          loading={graphLoading}
-          error={graphError}
-          onRefresh={refreshGraph}
-          onTokenClick={(t) => {
-            // Same UX as Insights: jump to Overview, open DetailCard.
-            setTab('overview')
-            setExpandedToken(t)
-          }}
-        />
+        <Suspense fallback={<PanelLoading label="graph engine" />}>
+          <ExplorerPanel
+            graph={graph}
+            loading={graphLoading}
+            error={graphError}
+            onRefresh={refreshGraph}
+            onTokenClick={(t) => {
+              // Same UX as Insights: jump to Overview, open DetailCard.
+              setTab('overview')
+              setExpandedToken(t)
+            }}
+          />
+        </Suspense>
       )}
       {tab === 'ecosystem' && (
-        <EcosystemMapPanel />
+        <Suspense fallback={<PanelLoading label="graph engine" />}>
+          <EcosystemMapPanel />
+        </Suspense>
       )}
       {tab === 'projects' && (
         <ProjectsTab />

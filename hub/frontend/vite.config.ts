@@ -4,6 +4,20 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    rollupOptions: {
+      output: {
+        // Perf (2026-07-11): split long-lived vendor code into its own
+        // cacheable chunks. The graph stack (@xyflow/react + d3-force)
+        // is NOT listed here - it ships in the lazy chunks created by
+        // the React.lazy() imports of the three graph panels.
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom'],
+          'vendor-markdown': ['react-markdown', 'remark-gfm'],
+        },
+      },
+    },
+  },
   server: {
     proxy: {
       '/api': {

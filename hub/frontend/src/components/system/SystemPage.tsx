@@ -1,11 +1,16 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { type StatusInfo } from '../../App'
 import { PiPage } from '../pi/PiPage'
 import { DataPage } from '../data/DataPage'
 import { VideoPage } from '../video/VideoPage'
-import { ActivityPanel } from '../overseer/ActivityPanel'
 import { LemonSyncPanel } from './LemonSyncPanel'
 import { ChatPage } from '../chat/ChatPage'
+import { PanelLoading } from '../overseer/panels/widgets'
+
+// Perf (2026-07-11): ActivityPanel pulls the graph stack
+// (@xyflow/react + d3-force); lazy-load it with the other graph tabs.
+const ActivityPanel = lazy(() =>
+  import('../overseer/ActivityPanel').then((m) => ({ default: m.ActivityPanel })))
 
 /** UI redesign Phase 1+2 (2026-06): the ops section. Absorbs the old
  * top-level Pi, Data, and Video tabs plus the overseer's Activity
@@ -57,7 +62,9 @@ export function SystemPage({
         {active === 'data' && <DataPage status={status} />}
         {active === 'activity' && (
           <div className="flex-1 overflow-y-auto p-6">
-            <ActivityPanel />
+            <Suspense fallback={<PanelLoading label="activity feed" />}>
+              <ActivityPanel />
+            </Suspense>
           </div>
         )}
         {active === 'lemonsync' && <LemonSyncPanel />}

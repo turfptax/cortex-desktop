@@ -1,6 +1,19 @@
 import { type ReactNode } from 'react'
 
 
+// Suspense fallback for lazy-loaded panels (the graph tabs ship in
+// their own chunk so the initial bundle stays lean).
+export function PanelLoading({ label }: { label?: string }) {
+  return (
+    <div className="flex-1 flex items-center justify-center py-16">
+      <div className="text-sm text-text-muted animate-pulse">
+        Loading{label ? ` ${label}` : ''}…
+      </div>
+    </div>
+  )
+}
+
+
 export function Card({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="rounded-lg border border-border bg-surface-secondary p-4">
