@@ -289,6 +289,7 @@ The Overseer page (top-level sidebar tab) has these inner tabs:
 - **Add a new overseer route** → modify `cortex-core/plugins/overseer/__init__.py` (Pi-side) AND `cortex-desktop/hub/backend/routers/overseer.py` (Hub proxy)
 - **New schema column** → add to `OVERSEER_SCHEMA_SQL` in `cortex-core/plugins/overseer/overseer_db.py` AND chain an `_migrate_*` function for existing installs
 - **New Hub tab** → register in `Tab` union + tab strip + dispatch in `OverseerPage.tsx`
+- **Any user-facing feature** → update `cortex-core/memory/HARNESS_MAP.md` (the overseer's single map of every screen/feature) and redeploy it to the Pi
 
 ## Build & CI/CD
 

@@ -388,6 +388,73 @@ export function OverseerPage() {
     }
   }
 
+  // Agent harness (2026-07-11): per-turn meta-feedback. Note-first;
+  // the context object is the injection payload the Pi seeds into a
+  // Discuss thread, so it must describe what the user was looking at.
+  const handleSendFeedback = async (
+    targetId: number, rating: number, note: string,
+  ): Promise<number | null> => {
+    try {
+      const thread = chatThreads.find((t) => t.id === activeThreadId)
+      const r = await apiFetch<{ ok: boolean; id?: number; error?: string }>(
+        '/overseer/feedback', {
+          method: 'POST',
+          body: JSON.stringify({
+            target_kind: 'chat_turn',
+            target_id: String(targetId),
+            rating,
+            note,
+            source: 'hub',
+            context: {
+              screen: 'hub-chat',
+              thread_id: activeThreadId,
+              thread_title: thread?.title || '',
+              direct_mode: directMode,
+            },
+          }),
+        })
+      if (!r.ok || !r.id) {
+        setError(`Feedback failed: ${r.error || 'unknown'}`)
+        return null
+      }
+      setLastAction('Feedback noted')
+      return r.id
+    } catch (e: any) {
+      setError(`Feedback failed: ${e?.message || e}`)
+      return null
+    }
+  }
+
+  const handleDiscussFeedback = async (feedbackId: number) => {
+    // Shares the chatSending lock: discussing switches the active
+    // thread, which must not happen mid-send, and the lock also
+    // swallows double-clicks (the Pi is idempotent, but two racing
+    // requests would still churn).
+    if (chatSending) return
+    setChatSending(true)
+    try {
+      const r = await apiFetch<{
+        ok: boolean; thread_id?: number; error?: string
+      }>('/overseer/feedback/discuss', {
+        method: 'POST',
+        body: JSON.stringify({ feedback_id: feedbackId }),
+      })
+      if (!r.ok) {
+        setError(`Discuss failed: ${r.error || 'unknown'}`)
+        return
+      }
+      // The Pi created (or re-opened) the seeded thread and made it
+      // active; load it.
+      setChatMessages([])
+      window.location.hash = '/chat'
+      await Promise.all([refreshChat(), refreshThreads()])
+    } catch (e: any) {
+      setError(`Discuss failed: ${e?.message || e}`)
+    } finally {
+      setChatSending(false)
+    }
+  }
+
   const refreshInsights = async (status: string = insightStatusFilter) => {
     try {
       const q = status ? `?status=${encodeURIComponent(status)}` : ''
@@ -1429,6 +1496,8 @@ export function OverseerPage() {
           prompts={chatPrompts}
           onSavePrompt={handleSavePrompt}
           onDeletePrompt={handleDeletePrompt}
+          onSendFeedback={handleSendFeedback}
+          onDiscussFeedback={handleDiscussFeedback}
         />
       )}
       {tab === 'contacts' && <ContactsPanel />}

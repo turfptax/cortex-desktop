@@ -54,6 +54,8 @@ export function ChatPanel({
   prompts,
   onSavePrompt,
   onDeletePrompt,
+  onSendFeedback,
+  onDiscussFeedback,
 }: {
   messages: ChatMessage[]
   input: string
@@ -81,6 +83,8 @@ export function ChatPanel({
   prompts: ChatPrompt[]
   onSavePrompt: (title: string, body: string) => void
   onDeletePrompt: (id: number) => void
+  onSendFeedback: (targetId: number, rating: number, note: string) => Promise<number | null>
+  onDiscussFeedback: (feedbackId: number) => Promise<void>
 }) {
   const voiceActive = voiceState !== 'off'
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -246,7 +250,12 @@ export function ChatPanel({
             </div>
           ) : (
             messages.map((m) => (
-              <ChatBubble key={m.id} m={m} />
+              <ChatBubble
+                key={m.id}
+                m={m}
+                onSendFeedback={onSendFeedback}
+                onDiscussFeedback={onDiscussFeedback}
+              />
             ))
           )}
           {sending && (
@@ -690,7 +699,15 @@ export function PendingAttachmentChip({
   )
 }
 
-export function ChatBubble({ m }: { m: ChatMessage }) {
+export function ChatBubble({
+  m,
+  onSendFeedback,
+  onDiscussFeedback,
+}: {
+  m: ChatMessage
+  onSendFeedback?: (targetId: number, rating: number, note: string) => Promise<number | null>
+  onDiscussFeedback?: (feedbackId: number) => Promise<void>
+}) {
   const isUser = m.role === 'user'
   const isSystem = m.role === 'system'
   const attachments = m.attachments || []
@@ -847,7 +864,170 @@ export function ChatBubble({ m }: { m: ChatMessage }) {
         {!isUser && !isSystem && m.tool_calls && m.tool_calls.length > 0 && (
           <ChatToolCallList calls={m.tool_calls} iterations={m.tool_iterations} />
         )}
+
+        {/* Agent harness (2026-07-11): meta-feedback on real assistant
+            turns (m.id > 0 excludes optimistic stubs + slash bubbles).
+            Note-first; Discuss with Overseer is the secondary path. */}
+        {!isUser && !isSystem && m.id > 0 && onSendFeedback && (
+          <FeedbackControl
+            targetId={m.id}
+            onSend={onSendFeedback}
+            onDiscuss={onDiscussFeedback}
+          />
+        )}
       </div>
+    </div>
+  )
+}
+
+// Agent harness (2026-07-11): lightweight per-turn feedback. Two tiny
+// thumbs; picking one opens an inline note box. Save is the default
+// action; "Discuss with Overseer" escalates to a context-seeded
+// thread (it saves first if needed so the thread links the feedback).
+function FeedbackControl({
+  targetId,
+  onSend,
+  onDiscuss,
+}: {
+  targetId: number
+  onSend: (targetId: number, rating: number, note: string) => Promise<number | null>
+  onDiscuss?: (feedbackId: number) => Promise<void>
+}) {
+  const [rating, setRating] = useState<number>(0)
+  const [open, setOpen] = useState<boolean>(false)
+  const [note, setNote] = useState<string>('')
+  const [busy, setBusy] = useState<boolean>(false)
+  const [savedId, setSavedId] = useState<number | null>(null)
+  const [savedRating, setSavedRating] = useState<number>(0)
+
+  const pick = (r: number) => {
+    if (busy) return
+    setRating(r)
+    setOpen(true)
+  }
+
+  const save = async (): Promise<number | null> => {
+    setBusy(true)
+    try {
+      const id = await onSend(targetId, rating, note.trim())
+      if (id) {
+        setSavedId(id)
+        setSavedRating(rating)
+        setOpen(false)
+      }
+      return id
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const discuss = async () => {
+    if (!onDiscuss) return
+    setBusy(true)
+    try {
+      const id = savedId ?? (await onSend(targetId, rating, note.trim()))
+      if (id) {
+        setSavedId(id)
+        setSavedRating(rating)
+        setOpen(false)
+        await onDiscuss(id)
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (savedId && !open) {
+    return (
+      <div className="mt-2 flex items-center gap-2 text-[10px] text-text-muted">
+        <span>{savedRating > 0 ? '👍' : savedRating < 0 ? '👎' : '✎'} feedback noted</span>
+        {onDiscuss && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={async () => {
+              if (busy) return
+              setBusy(true)
+              try { await onDiscuss(savedId) } finally { setBusy(false) }
+            }}
+            className="text-accent hover:underline cursor-pointer disabled:opacity-50"
+            title="Open the discussion thread for this feedback"
+          >
+            {busy ? 'opening…' : 'discuss'}
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="mt-2">
+      <div className="flex items-center gap-1 opacity-60 hover:opacity-100">
+        <button
+          type="button"
+          onClick={() => pick(1)}
+          disabled={busy}
+          aria-label="Good response"
+          title="Good response"
+          className={`h-6 w-6 rounded text-[11px] flex items-center justify-center cursor-pointer disabled:opacity-50 ${
+            rating > 0 && open ? 'bg-emerald-500/20' : 'hover:bg-surface-tertiary'
+          }`}
+        >
+          👍
+        </button>
+        <button
+          type="button"
+          onClick={() => pick(-1)}
+          disabled={busy}
+          aria-label="Bad response"
+          title="Bad response"
+          className={`h-6 w-6 rounded text-[11px] flex items-center justify-center cursor-pointer disabled:opacity-50 ${
+            rating < 0 && open ? 'bg-red-500/20' : 'hover:bg-surface-tertiary'
+          }`}
+        >
+          👎
+        </button>
+      </div>
+      {open && (
+        <div className="mt-1 rounded-md border border-border bg-surface-tertiary/40 p-2 space-y-2">
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Optional note — what worked or didn't?"
+            rows={2}
+            className="w-full rounded border border-border bg-surface-tertiary px-2 py-1 text-xs text-text-primary placeholder:text-text-muted resize-none focus:outline-none focus:border-accent"
+          />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={save}
+              disabled={busy}
+              className="px-2.5 py-1 rounded text-xs font-medium bg-accent hover:bg-accent-hover text-white cursor-pointer disabled:opacity-50"
+            >
+              {busy ? 'Saving…' : 'Save'}
+            </button>
+            {onDiscuss && (
+              <button
+                type="button"
+                onClick={discuss}
+                disabled={busy}
+                className="px-2.5 py-1 rounded text-xs text-text-muted hover:text-text-primary cursor-pointer disabled:opacity-50"
+                title="Save this feedback and open a thread with the overseer, seeded with this exchange"
+              >
+                Discuss with Overseer
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => { setOpen(false); setRating(0) }}
+              disabled={busy}
+              className="ml-auto text-xs text-text-muted hover:text-text-primary cursor-pointer"
+            >
+              cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

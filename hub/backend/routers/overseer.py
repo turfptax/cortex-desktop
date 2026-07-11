@@ -499,6 +499,63 @@ async def chat_prompt_delete(req: Request):
         "overseer", "POST", "/chat/prompts/delete", await _json_or_empty(req))
 
 
+# ── Agent harness (2026-07-11): harness map + feedback + MCP ────────
+
+
+@router.get("/harness-map")
+async def harness_map():
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/harness-map", {})
+
+
+@router.get("/feedback")
+async def feedback_list(limit: int = 50, target_kind: str = ""):
+    params: dict = {"limit": limit}
+    if target_kind:
+        params["target_kind"] = target_kind
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/feedback", params)
+
+
+@router.post("/feedback")
+async def feedback_add(req: Request):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/feedback", await _json_or_empty(req))
+
+
+@router.post("/feedback/discuss")
+async def feedback_discuss(req: Request):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/feedback/discuss", await _json_or_empty(req))
+
+
+@router.get("/mcp/connectors")
+async def mcp_connectors():
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/mcp/connectors", {})
+
+
+@router.post("/mcp/connectors/upsert")
+async def mcp_connector_upsert(req: Request):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/mcp/connectors/upsert",
+        await _json_or_empty(req))
+
+
+@router.post("/mcp/connectors/delete")
+async def mcp_connector_delete(req: Request):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/mcp/connectors/delete",
+        await _json_or_empty(req))
+
+
+@router.post("/mcp/connectors/test")
+async def mcp_connector_test(req: Request):
+    return await pi_client.plugin_call(
+        "overseer", "POST", "/mcp/connectors/test",
+        await _json_or_empty(req), timeout=30.0)
+
+
 @router.post("/chat/compress")
 async def chat_compress(req: Request):
     """Slice 9.5 CP3: proxy for the Pi's chat compression endpoint.
