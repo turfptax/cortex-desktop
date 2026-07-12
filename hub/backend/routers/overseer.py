@@ -508,6 +508,20 @@ async def harness_map():
         "overseer", "GET", "/harness-map", {})
 
 
+@router.get("/day")
+async def day_detail(date: str):
+    """Everything the corpus holds about one local day (any year)."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/day", {"date": date})
+
+
+@router.get("/day/heat")
+async def day_heat(year: int):
+    """Per-day corpus aggregates for a year (sessions/logged/sleep)."""
+    return await pi_client.plugin_call(
+        "overseer", "GET", "/day/heat", {"year": year})
+
+
 @router.get("/feedback")
 async def feedback_list(limit: int = 50, target_kind: str = ""):
     params: dict = {"limit": limit}

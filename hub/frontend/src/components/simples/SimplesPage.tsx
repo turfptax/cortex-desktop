@@ -47,6 +47,46 @@ interface Snapshot {
 
 type ViewMode = 'day' | 'week' | 'month' | 'year'
 
+// Per-day corpus aggregates from GET /overseer/day/heat.
+interface DayHeat {
+  s?: number   // AI-session minutes
+  sc?: number  // AI-session count
+  t?: number   // logged time-entry minutes
+  z?: number   // hours slept
+  p?: number   // steps
+}
+
+// GET /overseer/day: everything the corpus holds about one local day.
+interface DayDetail {
+  ok: boolean
+  date: string
+  sessions: {
+    id: string
+    source: string
+    project: string
+    started_at?: string
+    local_started_at?: string
+    duration_minutes: number
+    message_count: number
+    tool_use_count: number
+    sensitivity?: string | null
+    redacted: boolean
+    gist: string
+  }[]
+  session_minutes: number
+  time_entries: {
+    project_tag: string
+    activity_type: string
+    description: string
+    local_started_at?: string
+    duration_minutes: number
+  }[]
+  logged_minutes: number
+  health: Record<string, number>
+  journal: { text: string; entry_type: string; local_created_at?: string }[]
+  narrative: string
+}
+
 // Entity colors (validated categorical set; work + downtime are
 // deliberately recessive neutrals and sit outside the loud set).
 const KIND_COLOR: Record<string, string> = {
@@ -148,46 +188,29 @@ export function SimplesPage() {
   })
   const [anchorDay, setAnchorDay] = useState<string>(today)
 
-  // Year view: credited effort by day (the phone's time log, synced
-  // to the Pi as time_entries). One fetch covers every year; the map
-  // is merged with done blocks from the mirrored window below.
-  const [logCredit, setLogCredit] = useState<Map<string, number>>(new Map())
-  const [creditState, setCreditState] = useState<'idle' | 'loading' | 'ready'>('idle')
+  // Year view: per-day corpus aggregates from the Pi (AI-session
+  // minutes, logged time, sleep, steps) for ANY year the corpus
+  // covers. This is the permanent-memory view: the desktop sees the
+  // whole corpus, not just the phone's mirrored window.
+  // Failures are tracked separately and NEVER cached as data: a Pi
+  // WiFi flap must not render a permanently blank year (the proxy
+  // wraps Pi-down as HTTP 200 + ok:false, so r.ok is the signal).
+  const [heatYears, setHeatYears] = useState<Record<number, Record<string, DayHeat>>>({})
+  const [heatFail, setHeatFail] = useState<Record<number, boolean>>({})
+  const anchorYear = Number(anchorDay.slice(0, 4))
   useEffect(() => {
-    if (view !== 'year' || creditState !== 'idle') return
-    setCreditState('loading')
-    apiFetch<{ rows?: {
-      started_at?: string; local_started_at?: string;
-      duration_minutes?: number;
-    }[] }>(
-      '/data/query',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          table: 'time_entries', limit: 5000, order_by: 'started_at DESC',
-        }),
-      },
+    if (view !== 'year' || heatYears[anchorYear] || heatFail[anchorYear]) return
+    apiFetch<{ ok: boolean; days?: Record<string, DayHeat> }>(
+      `/overseer/day/heat?year=${anchorYear}`,
     )
       .then((r) => {
-        const m = new Map<string, number>()
-        const p = (n: number) => String(n).padStart(2, '0')
-        for (const row of r.rows || []) {
-          // started_at is UTC; local_started_at is its local-with-
-          // offset twin and gives the correct local day directly.
-          let day = (row.local_started_at || '').slice(0, 10)
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
-            if (!row.started_at) continue
-            const d = new Date(String(row.started_at).replace(' ', 'T') + 'Z')
-            if (isNaN(d.getTime())) continue
-            day = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
-          }
-          m.set(day, (m.get(day) || 0) + (Number(row.duration_minutes) || 0))
-        }
-        setLogCredit(m)
+        if (r && r.ok) setHeatYears((h) => ({ ...h, [anchorYear]: r.days || {} }))
+        else setHeatFail((f) => ({ ...f, [anchorYear]: true }))
       })
-      .catch(() => { /* year view just renders empty */ })
-      .finally(() => setCreditState('ready'))
-  }, [view, creditState])
+      .catch(() => setHeatFail((f) => ({ ...f, [anchorYear]: true })))
+  }, [view, anchorYear, heatYears, heatFail])
+  const retryHeat = (y: number) =>
+    setHeatFail((f) => { const n = { ...f }; delete n[y]; return n })
 
   useEffect(() => {
     localStorage.setItem('cortex.simples.view', view)
@@ -214,19 +237,6 @@ export function SimplesPage() {
     }
     return m
   }, [snap])
-
-  // Mirror the phone's creditedAllByDay: logged time_entries minutes,
-  // max'd with done-block minutes where the mirrored window has them.
-  const credit = useMemo(() => {
-    const m = new Map(logCredit)
-    for (const [day, blocks] of byDay) {
-      const done = blocks
-        .filter((b) => b.state === 'done' && b.kind !== 'downtime')
-        .reduce((s, b) => s + (b.end_min - b.start_min), 0)
-      if (done > 0) m.set(day, Math.max(m.get(day) || 0, done))
-    }
-    return m
-  }, [logCredit, byDay])
 
   const step = (dir: number) => {
     const n = view === 'day' ? 1 : view === 'week' ? 7 : 0
@@ -304,7 +314,10 @@ export function SimplesPage() {
               onClick={() => setAnchorDay(today)}
               className="px-2.5 py-1 rounded text-xs text-text-secondary hover:text-text-primary border border-border cursor-pointer"
             >
-              Today
+              {view === 'day' ? 'Today'
+                : view === 'week' ? 'This week'
+                : view === 'month' ? 'This month'
+                : 'This year'}
             </button>
             <NavBtn label="›" onClick={() => step(1)} />
           </div>
@@ -316,12 +329,15 @@ export function SimplesPage() {
         <GoalsCard goals={snap.goals} blocks={snap.blocks} />
 
         {view === 'day' && (
-          <DayView
-            day={anchorDay}
-            today={today}
-            blocks={byDay.get(anchorDay) || []}
-            inWindow={anchorDay >= snap.from && anchorDay <= snap.to}
-          />
+          <>
+            <DayView
+              day={anchorDay}
+              today={today}
+              blocks={byDay.get(anchorDay) || []}
+              inWindow={anchorDay >= snap.from && anchorDay <= snap.to}
+            />
+            <DayCorpusCard date={anchorDay} />
+          </>
         )}
         {view === 'week' && (
           <WeekView
@@ -341,10 +357,12 @@ export function SimplesPage() {
         )}
         {view === 'year' && (
           <YearView
-            year={Number(anchorDay.slice(0, 4))}
+            year={anchorYear}
             today={today}
-            credit={credit}
-            loading={creditState === 'loading'}
+            heat={heatYears[anchorYear] || {}}
+            loading={!heatYears[anchorYear] && !heatFail[anchorYear]}
+            error={!!heatFail[anchorYear]}
+            onRetry={() => retryHeat(anchorYear)}
             onPickDay={(d) => { setAnchorDay(d); setView('day') }}
           />
         )}
@@ -722,22 +740,35 @@ function MonthView({ anchorDay, today, byDay, onPickDay }: {
   )
 }
 
-// ── year view: the year as texture (mirrors the phone) ─────────────
+// ── year view: the year as texture, from the whole corpus ──────────
 // 12 month rows, each day a sliver whose brightness is that day's
-// credited effort (logged time). No numbers on the grid; shape over
-// score. Same sequential encoding as the phone: alpha ramps toward
-// ~4h/day.
+// activity (AI-session minutes + logged time). Works for ANY year
+// the corpus covers, which is the point: permanent memory. Hover a
+// day for the full mix (sessions, logged, sleep, steps); click to
+// open it.
 
-function YearView({ year, today, credit, loading, onPickDay }: {
+function dayHeatTitle(day: string, h: DayHeat | undefined): string {
+  if (!h) return day
+  const parts: string[] = []
+  if (h.sc) parts.push(`${h.sc} AI session${h.sc === 1 ? '' : 's'} ${((h.s || 0) / 60).toFixed(1)}h`)
+  if (h.t) parts.push(`${(h.t / 60).toFixed(1)}h logged`)
+  if (h.z) parts.push(`slept ${h.z}h`)
+  if (h.p) parts.push(`${h.p.toLocaleString()} steps`)
+  return parts.length ? `${day}: ${parts.join(' · ')}` : day
+}
+
+function YearView({ year, today, heat, loading, error, onRetry, onPickDay }: {
   year: number
   today: string
-  credit: Map<string, number>
+  heat: Record<string, DayHeat>
   loading: boolean
+  error: boolean
+  onRetry: () => void
   onPickDay: (d: string) => void
 }) {
   const pad = (n: number) => String(n).padStart(2, '0')
-  const heat = (mins: number): string => {
-    const a = Math.min(0.9, 0.15 + (mins / 240) * 0.75)
+  const shade = (mins: number): string => {
+    const a = Math.min(0.9, 0.15 + (mins / 360) * 0.75)
     return `rgba(124,92,255,${a.toFixed(2)})`
   }
   return (
@@ -746,7 +777,18 @@ function YearView({ year, today, credit, loading, onPickDay }: {
         {year}
         {loading && (
           <span className="ml-2 text-xs font-normal text-text-muted animate-pulse">
-            loading time log…
+            reading the corpus…
+          </span>
+        )}
+        {error && (
+          <span className="ml-2 text-xs font-normal text-red-400">
+            corpus unreachable (is the Pi up?){' '}
+            <button
+              onClick={onRetry}
+              className="underline cursor-pointer hover:text-red-300"
+            >
+              retry
+            </button>
           </span>
         )}
       </h3>
@@ -761,20 +803,23 @@ function YearView({ year, today, credit, loading, onPickDay }: {
               <div className="flex-1 flex gap-[2px]">
                 {Array.from({ length: daysIn }, (_, di) => {
                   const day = `${year}-${pad(mi + 1)}-${pad(di + 1)}`
-                  const min = credit.get(day) || 0
+                  const h = heat[day]
+                  const min = (h?.s || 0) + (h?.t || 0)
+                  // A day with only sleep/steps (or zero-duration
+                  // sessions) still marks presence faintly, so
+                  // tracked-but-idle days read as lived.
+                  const hasAny = !!h && (min > 0 || !!h.sc || !!h.z || !!h.p)
                   return (
                     <button
                       key={di}
                       onClick={() => onPickDay(day)}
-                      title={min > 0
-                        ? `${day}: ${(min / 60).toFixed(1)}h logged`
-                        : day}
+                      title={dayHeatTitle(day, h)}
                       className={`flex-1 h-4 rounded-[2px] cursor-pointer min-w-0 ${
                         day === today
                           ? 'outline outline-1 outline-accent'
                           : ''
-                      } ${min > 0 ? '' : 'bg-white/[0.04] hover:bg-white/[0.08]'}`}
-                      style={min > 0 ? { background: heat(min) } : undefined}
+                      } ${min > 0 ? '' : hasAny ? 'bg-white/[0.09]' : 'bg-white/[0.04] hover:bg-white/[0.08]'}`}
+                      style={min > 0 ? { background: shade(min) } : undefined}
                     />
                   )
                 })}
@@ -784,9 +829,161 @@ function YearView({ year, today, credit, loading, onPickDay }: {
         })}
       </div>
       <div className="text-[10px] text-text-muted mt-2">
-        Every day of the year; brighter = more credited hours (your
-        logged time, synced from the phone). Click a day to open it.
+        The whole corpus, any year: brighter = more AI-session +
+        logged hours that day (session-hours sum across parallel
+        sessions, so heavy days can top 24h); faint marks are days
+        with only health data or zero-length sessions. Hover for the
+        mix (sleep, steps); click a day to open everything Cortex
+        holds for it.
       </div>
+    </section>
+  )
+}
+
+// ── day corpus panel: everything Cortex holds about one day ────────
+// The permanent-memory half of the Day view: AI sessions (with gist
+// one-liners), logged time, health (sleep, steps, scores), journal
+// entries, and the daily narrative. Works for any date, any year,
+// independent of the phone's mirrored planner window.
+
+const HEALTH_CHIPS: [string, (v: number) => string][] = [
+  ['steps', (v) => `${Math.round(v).toLocaleString()} steps`],
+  ['sleep_minutes', (v) => `slept ${(v / 60).toFixed(1)}h`],
+  ['sleep_score', (v) => `sleep score ${Math.round(v)}`],
+  ['resting_hr', (v) => `resting HR ${Math.round(v)}`],
+  ['stress_score', (v) => `stress ${Math.round(v)}`],
+  ['azm_minutes', (v) => `${Math.round(v)} active-zone min`],
+]
+
+function fmtClock(iso?: string): string {
+  const t = (iso || '').slice(11, 16)
+  return t || ''
+}
+
+function DayCorpusCard({ date }: { date: string }) {
+  const [detail, setDetail] = useState<DayDetail | null>(null)
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
+  useEffect(() => {
+    let stale = false
+    setState('loading')
+    apiFetch<DayDetail>(`/overseer/day?date=${date}`)
+      .then((r) => {
+        if (stale) return
+        // The proxy wraps Pi-down as HTTP 200 + ok:false; that is an
+        // ERROR, never "this day is empty" (the Pi returns ok:true
+        // for genuinely empty days).
+        if (r && r.ok) { setDetail(r); setState('ready') }
+        else { setDetail(null); setState('error') }
+      })
+      .catch(() => { if (!stale) { setDetail(null); setState('error') } })
+    return () => { stale = true }
+  }, [date])
+
+  if (state === 'loading') {
+    return (
+      <section className="rounded-lg border border-border bg-surface-secondary p-4">
+        <div className="text-xs text-text-muted animate-pulse">Reading the corpus…</div>
+      </section>
+    )
+  }
+  const d = detail
+  const empty = !d || (
+    d.sessions.length === 0 && d.time_entries.length === 0 &&
+    Object.keys(d.health).length === 0 && d.journal.length === 0 &&
+    !d.narrative)
+
+  return (
+    <section className="rounded-lg border border-border bg-surface-secondary p-4 space-y-3">
+      <h3 className="text-sm font-semibold text-text-primary">
+        This day in Cortex
+      </h3>
+      {empty && (
+        <div className="text-xs text-text-muted">
+          {state === 'error'
+            ? 'Corpus unreachable (is the Pi up?).'
+            : 'No corpus data for this day.'}
+        </div>
+      )}
+
+      {d && Object.keys(d.health).length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          {HEALTH_CHIPS.map(([k, fmt]) =>
+            d.health[k] != null ? (
+              <span
+                key={k}
+                className="px-2 py-0.5 rounded-full border border-border text-[11px] text-text-secondary"
+              >
+                {fmt(d.health[k])}
+              </span>
+            ) : null)}
+        </div>
+      )}
+
+      {d && d.sessions.length > 0 && (
+        <div>
+          <div className="text-xs font-medium text-text-secondary mb-1.5">
+            AI sessions · {d.sessions.length} ·{' '}
+            {(d.session_minutes / 60).toFixed(1)}h
+          </div>
+          <div className="space-y-1.5">
+            {d.sessions.map((s) => (
+              <div key={s.id} className="text-xs border-l-2 border-accent/40 pl-2">
+                <span className="text-text-muted">{fmtClock(s.local_started_at)}</span>{' '}
+                <span className="text-text-primary font-medium">{s.project || s.source}</span>{' '}
+                <span className="text-text-muted">
+                  · {s.duration_minutes}m · {s.message_count} msgs
+                  {s.redacted ? ' · redacted' : ''}
+                </span>
+                {s.gist && (
+                  <div className="text-text-secondary mt-0.5">{s.gist}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {d && d.time_entries.length > 0 && (
+        <div>
+          <div className="text-xs font-medium text-text-secondary mb-1.5">
+            Logged time · {(d.logged_minutes / 60).toFixed(1)}h
+          </div>
+          <div className="space-y-1">
+            {d.time_entries.map((t, i) => (
+              <div key={i} className="text-xs text-text-secondary">
+                <span className="text-text-muted">{fmtClock(t.local_started_at)}</span>{' '}
+                <span className="font-medium">{t.project_tag}</span>{' '}
+                · {t.duration_minutes}m
+                {t.description ? ` · ${t.description}` : ''}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {d && d.journal.length > 0 && (
+        <div>
+          <div className="text-xs font-medium text-text-secondary mb-1.5">Journal</div>
+          <div className="space-y-1.5">
+            {d.journal.map((j, i) => (
+              <div key={i} className="text-xs text-text-secondary whitespace-pre-wrap">
+                {j.text}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {d && d.narrative && (
+        <details className="text-xs">
+          <summary className="cursor-pointer text-text-secondary font-medium">
+            Daily narrative
+          </summary>
+          <div className="mt-1.5 text-text-secondary whitespace-pre-wrap">
+            {d.narrative}
+          </div>
+        </details>
+      )}
     </section>
   )
 }
