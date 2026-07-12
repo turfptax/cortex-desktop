@@ -138,6 +138,11 @@ mcp = FastMCP(
         "- Files: file_register, file_list, file_search, "
         "file_upload, file_download (WiFi only)\n"
         "- Audit: audit_projects, audit_notes, audit_data_quality, weekly_review\n"
+        "- Tech knowledge: cortex_skills, cortex_skill_log, "
+        "cortex_rules, cortex_rule_add (the user's living skills "
+        "portfolio + standing tech rules; log lessons and hard-won "
+        "defaults as they emerge in your work so other AI sessions "
+        "learn from them)\n"
         "- WiFi: wifi_scan, wifi_status, wifi_config\n"
         "- Diagnostics: ping, get_status, connection_info\n\n"
 
@@ -2238,6 +2243,208 @@ def cortex_people_notes(person_id: int, limit: int = 100) -> str:
     import json as _json
     result, err = _people_get(
         "GET", "/notes", {"person_id": person_id, "limit": limit})
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+# ── Tech skills + rules (2026-07-12) ─────────────────────────────
+#
+# The user's living SKILLS PORTFOLIO and standing TECH RULES, stored
+# in the corpus so every AI session that connects to Cortex learns
+# from problems earlier sessions already hit. These tools are the
+# PRIMARY entry surface; /intro serves the active rules digest to
+# every connecting AI automatically.
+#
+# When TO log:
+#   - A real lesson, win, or breakthrough in one of the user's core
+#     skills emerges in the work you're doing together
+#   - Something went wrong in his stack, you found the fix, and the
+#     default approach should change for every future session
+# When NOT to log:
+#   - Generic best practices not grounded in his actual experience
+#   - One-off trivia with no reuse value
+#   - Anything personal or confidential (this data serves broadly)
+
+
+def _tech_get(method, route, payload=None, timeout=15):
+    """Helper: call /plugins/overseer<route> for skills/rules."""
+    bridge = _get_bridge_lazy()
+    fn = getattr(bridge, "plugin_call", None)
+    if fn is None:
+        return None, ("Skills/rules routes need the WiFi bridge to the "
+                      "Pi (BLE/serial fallback can't reach plugin "
+                      "endpoints).")
+    try:
+        result = fn("overseer", method, route, payload, timeout=timeout)
+    except Exception as e:
+        return None, str(e)
+    if not isinstance(result, dict):
+        return None, "Bad response shape from Pi"
+    if not result.get("ok"):
+        return None, result.get("error", "unknown error")
+    return result, None
+
+
+@mcp.tool()
+def cortex_skills(name: str = "") -> str:
+    """The user's living skills portfolio (tech skills, proficiency,
+    tools, lessons learned, wins).
+
+    With no arguments: the portfolio index (every skill + proficiency
+    + entry counts). With a name: the full entry for that skill,
+    including its recent log of lessons/wins/projects.
+
+    Read this when work touches one of the user's stacks so you build
+    on what earlier sessions already learned instead of rediscovering
+    it. Log new lessons with cortex_skill_log.
+
+    Args:
+        name: Skill to drill into (e.g. "React Native"). Empty lists
+              all skills.
+    """
+    import json as _json
+    if name.strip():
+        result, err = _tech_get("GET", "/skills/get",
+                                {"name": name.strip()})
+    else:
+        result, err = _tech_get("GET", "/skills", {})
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def cortex_skill_log(
+    skill: str,
+    content: str,
+    kind: str = "note",
+    project: str = "",
+    proficiency: str = "",
+    summary: str = "",
+    tools: str = "",
+    source: str = "claude-code",
+) -> str:
+    """Log a lesson, win, project use, or tooling note under one of
+    the user's core skills. Creates the skill on first mention
+    (check cortex_skills first to reuse an existing name rather than
+    creating near-duplicates like "RN" vs "React Native").
+
+    Use when a real lesson or breakthrough emerges in the work: a
+    debugging insight tied to his stack, a tool/version decision, a
+    project that exercised the skill, a capability he just proved
+    out. Skip generic advice not grounded in this work.
+
+    Args:
+        skill: Core skill name (e.g. "PCB design", "React Native",
+               "LLM agent architecture").
+        content: The entry itself, 1-4 sentences, concrete.
+        kind: lesson | win | project | tooling | note. Case is
+               normalized; anything else is stored as 'note'.
+        project: Project tag where it happened (optional).
+        proficiency: If this work changes the picture, update it
+               (freeform: "expert", "working", "learning").
+        summary: Update the skill's living one-paragraph portfolio
+               blurb (only when it genuinely improves it).
+        tools: Update the skill's tools + versions line
+               (e.g. "KiCad 8, JLCPCB"). Full replace, so include
+               the existing tools you want to keep.
+        source: Which agent/session logged it.
+    """
+    import json as _json
+    payload = {
+        "skill": skill, "content": content, "kind": kind,
+        "project": project, "source": source,
+    }
+    # Empty optionals stay out of the payload: the refine rule is
+    # that only non-empty fields overwrite the living header.
+    for key, val in (("proficiency", proficiency),
+                     ("summary", summary), ("tools", tools)):
+        if val.strip():
+            payload[key] = val.strip()
+    result, err = _tech_get("POST", "/skills/log", payload, timeout=20)
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def cortex_rules(stack: str = "", include_retired: bool = False) -> str:
+    """The user's standing tech rules: hard-won defaults from things
+    that actually went wrong in his stacks. Each rule carries its
+    story (situation, what went wrong, what changed, why it is now
+    the default).
+
+    These apply to EVERY AI conversation connected to Cortex. Read
+    them before advising on tooling, debugging, or architecture in a
+    stack the user works in. The active digest is also served in
+    cortex_intro; this tool gives the full stories.
+
+    Args:
+        stack: Optional substring filter on stack tags
+               (e.g. "expo", "powershell", "azure").
+        include_retired: Also show rules that no longer apply.
+    """
+    import json as _json
+    result, err = _tech_get("GET", "/rules", {
+        "stack": stack,
+        "status": "all" if include_retired else "active",
+    })
+    if err:
+        return "Error: {}".format(err)
+    return _json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def cortex_rule_add(
+    title: str,
+    rule: str,
+    stack: str = "",
+    situation: str = "",
+    went_wrong: str = "",
+    what_changed: str = "",
+    rationale: str = "",
+    status: str = "",
+    source: str = "claude-code",
+) -> str:
+    """Record a tech-decision rule so every future AI session applies
+    it. Structure it as a lesson: tech stack X in situation Y, what
+    went wrong, what you changed, why it is now the default.
+
+    Upserts on case-insensitive title: re-adding an existing title
+    UPDATES it (non-empty fields overwrite), so you can refine a rule
+    or retire it (status="retired") under its natural key. Check
+    cortex_rules first to extend an existing rule rather than adding
+    a near-duplicate.
+
+    Use when something concretely went wrong and the default approach
+    changed. Skip generic best practices the user never had to learn
+    the hard way.
+
+    Args:
+        title: Natural key, e.g. "Expo SDK 51 permission prompts".
+        rule: The imperative default, 1-2 sentences. What should
+              every future session DO.
+        stack: Comma tags, e.g. "expo,react-native,android".
+        situation: When the rule applies.
+        went_wrong: What failed, concretely.
+        what_changed: The fix/approach adopted.
+        rationale: Why this is now the default.
+        status: Leave empty for active; "retired" to sunset a rule.
+               Anything other than active/retired returns an error
+               (never silently ignored).
+        source: Which agent/session logged it.
+    """
+    import json as _json
+    payload = {
+        "title": title, "rule": rule, "stack": stack,
+        "situation": situation, "went_wrong": went_wrong,
+        "what_changed": what_changed, "rationale": rationale,
+        "source": source,
+    }
+    if status.strip():
+        payload["status"] = status.strip()
+    result, err = _tech_get("POST", "/rules/add", payload, timeout=20)
     if err:
         return "Error: {}".format(err)
     return _json.dumps(result, indent=2, default=str)
