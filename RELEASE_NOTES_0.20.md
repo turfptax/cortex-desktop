@@ -1,3 +1,22 @@
+# Cortex Desktop v0.20.x
+
+## v0.20.1 (July 2026): permanent memory in Simples
+
+- **Year view reads the whole corpus, any year**: every day shaded by
+  AI-session + logged hours (16h/session clamp against gap-straddling
+  rows; session-hours sum across parallel sessions, so heavy days can
+  top 24h). Hover for the mix (sleep, steps); faint marks for days
+  with only health data. Corpus outages show a retry banner instead
+  of rendering as an empty year.
+- **"This day in Cortex" panel on Day view**: click any day, any
+  year, and see everything the corpus holds for it: AI sessions with
+  their gist one-liners, logged time, health chips (steps, sleep,
+  scores), journal entries, and the daily narrative.
+- Nav reset button reads Today / This week / This month / This year
+  to match the active view.
+- Pi-side companions in cortex-core (`dc84d79`): GET
+  /plugins/overseer/day and /day/heat.
+
 # Cortex Desktop v0.20.0
 
 **Released:** July 2026
