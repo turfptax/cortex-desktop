@@ -45,7 +45,7 @@ interface Snapshot {
   received_at: string
 }
 
-type ViewMode = 'day' | 'week' | 'month'
+type ViewMode = 'day' | 'week' | 'month' | 'year'
 
 // Entity colors (validated categorical set; work + downtime are
 // deliberately recessive neutrals and sit outside the loud set).
@@ -144,9 +144,50 @@ export function SimplesPage() {
   const today = localDay(0)
   const [view, setView] = useState<ViewMode>(() => {
     const v = localStorage.getItem('cortex.simples.view')
-    return v === 'week' || v === 'month' ? v : 'day'
+    return v === 'week' || v === 'month' || v === 'year' ? v : 'day'
   })
   const [anchorDay, setAnchorDay] = useState<string>(today)
+
+  // Year view: credited effort by day (the phone's time log, synced
+  // to the Pi as time_entries). One fetch covers every year; the map
+  // is merged with done blocks from the mirrored window below.
+  const [logCredit, setLogCredit] = useState<Map<string, number>>(new Map())
+  const [creditState, setCreditState] = useState<'idle' | 'loading' | 'ready'>('idle')
+  useEffect(() => {
+    if (view !== 'year' || creditState !== 'idle') return
+    setCreditState('loading')
+    apiFetch<{ rows?: {
+      started_at?: string; local_started_at?: string;
+      duration_minutes?: number;
+    }[] }>(
+      '/data/query',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          table: 'time_entries', limit: 5000, order_by: 'started_at DESC',
+        }),
+      },
+    )
+      .then((r) => {
+        const m = new Map<string, number>()
+        const p = (n: number) => String(n).padStart(2, '0')
+        for (const row of r.rows || []) {
+          // started_at is UTC; local_started_at is its local-with-
+          // offset twin and gives the correct local day directly.
+          let day = (row.local_started_at || '').slice(0, 10)
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+            if (!row.started_at) continue
+            const d = new Date(String(row.started_at).replace(' ', 'T') + 'Z')
+            if (isNaN(d.getTime())) continue
+            day = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+          }
+          m.set(day, (m.get(day) || 0) + (Number(row.duration_minutes) || 0))
+        }
+        setLogCredit(m)
+      })
+      .catch(() => { /* year view just renders empty */ })
+      .finally(() => setCreditState('ready'))
+  }, [view, creditState])
 
   useEffect(() => {
     localStorage.setItem('cortex.simples.view', view)
@@ -174,6 +215,19 @@ export function SimplesPage() {
     return m
   }, [snap])
 
+  // Mirror the phone's creditedAllByDay: logged time_entries minutes,
+  // max'd with done-block minutes where the mirrored window has them.
+  const credit = useMemo(() => {
+    const m = new Map(logCredit)
+    for (const [day, blocks] of byDay) {
+      const done = blocks
+        .filter((b) => b.state === 'done' && b.kind !== 'downtime')
+        .reduce((s, b) => s + (b.end_min - b.start_min), 0)
+      if (done > 0) m.set(day, Math.max(m.get(day) || 0, done))
+    }
+    return m
+  }, [logCredit, byDay])
+
   const step = (dir: number) => {
     const n = view === 'day' ? 1 : view === 'week' ? 7 : 0
     if (view === 'month') {
@@ -181,6 +235,9 @@ export function SimplesPage() {
       d.setMonth(d.getMonth() + dir, 15)
       const p = (x: number) => String(x).padStart(2, '0')
       setAnchorDay(`${d.getFullYear()}-${p(d.getMonth() + 1)}-15`)
+    } else if (view === 'year') {
+      const y = Number(anchorDay.slice(0, 4)) + dir
+      setAnchorDay(`${y}-07-01`)
     } else {
       setAnchorDay(localDay(dir * n, anchorDay))
     }
@@ -227,7 +284,7 @@ export function SimplesPage() {
         <div className="flex items-center gap-3 flex-wrap">
           <h2 className="text-lg font-semibold text-text-primary mr-1">Simples</h2>
           <div className="flex rounded-md border border-border overflow-hidden">
-            {(['day', 'week', 'month'] as ViewMode[]).map((v) => (
+            {(['day', 'week', 'month', 'year'] as ViewMode[]).map((v) => (
               <button
                 key={v}
                 onClick={() => setView(v)}
@@ -279,6 +336,15 @@ export function SimplesPage() {
             anchorDay={anchorDay}
             today={today}
             byDay={byDay}
+            onPickDay={(d) => { setAnchorDay(d); setView('day') }}
+          />
+        )}
+        {view === 'year' && (
+          <YearView
+            year={Number(anchorDay.slice(0, 4))}
+            today={today}
+            credit={credit}
+            loading={creditState === 'loading'}
             onPickDay={(d) => { setAnchorDay(d); setView('day') }}
           />
         )}
@@ -651,6 +717,75 @@ function MonthView({ anchorDay, today, byDay, onPickDay }: {
       <div className="text-[10px] text-text-muted mt-2">
         Shading = planned hours (excluding downtime); days outside the
         mirrored window are simply empty.
+      </div>
+    </section>
+  )
+}
+
+// ── year view: the year as texture (mirrors the phone) ─────────────
+// 12 month rows, each day a sliver whose brightness is that day's
+// credited effort (logged time). No numbers on the grid; shape over
+// score. Same sequential encoding as the phone: alpha ramps toward
+// ~4h/day.
+
+function YearView({ year, today, credit, loading, onPickDay }: {
+  year: number
+  today: string
+  credit: Map<string, number>
+  loading: boolean
+  onPickDay: (d: string) => void
+}) {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const heat = (mins: number): string => {
+    const a = Math.min(0.9, 0.15 + (mins / 240) * 0.75)
+    return `rgba(124,92,255,${a.toFixed(2)})`
+  }
+  return (
+    <section className="rounded-lg border border-border bg-surface-secondary p-4">
+      <h3 className="text-sm font-semibold text-text-primary mb-3">
+        {year}
+        {loading && (
+          <span className="ml-2 text-xs font-normal text-text-muted animate-pulse">
+            loading time log…
+          </span>
+        )}
+      </h3>
+      <div className="space-y-1.5">
+        {Array.from({ length: 12 }, (_, mi) => {
+          const daysIn = new Date(year, mi + 1, 0).getDate()
+          const label = new Date(year, mi, 1, 12).toLocaleDateString(
+            undefined, { month: 'short' })
+          return (
+            <div key={mi} className="flex items-center gap-2">
+              <div className="w-8 text-[10px] text-text-muted shrink-0">{label}</div>
+              <div className="flex-1 flex gap-[2px]">
+                {Array.from({ length: daysIn }, (_, di) => {
+                  const day = `${year}-${pad(mi + 1)}-${pad(di + 1)}`
+                  const min = credit.get(day) || 0
+                  return (
+                    <button
+                      key={di}
+                      onClick={() => onPickDay(day)}
+                      title={min > 0
+                        ? `${day}: ${(min / 60).toFixed(1)}h logged`
+                        : day}
+                      className={`flex-1 h-4 rounded-[2px] cursor-pointer min-w-0 ${
+                        day === today
+                          ? 'outline outline-1 outline-accent'
+                          : ''
+                      } ${min > 0 ? '' : 'bg-white/[0.04] hover:bg-white/[0.08]'}`}
+                      style={min > 0 ? { background: heat(min) } : undefined}
+                    />
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <div className="text-[10px] text-text-muted mt-2">
+        Every day of the year; brighter = more credited hours (your
+        logged time, synced from the phone). Click a day to open it.
       </div>
     </section>
   )
