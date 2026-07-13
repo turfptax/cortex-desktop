@@ -54,6 +54,7 @@ interface DayHeat {
   t?: number   // logged time-entry minutes
   z?: number   // hours slept
   p?: number   // steps
+  a?: number   // active-zone minutes
 }
 
 // GET /overseer/day: everything the corpus holds about one local day.
@@ -109,6 +110,88 @@ const LEGEND_ORDER = ['goal', 'work', 'adl', 'chore', 'anchor', 'downtime']
 
 const kindColor = (k: string) => KIND_COLOR[k] || '#8b949e'
 
+// ── corpus visualization invariants (UX panel spec, 2026-07-12) ─────
+// - Sequential activity = the one purple #7c5cff alpha ramp, cell
+//   body only.
+// - Sleep = the one permitted second hue, #35a99b (validated against
+//   the dark surface: lightness band, chroma, deutan dE 74, contrast
+//   all pass). Sleep is physiologically distinct and non-additive; a
+//   bright cell must never be ambiguous between "worked a lot" and
+//   "slept a lot". Identity is position-locked: teal only ever
+//   appears as the BOTTOM band of a day cell or a labeled row; hue is
+//   never load-bearing.
+// - Sleep is LENGTH-encoded at fixed alpha everywhere (10h = full
+//   width). One rule, all views.
+// - Weekend identity = position (detached band / seam) + label
+//   weight + a 3% white wash. Never a hue.
+// - Missing data: activity missing inside the observed span = 0 (a
+//   quiet Saturday is real); sleep/steps missing = absent, excluded
+//   (instrument absence is not insomnia). Both rules live in
+//   deriveScope.
+// - No streaks, scores, deltas, targets, or coaching copy anywhere.
+const SLEEP_TEAL = '#35a99b'
+const TXT_MUTED = '#64748b'      // --color-text-muted, for SVG fills
+const TXT_SECONDARY = '#94a3b8'  // --color-text-secondary, for SVG fills
+const sleepFrac = (z: number) => Math.min(1, z / 10)
+const isWeekend = (d: string) => {
+  const g = new Date(d + 'T12:00:00').getDay()
+  return g === 0 || g === 6
+}
+const activityShade = (min: number) =>
+  `rgba(124,92,255,${Math.min(0.9, 0.15 + (min / 360) * 0.75).toFixed(2)})`
+const monthShade = (min: number) =>
+  min <= 0
+    ? 'transparent'
+    : `rgba(124,92,255,${Math.min(0.42, 0.08 + (min / 480) * 0.34).toFixed(2)})`
+
+function quantile(sorted: number[], q: number): number {
+  if (!sorted.length) return 0
+  const pos = (sorted.length - 1) * q
+  const lo = Math.floor(pos)
+  const hi = Math.ceil(pos)
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo)
+}
+
+// Everything RhythmCard needs about a scoped run of dates.
+interface Scope {
+  dates: string[]
+  activeByDow: number[][]  // 7 arrays (Mon..Sun) of daily active MINUTES
+  sleepByDow: number[][]   // 7 arrays of hours slept; missing = excluded
+  stepsByDow: number[][]   // 7 arrays of steps; missing = excluded
+  counts: { sessions: number; logged: number; nights: number }
+}
+
+function deriveScope(
+  heatFor: (d: string) => DayHeat | undefined, dates: string[], today: string,
+): Scope {
+  const activeByDow: number[][] = Array.from({ length: 7 }, () => [])
+  const sleepByDow: number[][] = Array.from({ length: 7 }, () => [])
+  const stepsByDow: number[][] = Array.from({ length: 7 }, () => [])
+  const counts = { sessions: 0, logged: 0, nights: 0 }
+  // Observed span for ACTIVITY: first..last date with any data,
+  // clamped to today; inside it a missing day counts as zero (a
+  // quiet Saturday is real data). Sleep/steps missing = absent (the
+  // tracker was off, not the person sleepless). The asymmetry is
+  // deliberate.
+  let first = '', last = ''
+  for (const d of dates) {
+    if (heatFor(d)) { if (!first) first = d; last = d }
+  }
+  if (last > today) last = today
+  for (const d of dates) {
+    const dow = (new Date(d + 'T12:00:00').getDay() + 6) % 7 // Mon=0
+    const h = heatFor(d)
+    if (first && d >= first && d <= last) {
+      activeByDow[dow].push((h?.s || 0) + (h?.t || 0))
+    }
+    if (h?.z != null) { sleepByDow[dow].push(h.z); counts.nights++ }
+    if (h?.p != null) stepsByDow[dow].push(h.p)
+    if (h?.sc) counts.sessions++
+    if (h?.t) counts.logged++
+  }
+  return { dates, activeByDow, sleepByDow, stepsByDow, counts }
+}
+
 // ── date helpers (local-day strings, matching the phone) ───────────
 
 function localDay(offsetDays: number, base?: string): string {
@@ -122,6 +205,28 @@ function weekStart(day: string): string {
   const d = new Date(day + 'T12:00:00')
   const dow = (d.getDay() + 6) % 7 // Monday = 0
   return localDay(-dow, day)
+}
+
+function monthDates(anchorDay: string): string[] {
+  const month = anchorDay.slice(0, 7)
+  const first = month + '-01'
+  const out: string[] = []
+  for (let i = 0; i < 31; i++) {
+    const d = localDay(i, first)
+    if (d.slice(0, 7) !== month) break
+    out.push(d)
+  }
+  return out
+}
+
+function yearDates(year: number): string[] {
+  const out: string[] = []
+  const p = (n: number) => String(n).padStart(2, '0')
+  for (let mi = 0; mi < 12; mi++) {
+    const daysIn = new Date(year, mi + 1, 0).getDate()
+    for (let di = 1; di <= daysIn; di++) out.push(`${year}-${p(mi + 1)}-${p(di)}`)
+  }
+  return out
 }
 
 function fmtMin(m: number): string {
@@ -199,18 +304,35 @@ export function SimplesPage() {
   const [heatFail, setHeatFail] = useState<Record<number, boolean>>({})
   const anchorYear = Number(anchorDay.slice(0, 4))
   useEffect(() => {
-    if (view !== 'year' || heatYears[anchorYear] || heatFail[anchorYear]) return
-    apiFetch<{ ok: boolean; days?: Record<string, DayHeat> }>(
-      `/overseer/day/heat?year=${anchorYear}`,
-    )
-      .then((r) => {
-        if (r && r.ok) setHeatYears((h) => ({ ...h, [anchorYear]: r.days || {} }))
-        else setHeatFail((f) => ({ ...f, [anchorYear]: true }))
-      })
-      .catch(() => setHeatFail((f) => ({ ...f, [anchorYear]: true })))
-  }, [view, anchorYear, heatYears, heatFail])
+    if (view === 'day') return
+    // Week and month grids can straddle a year boundary; fetch every
+    // year the visible cells touch.
+    const needed = new Set<number>()
+    if (view === 'year') needed.add(anchorYear)
+    else if (view === 'week') {
+      const start = weekStart(anchorDay)
+      for (let i = 0; i < 7; i++) needed.add(Number(localDay(i, start).slice(0, 4)))
+    } else {
+      const gridStart = weekStart(anchorDay.slice(0, 8) + '01')
+      needed.add(Number(gridStart.slice(0, 4)))
+      needed.add(Number(localDay(41, gridStart).slice(0, 4)))
+    }
+    for (const y of needed) {
+      if (heatYears[y] || heatFail[y]) continue
+      apiFetch<{ ok: boolean; days?: Record<string, DayHeat> }>(
+        `/overseer/day/heat?year=${y}`,
+      )
+        .then((r) => {
+          if (r && r.ok) setHeatYears((h) => ({ ...h, [y]: r.days || {} }))
+          else setHeatFail((f) => ({ ...f, [y]: true }))
+        })
+        .catch(() => setHeatFail((f) => ({ ...f, [y]: true })))
+    }
+  }, [view, anchorDay, anchorYear, heatYears, heatFail])
   const retryHeat = (y: number) =>
     setHeatFail((f) => { const n = { ...f }; delete n[y]; return n })
+  const heatFor = (d: string): DayHeat | undefined =>
+    heatYears[Number(d.slice(0, 4))]?.[d]
 
   useEffect(() => {
     localStorage.setItem('cortex.simples.view', view)
@@ -344,27 +466,46 @@ export function SimplesPage() {
             start={weekStart(anchorDay)}
             today={today}
             byDay={byDay}
+            heatFor={heatFor}
             onPickDay={(d) => { setAnchorDay(d); setView('day') }}
           />
         )}
         {view === 'month' && (
-          <MonthView
-            anchorDay={anchorDay}
-            today={today}
-            byDay={byDay}
-            onPickDay={(d) => { setAnchorDay(d); setView('day') }}
-          />
+          <>
+            <MonthView
+              anchorDay={anchorDay}
+              today={today}
+              byDay={byDay}
+              heatFor={heatFor}
+              onPickDay={(d) => { setAnchorDay(d); setView('day') }}
+            />
+            <RhythmCard
+              dates={monthDates(anchorDay)}
+              label={new Date(anchorDay.slice(0, 8) + '01T12:00:00')
+                .toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
+              today={today}
+              heatFor={heatFor}
+            />
+          </>
         )}
         {view === 'year' && (
-          <YearView
-            year={anchorYear}
-            today={today}
-            heat={heatYears[anchorYear] || {}}
-            loading={!heatYears[anchorYear] && !heatFail[anchorYear]}
-            error={!!heatFail[anchorYear]}
-            onRetry={() => retryHeat(anchorYear)}
-            onPickDay={(d) => { setAnchorDay(d); setView('day') }}
-          />
+          <>
+            <YearView
+              year={anchorYear}
+              today={today}
+              heat={heatYears[anchorYear] || {}}
+              loading={!heatYears[anchorYear] && !heatFail[anchorYear]}
+              error={!!heatFail[anchorYear]}
+              onRetry={() => retryHeat(anchorYear)}
+              onPickDay={(d) => { setAnchorDay(d); setView('day') }}
+            />
+            <RhythmCard
+              dates={yearDates(anchorYear)}
+              label={String(anchorYear)}
+              today={today}
+              heatFor={heatFor}
+            />
+          </>
         )}
 
         {/* Legend: identity is never color-alone (labels + dots). */}
@@ -384,6 +525,24 @@ export function SimplesPage() {
           ))}
           <span className="flex items-center gap-1.5">✓ done</span>
           <span className="flex items-center gap-1.5 line-through">missed</span>
+          {(view === 'month' || view === 'year') && (
+            <>
+              <span className="flex items-center gap-1.5">
+                <span
+                  className="w-2.5 h-2.5 rounded-sm"
+                  style={{ background: 'rgba(124,92,255,0.75)' }}
+                />
+                activity (AI + logged)
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span
+                  className="w-2.5 h-1 rounded"
+                  style={{ background: SLEEP_TEAL }}
+                />
+                sleep
+              </span>
+            </>
+          )}
           <span className="ml-auto">
             Read-only mirror — edit on the phone (Simples tab or by voice).
           </span>
@@ -573,10 +732,11 @@ function DayView({ day, today, blocks, inWindow }: {
 
 // ── week view: 7 mini timelines ─────────────────────────────────────
 
-function WeekView({ start, today, byDay, onPickDay }: {
+function WeekView({ start, today, byDay, heatFor, onPickDay }: {
   start: string
   today: string
   byDay: Map<string, Block[]>
+  heatFor: (d: string) => DayHeat | undefined
   onPickDay: (d: string) => void
 }) {
   const days = Array.from({ length: 7 }, (_, i) => localDay(i, start))
@@ -595,21 +755,46 @@ function WeekView({ start, today, byDay, onPickDay }: {
           const boats = assignLanes(blocks.filter((b) => b.kind !== 'downtime'))
           const label = new Date(d + 'T12:00:00').toLocaleDateString(
             undefined, { weekday: 'short' })
+          const wk = isWeekend(d)
+          const z = heatFor(d)?.z
           return (
-            <div key={d} className="min-w-0">
+            <div
+              key={d}
+              className={`min-w-0 ${d === days[5] ? 'border-l border-border/40 pl-1.5' : ''}`}
+            >
               <button
                 onClick={() => onPickDay(d)}
                 title={`Open ${d}`}
-                className={`w-full text-center text-xs pb-1.5 cursor-pointer rounded ${
+                className={`w-full text-center text-xs pb-1 cursor-pointer rounded ${
                   d === today
                     ? 'text-accent font-semibold'
-                    : 'text-text-muted hover:text-text-primary'
+                    : wk
+                      ? 'text-text-secondary hover:text-text-primary'
+                      : 'text-text-muted hover:text-text-primary'
                 }`}
               >
                 {label} <span className="opacity-70">{d.slice(8)}</span>
               </button>
+              {z != null && (
+                <div className="mb-1" title={`slept ${z}h`}>
+                  <div className="h-1 rounded bg-surface-tertiary/60 overflow-hidden">
+                    <div
+                      className="h-full rounded"
+                      style={{
+                        width: `${sleepFrac(z) * 100}%`,
+                        background: 'rgba(53,169,155,0.75)',
+                      }}
+                    />
+                  </div>
+                  <div className="text-right text-[9px] text-text-muted leading-tight">
+                    {z}h
+                  </div>
+                </div>
+              )}
               <div
-                className="relative rounded bg-surface-tertiary/30 overflow-hidden"
+                className={`relative rounded overflow-hidden ${
+                  wk ? 'bg-surface-tertiary/50' : 'bg-surface-tertiary/30'
+                }`}
                 style={{ height: H }}
               >
                 {water.map((b) => (
@@ -667,10 +852,11 @@ function WeekView({ start, today, byDay, onPickDay }: {
 
 // ── month view: planned-hours heat calendar ─────────────────────────
 
-function MonthView({ anchorDay, today, byDay, onPickDay }: {
+function MonthView({ anchorDay, today, byDay, heatFor, onPickDay }: {
   anchorDay: string
   today: string
   byDay: Map<string, Block[]>
+  heatFor: (d: string) => DayHeat | undefined
   onPickDay: (d: string) => void
 }) {
   const first = anchorDay.slice(0, 8) + '01'
@@ -680,61 +866,88 @@ function MonthView({ anchorDay, today, byDay, onPickDay }: {
   const cells = Array.from({ length: 42 }, (_, i) => localDay(i, gridStart))
   const month = anchorDay.slice(0, 7)
 
-  // Sequential encoding: one hue (the accent), alpha by planned
-  // non-downtime hours. Light -> dark = less -> more planned.
-  const heat = (mins: number): string => {
-    if (mins <= 0) return 'transparent'
-    const a = Math.min(0.42, 0.08 + (mins / 480) * 0.34)
-    return `rgba(124,92,255,${a.toFixed(2)})`
-  }
-
   return (
     <section className="rounded-lg border border-border bg-surface-secondary p-4">
       <h3 className="text-sm font-semibold text-text-primary mb-3">{monthLabel}</h3>
-      <div className="grid grid-cols-7 gap-1.5 text-center text-[10px] text-text-muted mb-1">
-        {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((w) => (
-          <div key={w}>{w}</div>
-        ))}
-      </div>
-      <div className="grid grid-cols-7 gap-1.5">
-        {cells.map((d) => {
-          const inMonth = d.slice(0, 7) === month
-          const blocks = (byDay.get(d) || []).filter(
-            (b) => b.kind !== 'downtime')
-          const planned = blocks.reduce(
-            (s, b) => s + (b.end_min - b.start_min), 0)
-          const done = blocks.filter((b) => b.state === 'done').length
-          return (
-            <button
-              key={d}
-              onClick={() => onPickDay(d)}
-              title={blocks.length
-                ? `${d}: ${(planned / 60).toFixed(1)}h planned, ${done}/${blocks.length} done`
-                : d}
-              className={`relative h-16 rounded-md border text-left p-1.5 cursor-pointer transition-colors ${
-                d === today
-                  ? 'border-accent'
-                  : 'border-border/50 hover:border-border'
-              } ${inMonth ? '' : 'opacity-35'}`}
-              style={{ background: heat(planned) }}
-            >
-              <span className={`text-[11px] ${
-                d === today ? 'text-accent font-semibold' : 'text-text-secondary'
-              }`}>
-                {Number(d.slice(8))}
-              </span>
-              {blocks.length > 0 && (
-                <span className="absolute bottom-1 left-1.5 right-1.5 text-[9px] text-text-muted truncate">
-                  {(planned / 60).toFixed(1)}h{done ? ` · ${done}✓` : ''}
+      <div className="relative">
+        <div className="grid grid-cols-7 gap-1.5 text-center text-[10px] mb-1">
+          {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((w, i) => (
+            <div key={w} className={i >= 5 ? 'text-text-secondary' : 'text-text-muted'}>{w}</div>
+          ))}
+        </div>
+        {/* Weekend seam: Fri|Sat boundary as a quiet vertical rule. */}
+        <div
+          className="absolute top-0 bottom-0 w-px bg-border/60 pointer-events-none"
+          style={{ left: 'calc(5 / 7 * 100%)' }}
+        />
+        <div className="grid grid-cols-7 gap-1.5">
+          {cells.map((d) => {
+            const inMonth = d.slice(0, 7) === month
+            const blocks = (byDay.get(d) || []).filter(
+              (b) => b.kind !== 'downtime')
+            const planned = blocks.reduce(
+              (s, b) => s + (b.end_min - b.start_min), 0)
+            const done = blocks.filter((b) => b.state === 'done').length
+            const h = heatFor(d)
+            // Background = what HAPPENED (whole corpus); the plan is
+            // shape + text (left edge, hour line), never a second
+            // alpha wash on the same hue.
+            const lived = (h?.s || 0) + (h?.t || 0)
+            const wk = isWeekend(d)
+            const plannerLine = blocks.length
+              ? `${(planned / 60).toFixed(1)}h planned, ${done}/${blocks.length} done`
+              : ''
+            const heatLine = dayHeatTitle(d, h)
+            const titleText = plannerLine
+              ? `${d}: ${plannerLine}${heatLine !== d ? ' · ' + heatLine.slice(d.length + 2) : ''}`
+              : heatLine
+            return (
+              <button
+                key={d}
+                onClick={() => onPickDay(d)}
+                title={titleText}
+                className={`relative h-16 rounded-md border text-left p-1.5 cursor-pointer transition-colors overflow-hidden ${
+                  d === today
+                    ? 'border-accent'
+                    : 'border-border/50 hover:border-border'
+                } ${inMonth ? '' : 'opacity-35'}`}
+                style={{
+                  background: lived > 0
+                    ? monthShade(lived)
+                    : wk && inMonth ? 'rgba(255,255,255,0.03)' : 'transparent',
+                  borderLeft: inMonth && blocks.length
+                    ? '2px solid #7c5cff' : undefined,
+                }}
+              >
+                <span className={`text-[11px] ${
+                  d === today ? 'text-accent font-semibold' : 'text-text-secondary'
+                }`}>
+                  {Number(d.slice(8))}
                 </span>
-              )}
-            </button>
-          )
-        })}
+                {blocks.length > 0 && (
+                  <span className="absolute bottom-[7px] left-1.5 right-1.5 text-[9px] text-text-muted truncate">
+                    {(planned / 60).toFixed(1)}h{done ? ` · ${done}✓` : ''}
+                  </span>
+                )}
+                {h?.z != null && (
+                  <span
+                    className="absolute bottom-0 left-0 h-[3px] rounded-b"
+                    style={{
+                      width: `${sleepFrac(h.z) * 100}%`,
+                      background: 'rgba(53,169,155,0.6)',
+                    }}
+                  />
+                )}
+              </button>
+            )
+          })}
+        </div>
       </div>
       <div className="text-[10px] text-text-muted mt-2">
-        Shading = planned hours (excluding downtime); days outside the
-        mirrored window are simply empty.
+        Shading = what happened that day (AI + logged hours, from the whole
+        corpus). Purple left edge and the hour text = the phone's plan. Teal
+        strip along the bottom = sleep on the night ending that morning
+        (full width = 10h); no strip = no tracker data. Click a day to open it.
       </div>
     </section>
   )
@@ -754,6 +967,7 @@ function dayHeatTitle(day: string, h: DayHeat | undefined): string {
   if (h.t) parts.push(`${(h.t / 60).toFixed(1)}h logged`)
   if (h.z) parts.push(`slept ${h.z}h`)
   if (h.p) parts.push(`${h.p.toLocaleString()} steps`)
+  if (h.a) parts.push(`${h.a} active-zone min`)
   return parts.length ? `${day}: ${parts.join(' · ')}` : day
 }
 
@@ -766,11 +980,7 @@ function YearView({ year, today, heat, loading, error, onRetry, onPickDay }: {
   onRetry: () => void
   onPickDay: (d: string) => void
 }) {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const shade = (mins: number): string => {
-    const a = Math.min(0.9, 0.15 + (mins / 360) * 0.75)
-    return `rgba(124,92,255,${a.toFixed(2)})`
-  }
+  const shade = activityShade
   return (
     <section className="rounded-lg border border-border bg-surface-secondary p-4">
       <h3 className="text-sm font-semibold text-text-primary mb-3">
@@ -792,51 +1002,264 @@ function YearView({ year, today, heat, loading, error, onRetry, onPickDay }: {
           </span>
         )}
       </h3>
-      <div className="space-y-1.5">
-        {Array.from({ length: 12 }, (_, mi) => {
-          const daysIn = new Date(year, mi + 1, 0).getDate()
-          const label = new Date(year, mi, 1, 12).toLocaleDateString(
-            undefined, { month: 'short' })
-          return (
-            <div key={mi} className="flex items-center gap-2">
-              <div className="w-8 text-[10px] text-text-muted shrink-0">{label}</div>
-              <div className="flex-1 flex gap-[2px]">
-                {Array.from({ length: daysIn }, (_, di) => {
-                  const day = `${year}-${pad(mi + 1)}-${pad(di + 1)}`
+      {(() => {
+        // Day-of-week aligned week columns, Monday start. Sat/Sun sit
+        // below a physical gap so the weekly rhythm is a shape, not a
+        // color. Each day = 12x12 activity cell + 3px sleep lane.
+        const CELL = 12, COLW = 14, GUT = 26, TOPBAND = 14
+        const ROWPITCH = 19, WEEKEND_GAP = 6
+        const gridStart = weekStart(`${year}-01-01`)
+        const cols: string[] = []
+        for (let m = gridStart; m <= `${year}-12-31`; m = localDay(7, m)) cols.push(m)
+        const width = GUT + cols.length * COLW
+        const height = TOPBAND + 7 * ROWPITCH + WEEKEND_GAP
+        const rowY = (dow: number) =>
+          TOPBAND + dow * ROWPITCH + (dow >= 5 ? WEEKEND_GAP : 0)
+        const monthLabels: { x: number; text: string }[] = []
+        let seen = ''
+        cols.forEach((mon, ci) => {
+          const mkey = mon.slice(0, 7)
+          if (mkey !== seen && mon.slice(0, 4) === String(year)) {
+            seen = mkey
+            monthLabels.push({
+              x: GUT + ci * COLW,
+              text: new Date(mon + 'T12:00:00').toLocaleDateString(
+                undefined, { month: 'short' }),
+            })
+          }
+        })
+        return (
+          <div className="overflow-x-auto">
+            <svg
+              viewBox={`0 0 ${width} ${height}`}
+              style={{ width: '100%', minWidth: 700, height: 'auto' }}
+              role="img"
+              aria-label={`Activity and sleep for every day of ${year}`}
+            >
+              {monthLabels.map((m) => (
+                <text key={m.text} x={m.x} y={10} fontSize="9" fill={TXT_MUTED}>
+                  {m.text}
+                </text>
+              ))}
+              {['Mon', '', 'Wed', '', 'Fri', 'Sat', 'Sun'].map((lbl, dow) =>
+                lbl ? (
+                  <text
+                    key={lbl} x={0} y={rowY(dow) + CELL / 2 + 3} fontSize="9"
+                    fill={dow >= 5 ? TXT_SECONDARY : TXT_MUTED}
+                  >
+                    {lbl}
+                  </text>
+                ) : null)}
+              <rect
+                x={GUT} y={rowY(5) - 2} width={cols.length * COLW}
+                height={2 * ROWPITCH + 1} fill="rgba(255,255,255,0.03)" rx={3}
+              />
+              {cols.map((mon, ci) =>
+                Array.from({ length: 7 }, (_, dow) => {
+                  const day = localDay(dow, mon)
+                  if (day.slice(0, 4) !== String(year)) return null
                   const h = heat[day]
                   const min = (h?.s || 0) + (h?.t || 0)
-                  // A day with only sleep/steps (or zero-duration
-                  // sessions) still marks presence faintly, so
-                  // tracked-but-idle days read as lived.
                   const hasAny = !!h && (min > 0 || !!h.sc || !!h.z || !!h.p)
+                  const x = GUT + ci * COLW
+                  const y = rowY(dow)
                   return (
-                    <button
-                      key={di}
-                      onClick={() => onPickDay(day)}
-                      title={dayHeatTitle(day, h)}
-                      className={`flex-1 h-4 rounded-[2px] cursor-pointer min-w-0 ${
-                        day === today
-                          ? 'outline outline-1 outline-accent'
-                          : ''
-                      } ${min > 0 ? '' : hasAny ? 'bg-white/[0.09]' : 'bg-white/[0.04] hover:bg-white/[0.08]'}`}
-                      style={min > 0 ? { background: shade(min) } : undefined}
-                    />
+                    <g
+                      key={day} onClick={() => onPickDay(day)}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <title>{dayHeatTitle(day, h)}</title>
+                      <rect
+                        x={x} y={y} width={CELL} height={CELL} rx={2}
+                        fill={min > 0 ? shade(min)
+                          : hasAny ? 'rgba(255,255,255,0.09)'
+                          : 'rgba(255,255,255,0.04)'}
+                      />
+                      {h?.z != null && (
+                        <rect
+                          x={x} y={y + 13} width={CELL * sleepFrac(h.z)}
+                          height={3} rx={1} fill="rgba(53,169,155,0.7)"
+                        />
+                      )}
+                      {day === today && (
+                        <rect
+                          x={x - 1} y={y - 1} width={CELL + 2} height={CELL + 5}
+                          rx={2} fill="none" stroke="#7c5cff" strokeWidth={1.5}
+                        />
+                      )}
+                    </g>
                   )
-                })}
-              </div>
-            </div>
-          )
-        })}
-      </div>
+                }))}
+            </svg>
+          </div>
+        )
+      })()}
       <div className="text-[10px] text-text-muted mt-2">
-        The whole corpus, any year: brighter = more AI-session +
-        logged hours that day (session-hours sum across parallel
-        sessions, so heavy days can top 24h); faint marks are days
-        with only health data or zero-length sessions. Hover for the
-        mix (sleep, steps); click a day to open everything Cortex
-        holds for it.
+        Columns are weeks; Sat/Sun sit below the gap. Purple = AI-session +
+        logged hours that day (parallel sessions sum, so heavy days can top
+        24h). Teal underline = hours slept the night ending that morning; a
+        full-width line is 10h. Teal gaps = no tracker data, not no sleep.
+        Hover for the mix; click a day to open everything Cortex holds for it.
       </div>
     </section>
+  )
+}
+
+// ── rhythm card: the week as a shape (median + middle half) ────────
+// Per-weekday small multiples for activity, sleep, and steps, plus a
+// coverage barcode showing how much of the period the corpus holds.
+// Descriptive only: no targets, no deltas, the eye does the comparing.
+
+const DOW_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
+function RhythmRow({ label, hue, byDow, fmt }: {
+  label: string
+  hue: string
+  byDow: number[][]
+  fmt: (v: number) => string
+}) {
+  const stats = byDow.map((vals) => {
+    const sorted = [...vals].sort((a, b) => a - b)
+    return {
+      n: sorted.length,
+      q1: quantile(sorted, 0.25),
+      med: quantile(sorted, 0.5),
+      q3: quantile(sorted, 0.75),
+    }
+  })
+  const scaleMax = Math.max(...stats.map((s) => s.q3)) * 1.1 || 1
+  const yPct = (v: number) => 100 - Math.min(100, (v / scaleMax) * 100)
+  return (
+    <div className="flex items-end gap-2">
+      <div className="w-20 shrink-0 flex items-center gap-1.5 text-[11px] text-text-secondary pb-1">
+        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: hue }} />
+        {label}
+      </div>
+      <div className="flex-1 flex">
+        {stats.map((s, dow) => (
+          <div
+            key={dow}
+            className={`flex-1 flex flex-col items-center ${
+              dow === 5 ? 'border-l border-border/40' : ''
+            } ${dow >= 5 ? 'bg-white/[0.03] rounded' : ''}`}
+            title={s.n
+              ? `${DOW_LABELS[dow]}: median ${fmt(s.med)}, middle half ${fmt(s.q1)}-${fmt(s.q3)}, ${s.n} days`
+              : `${DOW_LABELS[dow]}: no data`}
+          >
+            <div className="relative h-11 w-full">
+              {s.n > 0 && (
+                <>
+                  <div
+                    className="absolute left-1/2 -translate-x-1/2 w-[5px] rounded-full"
+                    style={{
+                      top: `${yPct(s.q3)}%`,
+                      height: `${Math.max(4, yPct(s.q1) - yPct(s.q3))}%`,
+                      background: hue, opacity: 0.28,
+                    }}
+                  />
+                  <div
+                    className="absolute left-1/2 -translate-x-1/2 w-[5px] h-[5px] rounded-full"
+                    style={{ top: `calc(${yPct(s.med)}% - 2.5px)`, background: hue }}
+                  />
+                </>
+              )}
+            </div>
+            <div className={`text-[9px] ${dow >= 5 ? 'text-text-secondary' : 'text-text-muted'}`}>
+              {DOW_LABELS[dow]}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function RhythmCard({ dates, label, today, heatFor }: {
+  dates: string[]
+  label: string
+  today: string
+  heatFor: (d: string) => DayHeat | undefined
+}) {
+  const scope = useMemo(
+    () => deriveScope(heatFor, dates, today), [heatFor, dates, today])
+  const dataDays = dates.filter((d) => heatFor(d)).length
+  if (dataDays < 14) return null
+
+  const rows: { label: string; hue: string; byDow: number[][]; fmt: (v: number) => string }[] = []
+  const activeDays = scope.activeByDow.reduce((s, a) => s + a.length, 0)
+  if (activeDays >= 8) {
+    rows.push({
+      label: 'AI + logged', hue: '#7c5cff', byDow: scope.activeByDow,
+      fmt: (v) => `${(v / 60).toFixed(1)}h`,
+    })
+  }
+  const sleepDays = scope.sleepByDow.reduce((s, a) => s + a.length, 0)
+  if (sleepDays >= 8) {
+    rows.push({
+      label: 'Sleep', hue: SLEEP_TEAL, byDow: scope.sleepByDow,
+      fmt: (v) => `${v.toFixed(1)}h`,
+    })
+  }
+  const stepDays = scope.stepsByDow.reduce((s, a) => s + a.length, 0)
+  if (stepDays >= 8) {
+    rows.push({
+      label: 'Steps', hue: '#8b949e', byDow: scope.stepsByDow,
+      fmt: (v) => `${(v / 1000).toFixed(1)}k`,
+    })
+  }
+
+  return (
+    <section className="rounded-lg border border-border bg-surface-secondary p-4">
+      <h3 className="text-sm font-semibold text-text-primary mb-3">
+        Weekly rhythm · {label}
+      </h3>
+      <div className="space-y-2">
+        {rows.map((r) => (
+          <RhythmRow key={r.label} {...r} />
+        ))}
+      </div>
+      <div className="mt-4">
+        <div className="text-xs font-medium text-text-secondary mb-1.5">In the corpus</div>
+        <div className="space-y-1">
+          <CoverageBar label="sessions" hue="rgba(124,92,255,0.7)" dates={dates}
+            heatFor={heatFor} has={(h) => !!h?.sc} count={`${scope.counts.sessions} d`} />
+          <CoverageBar label="logged" hue="rgba(139,148,158,0.7)" dates={dates}
+            heatFor={heatFor} has={(h) => !!h?.t} count={`${scope.counts.logged} d`} />
+          <CoverageBar label="sleep" hue="rgba(53,169,155,0.7)" dates={dates}
+            heatFor={heatFor} has={(h) => h?.z != null} count={`${scope.counts.nights} n`} />
+        </div>
+      </div>
+      <div className="text-[10px] text-text-muted mt-3">
+        Median dot with the middle-half band, per weekday. Quiet days count
+        as zero for activity; untracked nights are absent, not zero. Sleep
+        from {scope.counts.nights} tracked nights.
+      </div>
+    </section>
+  )
+}
+
+function CoverageBar({ label, hue, dates, heatFor, has, count }: {
+  label: string
+  hue: string
+  dates: string[]
+  heatFor: (d: string) => DayHeat | undefined
+  has: (h: DayHeat | undefined) => boolean
+  count: string
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="w-16 shrink-0 text-[9px] text-text-muted">{label}</div>
+      <svg
+        viewBox={`0 0 ${dates.length} 6`}
+        preserveAspectRatio="none"
+        className="flex-1 h-1.5"
+      >
+        {dates.map((d, i) => (has(heatFor(d)) ? (
+          <rect key={i} x={i} width={1} height={6} fill={hue} />
+        ) : null))}
+      </svg>
+      <div className="w-12 shrink-0 text-right text-[10px] text-text-muted font-mono">{count}</div>
+    </div>
   )
 }
 
@@ -858,6 +1281,111 @@ const HEALTH_CHIPS: [string, (v: number) => string][] = [
 function fmtClock(iso?: string): string {
   const t = (iso || '').slice(11, 16)
   return t || ''
+}
+
+// The day as it actually happened: a 24h strip of AI sessions
+// (filled) and logged time (outlined), adjacent to the plan above but
+// never diffed against it. Marks with unknown start times stack at
+// the right edge so counts stay honest.
+function pctOfDay(iso?: string): number | null {
+  const t = (iso || '').slice(11, 16)
+  if (!/^\d{2}:\d{2}$/.test(t)) return null
+  const [hh, mm] = t.split(':').map(Number)
+  return ((hh * 60 + mm) / 1440) * 100
+}
+
+function DayRibbon({ d }: { d: DayDetail }) {
+  const rows: {
+    label: string
+    marks: { pct: number | null; widthPct: number; title: string }[]
+    filled: boolean
+  }[] = []
+  if (d.sessions.length) {
+    rows.push({
+      label: 'AI',
+      filled: true,
+      marks: d.sessions.map((s) => {
+        const pct = pctOfDay(s.local_started_at)
+        const startMin = pct == null ? 0 : (pct / 100) * 1440
+        const widthPct = Math.max(
+          0.25,
+          (Math.min(s.duration_minutes || 0, 1440 - startMin) / 1440) * 100)
+        return {
+          pct, widthPct,
+          title: `${pct == null ? 'time unknown · ' : fmtClock(s.local_started_at) + ' · '}${s.project || s.source} · ${s.duration_minutes}m · ${s.message_count} msgs${s.gist ? ' · ' + s.gist.split('\n')[0] : ''}`,
+        }
+      }),
+    })
+  }
+  if (d.time_entries.length) {
+    rows.push({
+      label: 'logged',
+      filled: false,
+      marks: d.time_entries.map((t) => {
+        const pct = pctOfDay(t.local_started_at)
+        const startMin = pct == null ? 0 : (pct / 100) * 1440
+        const widthPct = Math.max(
+          0.25,
+          (Math.min(t.duration_minutes || 0, 1440 - startMin) / 1440) * 100)
+        return {
+          pct, widthPct,
+          title: `${pct == null ? 'time unknown · ' : fmtClock(t.local_started_at) + ' · '}${t.project_tag} · ${t.duration_minutes}m${t.description ? ' · ' + t.description : ''}`,
+        }
+      }),
+    })
+  }
+  if (!rows.length) return null
+  return (
+    <div className="mb-1">
+      <div className="relative h-12 rounded bg-surface-tertiary/30">
+        {[0, 25, 50, 75].map((pct, i) => (
+          <div
+            key={pct}
+            className="absolute top-0 bottom-0 border-l border-border/30"
+            style={{ left: `${pct}%` }}
+          >
+            <span className="absolute top-0 left-0.5 text-[9px] text-text-muted">
+              {['12am', '6am', '12pm', '6pm'][i]}
+            </span>
+          </div>
+        ))}
+        {rows.map((row, ri) => {
+          const top = rows.length === 1 ? '45%' : ri === 0 ? '28%' : '66%'
+          let unknownIdx = 0
+          return (
+            <div key={row.label}>
+              <span
+                className="absolute left-0.5 text-[9px] text-text-muted"
+                style={{ top: `calc(${top} - 1px)` }}
+              >
+                {row.label}
+              </span>
+              {row.marks.map((m, i) => (
+                <div
+                  key={i}
+                  title={m.title}
+                  className="absolute h-2.5 rounded-sm"
+                  style={{
+                    top,
+                    ...(m.pct == null
+                      ? { right: 2 + (unknownIdx++) * 6, width: 4 }
+                      : { left: `${m.pct}%`, width: `${m.widthPct}%` }),
+                    ...(row.filled
+                      ? { background: 'rgba(124,92,255,0.55)' }
+                      : { border: '1px solid rgba(124,92,255,0.7)' }),
+                  }}
+                />
+              ))}
+            </div>
+          )
+        })}
+      </div>
+      <div className="text-[10px] text-text-muted mt-1">
+        The day as it happened: filled = AI sessions, outlined = logged time.
+        The plan lives in the timeline above.
+      </div>
+    </div>
+  )
 }
 
 function DayCorpusCard({ date }: { date: string }) {
@@ -897,6 +1425,9 @@ function DayCorpusCard({ date }: { date: string }) {
       <h3 className="text-sm font-semibold text-text-primary">
         This day in Cortex
       </h3>
+      {d && (d.sessions.length > 0 || d.time_entries.length > 0) && (
+        <DayRibbon d={d} />
+      )}
       {empty && (
         <div className="text-xs text-text-muted">
           {state === 'error'
