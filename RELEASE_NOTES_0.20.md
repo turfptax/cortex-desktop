@@ -1,5 +1,27 @@
 # Cortex Desktop v0.20.x
 
+## v0.20.2 (July 2026): the Weekly Rhythm redesign
+
+Designed by a multi-agent UX panel (3 designers, 3 judges, 1
+synthesizer), then built to the synthesized spec.
+
+- **Year as weekly rhythm**: day-of-week aligned week columns with
+  Sat/Sun physically detached below a gap, so weekends read as shape.
+  Teal sleep underline beneath every day (length = hours slept, 10h
+  full width); teal gaps mean no tracker data, never "no sleep".
+- **Weekly rhythm card** (year + month): median dot with the
+  middle-half band per weekday for activity, sleep, and steps, with
+  weekend columns set behind a seam. Descriptive, never scored.
+- **"In the corpus" coverage barcodes** show honestly how much of a
+  period the corpus holds (sessions / logged / sleep).
+- **Month**: the background now shades what HAPPENED (whole-corpus
+  lived hours); the phone's plan becomes shape + text (purple left
+  edge, hour line); sleep strip along each day's bottom; weekend seam.
+- **Week**: teal sleep bar per day. **Day**: a 24h ribbon of actual
+  AI sessions (filled) and logged time (outlined) beside the plan.
+- Sleep teal (#35a99b) is the one second hue, colorblind-validated
+  against the dark surface and always position-locked + labeled.
+
 ## v0.20.1 (July 2026): permanent memory in Simples
 
 - **Year view reads the whole corpus, any year**: every day shaded by
