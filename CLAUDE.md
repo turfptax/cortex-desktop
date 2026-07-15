@@ -23,7 +23,7 @@ Cortex Desktop is the PC-side control hub for the Cortex wearable AI companion s
 
 The Hub now ships a sixth surface that lives on the Pi but is consumed end-to-end through this app:
 
-6. **Overseer** (Pi-side plugin in [cortex-core](https://github.com/turfptax/cortex-core)) — A memory-upkeep agent that reads the user's notes, sessions, and imported Claude Code conversations and produces interpretive layers (gists, themes, episodes, open questions, patterns, drift, project narratives). Its dedicated Hub tab includes Overview / Chat / Dialectic / Journal / Insights / Projects / Classify / Bell / Explorer sub-tabs.
+6. **Overseer** (Pi-side plugin in [cortex-core](https://github.com/turfptax/cortex-core)): a memory-upkeep agent that reads the user's notes, sessions, and imported Claude Code conversations and produces interpretive layers (gists, themes, episodes, open questions, patterns, drift, project narratives). Since the 2026-07-10 IA overhaul the Hub's top-level nav is **Search / Corpus / Chat / Simples / Journal / System / Settings**; the Corpus page holds the interpretive sub-tabs (Overview, Insights, Projects with Classify folded in, Squeeze which replaced Dialectic, Ecosystem, Explorer, Bell, Contacts, Voice). See `RELEASE_NOTES_0.20.md` and the memory note `hub_ia_overhaul_2026-07-10`.
 
 ## Architecture
 
@@ -163,6 +163,8 @@ git push origin v0.17.0-dev.1
 ```
 
 ### Recent stable releases
+- **v0.20.x** (Jul 2026): the agent-harness cycle. **0.20.0** = agent-harness chat (threads + prompt library + per-turn feedback), Squeeze replaces Dialectic, MCP in both directions (Pi is an MCP client for external servers; a skills/rules layer serves standing rules to every connecting AI via cortex_intro), the phone's Simples planner mirrored on the desktop, real-time Pipecat voice, Lemon Squeezer export. **0.20.1** = permanent memory in Simples (a "This day in Cortex" panel + a whole-corpus Year heat, any year). **0.20.2** = the Weekly Rhythm redesign (day-of-week-aligned year grid with a detached weekend band, a validated teal sleep layer, per-weekday median/IQR rhythm card). See `RELEASE_NOTES_0.20.md`.
+- **v0.19.0** (Jun 2026): "real software" cycle: search-first Hub, semantic recall (sqlite-vec), phone bridge. See `RELEASE_NOTES_0.19.md`.
 - **v0.18.0** (May 2026) — Agent ecosystem, voice, cost discipline, sensitivity tiers. Slices 5/6/7/8/9.x/10/10.4/13/14/14.5/14.6/14.7 + the work that made them stable. New Hub sub-tabs: Map, Activity. Router layer (Flash in front of Opus, ~1500× cheaper on routine chat). Voice mode (push-to-talk continuous conversation). Sensitivity tiers (confidential-IP handling). See `RELEASE_NOTES_0.18.md`.
 - **v0.16.0** (May 2026) — Slice 3 Overseer (full) + Slice 4 Project-Centric (rollups, narratives, Projects tab) + sidebar reorg (7→5 tabs) + Polish slice. See `RELEASE_NOTES_0.16.md`.
 - **v0.15.0** (Apr 2026) — Polish CP1 closeout: project name canonicalization + skipped-imports fix.
