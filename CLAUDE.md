@@ -2,6 +2,15 @@
 
 This file provides context for AI agents working in the cortex-desktop repository.
 
+## ☁️ Cloud migration (active direction, 2026-07-14)
+
+Cortex is moving off the home Pi into Azure. The desktop splits: the GUI moves
+to the cloud, and a small LOCAL Claude-file ingester stays. The Pi-proxy Hub
+backend and the sync live-forward daemon retire. Read `docs/CLOUD_MIGRATION.md`
+(and `cortex-core/docs/CLOUD_MIGRATION.md` for the full cross-repo plan) before
+any Pi-proxy or sync-daemon work. Desktop changes are gated on the cloud app
+existing; until then keep the Pi behavior working.
+
 ## 📬 Team mail — check FIRST
 
 Two work streams build in parallel (desktop = this repo; mobile =
