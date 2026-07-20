@@ -4,6 +4,11 @@
 > `cortex-core/docs/CLOUD_MIGRATION.md`. Full plan (diagram, phases, cost): the
 > "Solo cloud migration" artifact (ask Tory). Read that first; this is the
 > desktop-specific slice.
+>
+> Prep pass done 2026-07-20: see `CLOUD_MIGRATION_DESKTOP_PREP.md` for the
+> full retirement inventory (proxy backend + live-forward daemon), the local
+> Claude-file ingester spec + loopback OAuth plan, the P3-day cutover
+> checklist, and the `cortex_local/` scaffold (gated, dry-run only).
 
 ## The shift, in one line
 
