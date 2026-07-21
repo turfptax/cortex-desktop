@@ -123,9 +123,19 @@ def is_pi_reachable(host=None, port=None, timeout=1.0):
     if not host:
         return False
     port = port or get_pi_port()
-    url = "http://{}:{}/health".format(host, port)
+    # Cloud P5: a full URL in pi_host (the gateway's /core proxy) is
+    # used verbatim; the proxy requires auth on EVERY path including
+    # /health, so the probe now always sends the Basic header (the
+    # Pi's open /health simply ignores it).
+    if "://" in host:
+        url = host.rstrip("/") + "/health"
+    else:
+        url = "http://{}:{}/health".format(host, port)
     try:
         req = urllib.request.Request(url, method="GET")
+        _user, _pass = get_pi_credentials()
+        req.add_header("Authorization",
+                       _make_basic_auth_header(_user, _pass))
         resp = urllib.request.urlopen(req, timeout=timeout)
         data = json.loads(resp.read())
         return data.get("ok", False)
@@ -146,7 +156,11 @@ class WiFiBridge:
         _user, _pass = get_pi_credentials()
         self._username = username or _user
         self._password = password or _pass
-        self._base = "http://{}:{}".format(self._host, self._port)
+        # Cloud P5: full-URL pi_host (gateway /core proxy) used verbatim.
+        if "://" in self._host:
+            self._base = self._host.rstrip("/")
+        else:
+            self._base = "http://{}:{}".format(self._host, self._port)
         self._auth_header = _make_basic_auth_header(self._username, self._password)
 
     def _request(self, method, path, body=None, timeout=10, stream=False):

@@ -169,6 +169,12 @@ class Settings(BaseSettings):
 
     @property
     def pi_base_url(self) -> str:
+        # Cloud P5: pi_host may carry a FULL base URL (e.g.
+        # https://<cortex-solo-fqdn>/core, the gateway's authenticated
+        # proxy to the cloud core). Used verbatim, port ignored. A bare
+        # host keeps the legacy Pi form.
+        if "://" in self.pi_host:
+            return self.pi_host.rstrip("/")
         return f"http://{self.pi_host}:{self.pi_port}"
 
     def load_training_config(self) -> dict:
