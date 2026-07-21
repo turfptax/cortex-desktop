@@ -37,9 +37,6 @@ def config_home(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     for var in BACKEND_ENV_VARS + MCP_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
-    # Keep the real ~/.cortex-wifi.json out of these tests.
-    monkeypatch.setattr(
-        wifi_bridge, "DISCOVERY_FILE", str(tmp_path / "no-discovery.json"))
     return tmp_path
 
 
@@ -107,16 +104,9 @@ def test_mcp_env_beats_config_json(config_home, monkeypatch):
     assert wifi_bridge.get_pi_host() == "10.2.2.2"
 
 
-def test_mcp_discovery_fallback(config_home):
-    discovery = config_home / "discovery.json"
-    discovery.write_text(json.dumps({"ip": "10.3.3.3", "port": 3420}))
-    wifi_bridge.DISCOVERY_FILE = str(discovery)
-    assert wifi_bridge.get_pi_host() == "10.3.3.3"
-    assert wifi_bridge.get_pi_port() == 3420
-
-
 def test_mcp_defaults_when_nothing_configured(config_home):
-    assert wifi_bridge.get_pi_host() == "10.0.0.25"
+    # Cloud P5: the default host is the cloud /core proxy URL.
+    assert wifi_bridge.get_pi_host() == "https://cortex.turfptax.com/core"
     assert wifi_bridge.get_pi_port() == 8420
     assert wifi_bridge.get_pi_credentials() == ("cortex", "cortex")
 

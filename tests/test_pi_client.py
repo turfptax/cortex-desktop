@@ -29,6 +29,11 @@ def captured(monkeypatch):
         requests.append(request)
         return httpx.Response(200, json={"ok": True, "echo": True})
 
+    # Deterministic base URL: never inherit the developer's real
+    # config.json (which now carries the cloud /core URL with a path
+    # component).
+    monkeypatch.setattr(pi_client.settings, "pi_host", "10.9.9.9")
+    monkeypatch.setattr(pi_client.settings, "pi_port", 8420)
     monkeypatch.setattr(pi_client, "_client", make_client(handler))
     yield requests
 
