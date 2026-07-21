@@ -2,14 +2,16 @@
 
 This file provides context for AI agents working in the cortex-desktop repository.
 
-## ☁️ Cloud migration (active direction, 2026-07-14)
+## ☁️ Cloud migration COMPLETE (2026-07-21)
 
-Cortex is moving off the home Pi into Azure. The desktop splits: the GUI moves
-to the cloud, and a small LOCAL Claude-file ingester stays. The Pi-proxy Hub
-backend and the sync live-forward daemon retire. Read `docs/CLOUD_MIGRATION.md`
-(and `cortex-core/docs/CLOUD_MIGRATION.md` for the full cross-repo plan) before
-any Pi-proxy or sync-daemon work. Desktop changes are gated on the cloud app
-existing; until then keep the Pi behavior working.
+The corpus of record is the CLOUD: https://cortex.turfptax.com (Azure
+Container App: core + gateway + embed sidecar + Litestream to Blob).
+The desktop reaches it through the gateway's authenticated /core proxy
+(config.json pi_host carries the full URL; pi_password is the service
+token). The Pi is frozen (rollback only) and will be unplugged. The
+v0.21.0 release removed every Pi-era feature: no training pipeline, no
+games, no Pi hardware tab, no serial/BLE/daemon transports, no LAN
+scan. Do not reintroduce them.
 
 ## 📬 Team mail — check FIRST
 
@@ -22,17 +24,16 @@ open for you: the phone↔dongle bridge integration asks — see
 
 ## What This Repo Is
 
-Cortex Desktop is the PC-side control hub for the Cortex wearable AI companion system. It packages five main components:
+Cortex Desktop is the PC-side window onto Cortex, the cloud-hosted permanent AI memory system. It packages four main components:
 
 1. **Desktop App** (`cortex_desktop/`) — System tray app that launches the Hub
-2. **Hub Backend** (`hub/backend/`) — FastAPI REST API serving the frontend and proxying to the Pi
+2. **Hub Backend** (`hub/backend/`) — FastAPI REST API serving the frontend and proxying to the cloud core
 3. **Hub Frontend** (`hub/frontend/`) — React + Vite + Tailwind SPA
-4. **MCP Server** (`cortex_mcp/`) — MCP bridge for Claude Code / Claude Desktop
-5. **Training Package** (`cortex_train/`) — Unified training pipeline (Python API + CLI)
+4. **MCP Server** (`cortex_mcp/`) — MCP bridge for Claude Code / Claude Desktop (single HTTPS transport)
 
-The Hub now ships a sixth surface that lives on the Pi but is consumed end-to-end through this app:
+Plus the surface all of it serves:
 
-6. **Overseer** (Pi-side plugin in [cortex-core](https://github.com/turfptax/cortex-core)): a memory-upkeep agent that reads the user's notes, sessions, and imported Claude Code conversations and produces interpretive layers (gists, themes, episodes, open questions, patterns, drift, project narratives). Since the 2026-07-10 IA overhaul the Hub's top-level nav is **Search / Corpus / Chat / Simples / Journal / System / Settings**; the Corpus page holds the interpretive sub-tabs (Overview, Insights, Projects with Classify folded in, Squeeze which replaced Dialectic, Ecosystem, Explorer, Bell, Contacts, Voice). See `RELEASE_NOTES_0.20.md` and the memory note `hub_ia_overhaul_2026-07-10`.
+5. **Overseer** (Pi-side plugin in [cortex-core](https://github.com/turfptax/cortex-core)): a memory-upkeep agent that reads the user's notes, sessions, and imported Claude Code conversations and produces interpretive layers (gists, themes, episodes, open questions, patterns, drift, project narratives). Since the 2026-07-10 IA overhaul the Hub's top-level nav is **Search / Corpus / Chat / Simples / Journal / System / Settings**; the Corpus page holds the interpretive sub-tabs (Overview, Insights, Projects with Classify folded in, Squeeze which replaced Dialectic, Ecosystem, Explorer, Bell, Contacts, Voice). See `RELEASE_NOTES_0.20.md` and the memory note `hub_ia_overhaul_2026-07-10`.
 
 ## Architecture
 
@@ -41,23 +42,20 @@ Browser (localhost:8003)
     |
     v
 FastAPI Backend (hub/backend/)
-    |--- /api/chat      -> LM Studio (10.0.0.102:1234)
-    |--- /api/pi/*      -> Orange Pi (10.0.0.25:8420, Basic Auth cortex:cortex)
-    |--- /api/training/* -> cortex_train steps / subprocess pipeline
+    |--- /api/chat      -> LM Studio (local workstation)
+    |--- /api/pi/*      -> cloud core via https://cortex.turfptax.com/core
     |--- /api/settings/* -> Config, updates, MCP setup
-    |--- /api/data/*     -> Pi database browser
-    |--- /api/learning/* -> LM Studio synthesis
-    |--- /api/overseer/* -> Pi /plugins/overseer/* (proxied — see hub/backend/routers/overseer.py)
+    |--- /api/data/*     -> core database browser (via /core proxy)
+    |--- /api/overseer/* -> core /plugins/overseer/* (proxied)
     |--- static files   -> React SPA (frontend_dist/)
 
 System Tray (cortex_desktop/app.py)
     |--- Starts uvicorn in background thread
     |--- Opens browser to Hub
-    |--- Polls Pi status every 30s (green/red dot)
+    |--- Polls cloud core status (green/red dot)
 
 MCP Server (cortex_mcp/)
-    |--- WiFi bridge -> Pi HTTP API (preferred)
-    |--- Daemon bridge -> USB serial -> ESP32 -> BLE -> Pi (fallback)
+    |--- WiFiBridge -> HTTPS -> gateway /core proxy -> cloud core
 ```
 
 ## Key Directories
@@ -70,53 +68,32 @@ cortex-desktop/
     updater.py          # GitHub release download + Inno Setup launch
   cortex_mcp/           # MCP server for Claude Code
     server.py           # FastMCP tool definitions (30+ tools)
-    wifi_bridge.py      # HTTP Basic Auth bridge to Pi
-    bridge.py           # Serial/BLE bridge (fallback)
+    wifi_bridge.py      # HTTPS Basic-auth bridge to the cloud core
     protocol.py         # CMD:/RSP: protocol helpers
-    daemon.py           # Shared serial port daemon
-  cortex_train/         # Training pipeline (Phase 1: shared modules)
-    config.py           # TrainSettings dataclass from settings.json
-    paths.py            # Auto-detecting TrainPaths
-    prompts.py          # Stage prompts, moods, personality examples
-    formats.py          # JSONL I/O, LLM response parser, ChatML
-    lmstudio.py         # Teacher model API client
-    pi_client.py        # SSH/SCP + HTTP API for Pi
-    progress.py         # ProgressEvent callbacks for CLI/SSE
-    errors.py           # Typed exception hierarchy
-    steps/              # Pipeline step functions (Phase 2: in progress)
   hub/
     backend/
       main.py           # FastAPI app setup
       config.py         # Pydantic settings (CORTEX_HUB_* env vars)
       routers/
         chat.py         # LM Studio chat proxy (SSE streaming)
-        pi.py           # Pi command proxy, pet care, tuck-in
-        training.py     # Training pipeline, dream cycle orchestration
-        settings.py     # Config, network scan, update check (stable/dev channels)
+        pi.py           # Core proxy (status/notes/cmd/query via /core)
+        settings.py     # Config, update check (stable/dev channels)
         data.py         # Pi database CRUD
-        learning.py     # LM Studio synthesis management
-        games.py        # Pong game endpoints
         overseer.py     # Proxy to Pi's /plugins/overseer/* — Slice 3+4+5 routes
                         #   working_memory, journal, dialectic, insights, blindspots,
                         #   notifications, explorer/graph, projects/summary,
                         #   narrative/generate, temporal/*, human-journal/*
                         #   (~30 routes total)
       services/
-        pi_client.py    # Async HTTP client to Pi
+        pi_client.py    # Async HTTP client to the core
         lmstudio.py     # Async LM Studio streaming client
-        process_manager.py  # Training subprocess runner + SSE streaming
-        learn_cycle.py  # In-process synthesis with multi-server work-stealing
-        dataset_manager.py  # Curated dataset CRUD
     frontend/
       src/
-        App.tsx         # Root, Pi status polling, routing
-                        # Top-level sidebar: Chat / Pi / Data / Overseer / Settings
-                        # (5 tabs as of v0.16; Training + Games are now Pi inner tabs)
+        App.tsx         # Root, cloud status polling, hash routing
+                        # Top-level: Search / Corpus / Chat / Simples /
+                        # Journal / System / Settings
         components/
           chat/         # Chat page with prompt templates + presets
-          pi/           # Pi page with inner tabs: System (status + firmware) /
-                        # Pet Chat / Pet Care / Thoughts (heartbeat) / Notes /
-                        # Training / Games
           data/         # Pi database browser
           settings/     # Settings page with UpdateCard
           overseer/     # Overseer page (Slice 3-5)
@@ -126,8 +103,6 @@ cortex-desktop/
                                #   Temporal narratives (D/W/M) / Overseer
                                #   reflections (the original tick journal)
             ExplorerPanel.tsx  # Force-directed graph view
-          training/     # Training pipeline UI (6 tabs) — mounted inside Pi tab
-          games/        # Pong game — mounted inside Pi tab
         lib/
           api.ts            # apiFetch() wrapper
           graphengine/      # Generic force-directed graph engine
@@ -186,9 +161,9 @@ git push origin v0.17.0-dev.1
 - **Endpoints**: `GET /api/settings/check-update?channel=dev`, `POST /api/settings/apply-update`
 - **Frontend**: UpdateCard.tsx with Stable/Dev toggle (persisted to localStorage)
 
-## Pi Communication
+## Core Communication
 
-The Pi (Orange Pi Zero 2W) runs cortex-core on port 8420 with HTTP Basic Auth (`cortex:cortex`).
+The cloud core is reached through the gateway's /core proxy with HTTP Basic auth (username `cortex`, password = the service token from Key Vault).
 
 **Protocol**: JSON over HTTP
 ```
@@ -197,32 +172,12 @@ POST /api/cmd
 -> {"ok": true, "response": "RSP:note:{...}"}
 ```
 
-**Key commands**: `ping`, `status`, `note`, `query`, `pet_sleep`, `pet_wake`, `tuck_in`, `force_train`, `dream_complete`, `training_examples`, `training_upload`
+**Key commands**: `ping`, `status`, `note`, `query`, `upsert`, `delete`, `table_counts`, `log_time`, `project_upsert`
 
-## Training Pipeline (cortex_train)
-
-The training pipeline fine-tunes Qwen3.5-0.8B with LoRA adapters using data from the Pi.
-
-### Pipeline steps
-| Step | Name | What it does |
-|------|------|-------------|
-| 00 | sync | SCP cortex.db from Pi, export to JSONL |
-| 01 | synthesize | LM Studio teacher generates Q&A from notes |
-| 02 | prepare | Merge 5 data sources into HuggingFace Dataset |
-| 03 | train | LoRA fine-tuning (GPU required) |
-| 04 | evaluate | Perplexity comparison base vs fine-tuned |
-| 05 | research | Hyperparameter search (incomplete) |
-| 06 | deploy | Merge LoRA -> GGUF -> SCP to Pi -> restart |
-
-### Dream cycle
-Triggered by tuck-in: runs sync -> synthesize -> prepare -> train -> eval -> deploy automatically.
-
-### Configuration
-Training config lives in `cortex-pet-training/config/settings.json` (sibling repo). The `cortex_train.paths` module auto-detects this via `CORTEX_TRAINING_DIR` env var or sibling directory search.
 
 ## Overseer (Slice 3 + 4 + 5 + 6 + 7 — added in v0.13–0.17)
 
-The Overseer is a memory-upkeep agent that LIVES on the Pi (in `cortex-core/plugins/overseer/`) but is consumed end-to-end through this Hub.
+The Overseer is a memory-upkeep agent that lives in the cloud core (`cortex-core/plugins/overseer/`) and is consumed end-to-end through this Hub.
 
 **LOCKED PRINCIPLE (Slice 5)** — restated as `SHARED_PRINCIPLE` at the top of every temporal-narrative prompt: *the Overseer is a quiet, lightweight memory layer that captures, surfaces, and connects. It is NOT a journaling app or life coach.* If a feature proposal would push it toward streaks, nag-notifications, suggested-actions, or "today's goal" surfaces, that proposal violates the principle and should be declined.
 
@@ -315,7 +270,7 @@ The Overseer page (top-level sidebar tab) has these inner tabs:
 
 ### Prerequisites
 - Python 3.10+, Node.js 18+
-- Pi accessible at 10.0.0.25 (or configure in %APPDATA%/Cortex/config.json)
+- The cloud core URL + service token in %APPDATA%/Cortex/config.json
 
 ### Run in dev mode
 ```bash
@@ -362,17 +317,14 @@ The root contains `scripts/video-annotator/` and other ancillary tooling that ca
 ### Adding a new MCP tool
 1. Add `@mcp.tool()` function in `cortex_mcp/server.py`
 2. Tool sends commands via `send_command(_get_bridge_lazy(), "command_name", payload)`
-3. Pi must handle the command in `cortex_protocol.py`
+3. The core must handle the command in `cortex_protocol.py`
 
-### Adding a training step
-1. Create `cortex_train/steps/<name>.py` with `run_<name>(settings, paths, on_progress)` function
-2. Register in `cortex_train/steps/__init__.py` STEP_MAP
-3. Add CLI subcommand in `cortex_train/cli.py`
-4. Hub backend calls via `cortex_train.steps` import or subprocess fallback
-
-### Deploying code to Pi
+### Deploying core code to the cloud
 ```bash
-scp cortex-core/src/*.py turfptax@10.0.0.25:~/cortex-core/src/
+# stage + build + roll (see cortex-core/deploy/cloud/)
+python cortex-core/deploy/cloud/stage.py <staging-dir>
+az acr build --registry cortexacr47df --image cortex-solo:<tag> <staging-dir>
+az containerapp update -g cortex-rg -n cortex-solo --container-name core --image ...
 
 ## Working Style — coding discipline
 
@@ -446,5 +398,4 @@ Strong success criteria let you loop independently. Weak criteria
 diffs, fewer rewrites due to overcomplication, and clarifying
 questions come before implementation rather than after mistakes.
 
-ssh turfptax@10.0.0.25 "sudo systemctl restart cortex-core"
 ```

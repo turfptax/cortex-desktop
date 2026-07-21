@@ -103,7 +103,8 @@ def _check_pi_status(pi_host: str, pi_port: int, username: str, password: str) -
     """Check if the Pi is reachable."""
     try:
         r = httpx.get(
-            f"http://{pi_host}:{pi_port}/health",
+            (pi_host.rstrip("/") + "/health") if "://" in pi_host
+            else f"http://{pi_host}:{pi_port}/health",
             auth=(username, password),
             timeout=3.0,
         )
@@ -118,7 +119,7 @@ class CortexTray:
     def __init__(
         self,
         hub_port: int = 8003,
-        pi_host: str = "10.0.0.25",
+        pi_host: str = "https://cortex.turfptax.com/core",
         pi_port: int = 8420,
         pi_username: str = "cortex",
         pi_password: str = "cortex",
@@ -160,8 +161,8 @@ class CortexTray:
 
     def _get_pi_status_text(self) -> str:
         if self._pi_connected:
-            return f"Pi: Connected ({self.pi_host})"
-        return f"Pi: Offline ({self.pi_host})"
+            return "Cloud: Connected"
+        return "Cloud: Offline"
 
     def _apply_update(self, icon=None, item=None):
         """Trigger auto-update via the local API."""

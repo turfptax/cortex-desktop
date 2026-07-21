@@ -85,7 +85,7 @@ export function Layout({ page, setPage, status, children }: LayoutProps) {
         {/* Status indicators */}
         <div className="p-3 border-t border-border space-y-2">
           <StatusDot label="LM Studio" online={status.lmstudioOnline} />
-          <StatusDot label="Pi Zero" online={status.piOnline} />
+          <StatusDot label="Cortex Cloud" online={status.coreOnline} />
         </div>
       </aside>
 

@@ -670,50 +670,6 @@ async def dispatch_export(since: int = 0, limit: int = 1000):
         {"since": since, "limit": limit})
 
 
-# ── Slice 3f: dialectic ─────────────────────────────────────────
-# SUNSET 2026-07-10: the Dialectic tab is gone from the frontend
-# (writer disabled on the Pi since 2026-05-24; data frozen). These
-# proxies stay one release so older installed Hubs don't 404, then
-# they and the Pi routes can go.
-
-@router.get("/dialectic")
-async def list_dialectic(status: str = "", severity: str = "",
-                          artifact_type: str = "",
-                          limit: int = 100, offset: int = 0):
-    payload: dict = {"limit": limit, "offset": offset}
-    if status:
-        payload["status"] = status
-    if severity:
-        payload["severity"] = severity
-    if artifact_type:
-        payload["artifact_type"] = artifact_type
-    return await pi_client.plugin_call(
-        "overseer", "GET", "/dialectic", payload)
-
-
-@router.get("/dialectic/get")
-async def get_dialectic(id: int):
-    return await pi_client.plugin_call(
-        "overseer", "GET", "/dialectic/get", {"id": id})
-
-
-class ResolveDialecticRequest(BaseModel):
-    id: int
-    resolution: str            # opus | gemma | third | productive
-    resolution_text: str = ""
-
-
-@router.post("/dialectic/resolve")
-async def resolve_dialectic(req: ResolveDialecticRequest):
-    return await pi_client.plugin_call(
-        "overseer", "POST", "/dialectic/resolve", req.model_dump())
-
-
-@router.get("/dialectic/counts")
-async def dialectic_counts():
-    return await pi_client.plugin_call(
-        "overseer", "GET", "/dialectic/counts")
-
 
 # ── Slice 3f.5: overseer journal (the thinking layer) ──────────
 

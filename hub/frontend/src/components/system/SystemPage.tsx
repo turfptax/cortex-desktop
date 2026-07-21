@@ -1,6 +1,7 @@
-import { lazy, Suspense, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { type StatusInfo } from '../../App'
-import { PiPage } from '../pi/PiPage'
+import { NotesPanel } from './NotesPanel'
+import { usePi } from '../../hooks/usePi'
 import { DataPage } from '../data/DataPage'
 import { VideoPage } from '../video/VideoPage'
 import { LemonSyncPanel } from './LemonSyncPanel'
@@ -18,7 +19,7 @@ const ActivityPanel = lazy(() =>
  * IA overhaul 2026-07-10: the legacy LM Studio chat demoted here as
  * Local LM (top-level Chat is now the Cortex memory chat). */
 
-type SystemTab = 'pi' | 'data' | 'activity' | 'lemonsync' | 'locallm' | 'video'
+type SystemTab = 'notes' | 'data' | 'activity' | 'lemonsync' | 'locallm' | 'video'
 
 export function SystemPage({
   status,
@@ -27,9 +28,13 @@ export function SystemPage({
   status: StatusInfo
   visionRunning: boolean
 }) {
-  const [tab, setTab] = useState<SystemTab>('pi')
+  const [tab, setTab] = useState<SystemTab>('data')
+  const { notes, fetchNotes, sendNote } = usePi()
+  useEffect(() => {
+    if (tab === 'notes') fetchNotes()
+  }, [tab, fetchNotes])
   const tabs: { id: SystemTab; label: string }[] = [
-    { id: 'pi', label: 'Pi' },
+    { id: 'notes', label: 'Notes' },
     { id: 'data', label: 'Data' },
     { id: 'activity', label: 'Activity' },
     { id: 'lemonsync', label: 'Lemon Sync' },
@@ -38,7 +43,7 @@ export function SystemPage({
       ? [{ id: 'video' as SystemTab, label: 'Video' }]
       : []),
   ]
-  const active = tab === 'video' && !visionRunning ? 'pi' : tab
+  const active = tab === 'video' && !visionRunning ? 'data' : tab
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -58,7 +63,11 @@ export function SystemPage({
         ))}
       </div>
       <div className="flex-1 flex flex-col overflow-hidden">
-        {active === 'pi' && <PiPage status={status} />}
+        {active === 'notes' && (
+          <div className="flex-1 overflow-y-auto p-6">
+            <NotesPanel notes={notes} onRefresh={fetchNotes} onSend={sendNote} isOnline={status.coreOnline} />
+          </div>
+        )}
         {active === 'data' && <DataPage status={status} />}
         {active === 'activity' && (
           <div className="flex-1 overflow-y-auto p-6">

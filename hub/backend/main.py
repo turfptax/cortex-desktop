@@ -20,11 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from config import settings
 from routers import (
     chat,
-    training,
     pi,
-    games,
     data,
-    learning,
     overseer,
     plugins as plugins_router,
     transcribe,
@@ -203,11 +200,8 @@ app.add_middleware(
 
 # Mount routers
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
-app.include_router(training.router, prefix="/api/training", tags=["training"])
 app.include_router(pi.router, prefix="/api/pi", tags=["pi"])
-app.include_router(games.router, prefix="/api/games", tags=["games"])
 app.include_router(data.router, prefix="/api/data", tags=["data"])
-app.include_router(learning.router, prefix="/api/learning", tags=["learning"])
 app.include_router(settings_router.router, prefix="/api/settings", tags=["settings"])
 app.include_router(overseer.router, prefix="/api/overseer", tags=["overseer"])
 app.include_router(transcribe.router, prefix="/api/transcribe", tags=["transcribe"])
@@ -233,38 +227,9 @@ async def health():
     return {
         "status": "ok",
         "lmstudio_url": settings.lmstudio_url,
-        "pi_url": settings.pi_base_url,
-        "training_dir": settings.training_dir,
+        "core_url": settings.pi_base_url,
     }
 
-
-@app.get("/api/hub/status")
-async def hub_status():
-    """Hub availability endpoint — called by Pi before dream training.
-
-    Returns whether this Hub is available to run training, what GPU is
-    present, and any discovered LM Studio servers on the network.
-    """
-    import platform
-    gpu_info = "unknown"
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            gpu_info = result.stdout.strip()
-    except Exception:
-        pass
-
-    return {
-        "available": True,
-        "hostname": platform.node(),
-        "gpu": gpu_info,
-        "training_dir": settings.training_dir,
-        "lmstudio_url": settings.lmstudio_url,
-    }
 
 
 # Serve pre-built frontend when running in desktop mode

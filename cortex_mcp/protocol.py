@@ -67,20 +67,9 @@ def parse_response(lines):
 def send_command(bridge, command, payload=None, timeout=None):
     """Send a Cortex command via the bridge and return a formatted result string.
 
-    If the current transport fails with a connection error, resets the bridge
-    so the next call re-evaluates the transport hierarchy (WiFi -> daemon -> serial).
-
-    When using WiFi transport, also sends a TOOL:<command> notification to the
-    ESP32 over serial so the display can show icon activity.
+    If the call fails with a connection error, resets the bridge so
+    the next call rebuilds it.
     """
-    # Notify ESP32 of tool call (for display icons when using WiFi)
-    try:
-        from cortex_mcp.server import _notify_esp32
-        if hasattr(bridge, '_host'):  # WiFiBridge has _host, serial bridges don't
-            _notify_esp32(command)
-    except Exception:
-        pass
-
     msg = build_command(command, payload)
     try:
         lines = bridge.send_and_wait(msg, timeout=timeout)
@@ -91,7 +80,7 @@ def send_command(bridge, command, payload=None, timeout=None):
             _reset_bridge()
         except ImportError:
             pass
-        return "Transport error (will retry with next transport): {}".format(e)
+        return "Transport error (core unreachable): {}".format(e)
     except Exception as e:
         # urllib errors (URLError etc.) also indicate WiFi failure
         err_name = type(e).__name__
@@ -101,12 +90,12 @@ def send_command(bridge, command, payload=None, timeout=None):
                 _reset_bridge()
             except ImportError:
                 pass
-            return "Transport error (will retry with next transport): {}".format(e)
+            return "Transport error (core unreachable): {}".format(e)
         return "Error: {}".format(e)
 
     resp = parse_response(lines)
     if resp is None:
-        return "No response (timeout). Check Cortex Link and Core are connected."
+        return "No response (timeout). Check the Cortex core URL in Settings."
     if resp["type"] == "ERR":
         return "Error from Core: {}".format(resp["data"])
     if resp["type"] == "ACK":

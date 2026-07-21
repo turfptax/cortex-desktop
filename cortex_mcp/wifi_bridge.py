@@ -1,16 +1,11 @@
-"""WiFi HTTP bridge to Cortex Core (Pi Zero 2 W).
+"""HTTP bridge to the Cortex core.
 
-WiFiBridge is a drop-in replacement for SerialBridge that routes
-commands directly to the Pi over HTTP, bypassing the ESP32 BLE chain.
+WiFiBridge routes commands to the core over HTTPS. In the cloud
+topology pi_host carries a full URL (the gateway's authenticated
+/core proxy); a bare host keeps the legacy Pi form.
 
-Data flow:
-    AI Agent -> MCP Server -> WiFiBridge -> HTTP -> Pi (direct)
-
-Fallback (when Pi WiFi unreachable):
-    AI Agent -> MCP Server -> DaemonBridge -> USB Serial -> ESP32 -> BLE -> Pi
-
-Uses only urllib.request (stdlib) -- no new dependencies.
-Auth: HTTP Basic Auth (username:password) instead of bearer tokens.
+Uses only urllib.request (stdlib). Auth: HTTP Basic (username +
+service token).
 """
 
 import base64
@@ -19,20 +14,10 @@ import os
 import urllib.request
 import urllib.error
 
-DEFAULT_PI_HOST = "10.0.0.25"
+DEFAULT_PI_HOST = "https://cortex.turfptax.com/core"
 DEFAULT_PI_PORT = 8420
 DEFAULT_PI_USERNAME = "cortex"
 DEFAULT_PI_PASSWORD = "cortex"
-DISCOVERY_FILE = os.path.join(os.path.expanduser("~"), ".cortex-wifi.json")
-
-
-def _load_discovery():
-    """Load discovered Pi config from ~/.cortex-wifi.json (set by BLE auto-discovery)."""
-    try:
-        with open(DISCOVERY_FILE, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {}
 
 
 def _load_user_config():
@@ -63,13 +48,10 @@ def _load_user_config():
 
 
 def get_pi_host():
-    """Get Pi IP: env var > user config.json > BLE discovery > default.
+    """Core host or full URL: env var > user config.json > default.
 
-    Phone-bridge ask 1 (2026-06-10): the Pi is OPTIONAL. An explicit
-    empty pi_host in config.json means "no Pi" and returns "" without
-    falling through to discovery/default; is_pi_reachable() then
-    short-circuits False and the transport picker goes straight to
-    the dongle/daemon path.
+    An explicit empty pi_host in config.json means "no core configured"
+    and returns "" so is_pi_reachable() short-circuits False.
     """
     env = os.environ.get("CORTEX_PI_HOST", "")
     if env:
@@ -77,21 +59,18 @@ def get_pi_host():
     user = _load_user_config()
     if "pi_host" in user:
         return user["pi_host"] or ""
-    discovered = _load_discovery()
-    return discovered.get("ip", DEFAULT_PI_HOST)
+    return DEFAULT_PI_HOST
 
 
 def get_pi_port():
-    """Get Pi HTTP port: env var > user config.json > BLE discovery > default."""
+    """Core HTTP port (legacy bare-host form): env > config > default."""
     env = os.environ.get("CORTEX_PI_PORT", "")
     if env:
         return int(env)
     user = _load_user_config()
     if user.get("pi_port"):
         return int(user["pi_port"])
-    discovered = _load_discovery()
-    return discovered.get("port", DEFAULT_PI_PORT)
-
+    return DEFAULT_PI_PORT
 
 def get_pi_credentials():
     """Get Pi Basic Auth credentials: env var > user config.json > default."""

@@ -56,14 +56,6 @@ export function ChatPage() {
     fetchModels()
   }, [fetchModels])
 
-  // Detect if selected model is fine-tuned
-  const isFineTuned =
-    selectedModel &&
-    (selectedModel.includes('pet') ||
-      selectedModel.includes('finetuned') ||
-      selectedModel.includes('fine-tuned') ||
-      selectedModel.includes('lora'))
-
   // Handle save dialog
   const handleSavePreset = () => {
     const name = savePresetName.trim()
@@ -119,12 +111,6 @@ export function ChatPage() {
               </svg>
             </button>
 
-            {/* Fine-tuned badge */}
-            {isFineTuned && (
-              <span className="text-xs px-1.5 py-0.5 rounded bg-success/20 text-success font-medium">
-                fine-tuned
-              </span>
-            )}
 
             {tokenEstimate > 0 && (
               <span
@@ -305,25 +291,9 @@ export function ChatPage() {
             </div>
           </div>
         )}
-        {messages.map((msg, i) => {
-          let prevUser: string | undefined
-          if (msg.role === 'assistant' && !msg.isSummary) {
-            for (let j = i - 1; j >= 0; j--) {
-              if (messages[j].role === 'user') {
-                prevUser = messages[j].content
-                break
-              }
-            }
-          }
-          return (
-            <MessageBubble
-              key={i}
-              message={msg}
-              previousUserMessage={prevUser}
-              isStreaming={isStreaming && i === messages.length - 1}
-            />
-          )
-        })}
+        {messages.map((msg, i) => (
+          <MessageBubble key={i} message={msg} />
+        ))}
       </div>
 
       {/* Input */}

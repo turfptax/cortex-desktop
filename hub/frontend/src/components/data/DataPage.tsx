@@ -68,15 +68,15 @@ export function DataPage({ status }: Props) {
             </h2>
             <span
               className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${
-                status.piOnline
+                status.coreOnline
                   ? 'bg-success/20 text-success'
                   : 'bg-text-muted/20 text-text-muted'
               }`}
             >
-              {status.piOnline && (
+              {status.coreOnline && (
                 <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-pulse" />
               )}
-              {status.piOnline ? 'Connected' : 'Offline'}
+              {status.coreOnline ? 'Connected' : 'Offline'}
             </span>
           </div>
           <div className="flex items-center gap-3">

@@ -223,8 +223,8 @@ _PAGE_HTML = r"""<!doctype html>
       } catch (e) {
         briefEl.textContent =
           "Failed to load the brief.\n\n" + e.message +
-          "\n\nIs the Hub backend connected to the Pi at " +
-          "10.0.0.25:8420?";
+          "\n\nIs the Hub backend connected to the Cortex core " +
+          "(Settings > Cortex Cloud)?";
         setStatus("error — see panel", "err");
         copyBtn.disabled = true;
       }

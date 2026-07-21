@@ -158,8 +158,13 @@ class TestConnectionRequest(BaseModel):
 
 @router.post("/test-connection")
 async def test_connection(req: TestConnectionRequest):
-    """Test if a Cortex Pi is reachable at the given address."""
-    url = f"http://{req.host}:{req.port}/health"
+    """Test if the Cortex core is reachable: a full URL (the cloud
+    gateway's /core proxy) is used verbatim; a bare host keeps the
+    legacy Pi form."""
+    if "://" in req.host:
+        url = req.host.rstrip("/") + "/health"
+    else:
+        url = f"http://{req.host}:{req.port}/health"
     try:
         start = time.monotonic()
         async with httpx.AsyncClient() as client:
@@ -181,104 +186,6 @@ async def test_connection(req: TestConnectionRequest):
     except Exception as e:
         return {"ok": True, "reachable": False, "error": str(e)}
 
-
-# ── POST /settings/scan ──
-
-async def _check_host(ip: str, port: int, timeout: float = 0.5) -> Optional[dict]:
-    """Try to connect to a host on the given port."""
-    try:
-        start = time.monotonic()
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(ip, port),
-            timeout=timeout,
-        )
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        writer.close()
-        await writer.wait_closed()
-
-        # Try to get health info
-        hostname = ""
-        try:
-            async with httpx.AsyncClient() as client:
-                r = await client.get(
-                    f"http://{ip}:{port}/health",
-                    auth=("cortex", "cortex"),
-                    timeout=2.0,
-                )
-                if r.status_code == 200:
-                    data = r.json() if "json" in r.headers.get("content-type", "") else {}
-                    hostname = data.get("hostname", "")
-        except Exception:
-            pass
-
-        return {
-            "ip": ip,
-            "port": port,
-            "response_ms": elapsed_ms,
-            "hostname": hostname or ip,
-        }
-    except Exception:
-        return None
-
-
-def _get_local_subnets() -> list[str]:
-    """Get local IP addresses to derive subnets to scan."""
-    ips = []
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            ip = info[4][0]
-            if not ip.startswith("127.") and not ip.startswith("169.254."):
-                ips.append(ip)
-    except Exception:
-        pass
-
-    # Fallback: try connecting to a public DNS to find local IP
-    if not ips:
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ips.append(s.getsockname()[0])
-            s.close()
-        except Exception:
-            pass
-
-    return ips
-
-
-@router.post("/scan")
-async def scan_network():
-    """Scan local subnets for Cortex Pi devices (port 8420)."""
-    local_ips = _get_local_subnets()
-    if not local_ips:
-        return {"ok": False, "error": "Could not determine local network", "devices": []}
-
-    # Build list of IPs to scan (all /24 subnets)
-    targets = set()
-    for local_ip in local_ips:
-        parts = local_ip.rsplit(".", 1)
-        if len(parts) == 2:
-            for i in range(1, 255):
-                ip = f"{parts[0]}.{i}"
-                if ip not in local_ips:  # Skip self
-                    targets.add(ip)
-
-    # Scan in parallel (batches of 50 to avoid overwhelming)
-    devices = []
-    target_list = sorted(targets)
-
-    for batch_start in range(0, len(target_list), 50):
-        batch = target_list[batch_start:batch_start + 50]
-        tasks = [_check_host(ip, 8420, timeout=0.5) for ip in batch]
-        results = await asyncio.gather(*tasks)
-        for result in results:
-            if result is not None:
-                devices.append(result)
-
-    return {
-        "ok": True,
-        "scanned_subnets": [f"{ip.rsplit('.', 1)[0]}.0/24" for ip in local_ips],
-        "devices": devices,
-    }
 
 
 # ── GET /settings/mcp-config ──

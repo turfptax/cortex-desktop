@@ -12,7 +12,7 @@ from typing import Optional
 
 
 DEFAULT_CONFIG = {
-    "pi_host": "10.0.0.25",
+    "pi_host": "https://cortex.turfptax.com/core",
     "pi_port": 8420,
     "pi_username": "cortex",
     "pi_password": "cortex",

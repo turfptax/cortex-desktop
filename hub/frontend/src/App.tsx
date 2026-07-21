@@ -28,7 +28,7 @@ const LEGACY_ALIASES: Record<string, Page> = {
 
 export interface StatusInfo {
   lmstudioOnline: boolean
-  piOnline: boolean
+  coreOnline: boolean
 }
 
 /** The URL hash is the source of truth for the top-level tab, so
@@ -75,7 +75,7 @@ async function fetchHealthSnapshot(): Promise<HealthSnapshot> {
         chatHealth.status === 'fulfilled'
           ? chatHealth.value.lmstudio_online
           : false,
-      piOnline:
+      coreOnline:
         piHealth.status === 'fulfilled' ? piHealth.value.online : false,
     },
   }
@@ -93,7 +93,7 @@ function App() {
     queryFn: fetchHealthSnapshot,
     refetchInterval: 15_000,
   })
-  const status = health?.status ?? { lmstudioOnline: false, piOnline: false }
+  const status = health?.status ?? { lmstudioOnline: false, coreOnline: false }
 
   const { plugins } = useInstalledPlugins()
   const visionRunning =
