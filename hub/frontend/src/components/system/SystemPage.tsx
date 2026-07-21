@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { type StatusInfo } from '../../App'
 import { NotesPanel } from './NotesPanel'
 import { usePi } from '../../hooks/usePi'
+import { useCloudMode } from '../../hooks/useCloudMode'
 import { DataPage } from '../data/DataPage'
 import { VideoPage } from '../video/VideoPage'
 import { LemonSyncPanel } from './LemonSyncPanel'
@@ -29,21 +30,31 @@ export function SystemPage({
   visionRunning: boolean
 }) {
   const [tab, setTab] = useState<SystemTab>('data')
+  const { cloud } = useCloudMode()
   const { notes, fetchNotes, sendNote } = usePi()
   useEffect(() => {
     if (tab === 'notes') fetchNotes()
   }, [tab, fetchNotes])
+  // Lemon Sync and Local LM are desktop-only (Lemon egress runs on the
+  // workstation; Local LM talks to LM Studio there). Hidden in the cloud
+  // Hub, where they have no home. Video already appears only when the
+  // local vision sidecar is running, which never happens in the cloud.
   const tabs: { id: SystemTab; label: string }[] = [
     { id: 'notes', label: 'Notes' },
     { id: 'data', label: 'Data' },
     { id: 'activity', label: 'Activity' },
-    { id: 'lemonsync', label: 'Lemon Sync' },
-    { id: 'locallm', label: 'Local LM' },
+    ...(cloud ? [] : [{ id: 'lemonsync' as SystemTab, label: 'Lemon Sync' }]),
+    ...(cloud ? [] : [{ id: 'locallm' as SystemTab, label: 'Local LM' }]),
     ...(visionRunning
       ? [{ id: 'video' as SystemTab, label: 'Video' }]
       : []),
   ]
-  const active = tab === 'video' && !visionRunning ? 'data' : tab
+  // If a hidden tab is somehow active (e.g. a stale deep link), fall
+  // back to Data rather than render a desktop-only panel.
+  const hidden = (t: SystemTab) =>
+    (t === 'video' && !visionRunning) ||
+    (cloud && (t === 'lemonsync' || t === 'locallm'))
+  const active = hidden(tab) ? 'data' : tab
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">

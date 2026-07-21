@@ -11,6 +11,7 @@ const ExplorerPanel = lazy(() =>
 const EcosystemMapPanel = lazy(() =>
   import('./EcosystemMapPanel').then((m) => ({ default: m.EcosystemMapPanel })))
 import { useVoiceMode } from '../../hooks/useVoiceMode'
+import { useCloudMode } from '../../hooks/useCloudMode'
 import { NotificationsPanel } from './panels/NotificationsPanel'
 import { ChatPanel } from './panels/ChatPanel'
 import { InsightsPanel } from './panels/InsightsPanel'
@@ -1040,6 +1041,10 @@ export function OverseerPage() {
   }
 
   const voice = useVoiceMode({ sendVoiceTurn: handleVoiceTurn })
+  // The Voice tab drives the Pipecat agent, a local WebRTC sidecar with
+  // no cloud path; hide it in the cloud Hub. The chat mic (voice mode)
+  // stays: it uses the gateway's Groq STT + ElevenLabs TTS routes.
+  const { cloud: isCloud } = useCloudMode()
 
   const handleSendChat = async () => {
     const message = chatInput.trim()
@@ -1445,7 +1450,7 @@ export function OverseerPage() {
                 ['ecosystem', 'Map'],
                 ['explorer', 'Explorer'],
                 ['contacts', 'Contacts'],
-                ['voice', 'Voice'],
+                ...(isCloud ? [] : [['voice', 'Voice'] as const]),
                 ['notifications', `Bell${notificationsUnread > 0 ? ` (${notificationsUnread})` : ''}`],
               ] as const).map(([id, label]) => (
                 <button
