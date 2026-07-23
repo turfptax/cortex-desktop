@@ -112,7 +112,7 @@ export function NotesPanel({ notes, onRefresh, onSend, isOnline }: Props) {
         </div>
         {notes.length === 0 ? (
           <p className="text-sm text-text-muted text-center py-4">
-            {isOnline ? 'No notes found' : 'Pi is offline'}
+            {isOnline ? 'No notes found' : 'Cortex is unreachable'}
           </p>
         ) : (
           <div className="space-y-2">

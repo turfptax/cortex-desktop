@@ -106,8 +106,8 @@ export function SettingsPage() {
               Welcome to Cortex Desktop!
             </h2>
             <p className="text-sm text-text-secondary">
-              Let's get you connected. Scan your network to find your Pi, or enter the IP address manually below.
-              Once connected, set up Claude MCP integration to control your Pi from Claude.
+              Let's get you connected. Enter your Cortex cloud URL and service token below.
+              Once connected, set up Claude MCP integration so Claude can work with your Cortex.
             </p>
           </div>
         )}

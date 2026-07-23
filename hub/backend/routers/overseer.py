@@ -396,7 +396,7 @@ async def chat_upload(files: list[UploadFile] = File(...)):
         except httpx.HTTPError as e:
             rejected.append({
                 "filename": original, "size": size,
-                "error": "Pi upload failed: {}".format(str(e)[:200]),
+                "error": "Cortex upload failed: {}".format(str(e)[:200]),
             })
         except Exception as e:
             log.exception("chat upload failed")

@@ -992,7 +992,7 @@ function YearView({ year, today, heat, loading, error, onRetry, onPickDay }: {
         )}
         {error && (
           <span className="ml-2 text-xs font-normal text-red-400">
-            corpus unreachable (is the Pi up?){' '}
+            corpus unreachable (is the cloud up?){' '}
             <button
               onClick={onRetry}
               className="underline cursor-pointer hover:text-red-300"
@@ -1431,7 +1431,7 @@ function DayCorpusCard({ date }: { date: string }) {
       {empty && (
         <div className="text-xs text-text-muted">
           {state === 'error'
-            ? 'Corpus unreachable (is the Pi up?).'
+            ? 'Corpus unreachable (is the cloud up?).'
             : 'No corpus data for this day.'}
         </div>
       )}

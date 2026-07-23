@@ -53,7 +53,7 @@ def _headers() -> dict:
 # pi_host means "no Pi configured" (Azure pivot; the app must run
 # with only the dongle and/or the Gateway). Every Pi call returns a
 # fast, consistent not-configured error instead of a network timeout.
-_NOT_CONFIGURED = "Pi not configured"
+_NOT_CONFIGURED = "Cortex cloud not configured"
 
 
 def pi_configured() -> bool:
@@ -93,9 +93,9 @@ async def send_command(command: str, payload: dict | None = None) -> dict:
         resp.raise_for_status()
         return resp.json()
     except httpx.TimeoutException:
-        return {"error": "Pi request timed out", "online": False}
+        return {"error": "Cortex request timed out", "online": False}
     except httpx.ConnectError:
-        return {"error": "Cannot connect to Pi", "online": False}
+        return {"error": "Cannot connect to Cortex", "online": False}
     except Exception as e:
         return {"error": str(e)}
 
@@ -131,9 +131,9 @@ async def plugin_call(
         resp.raise_for_status()
         return resp.json()
     except httpx.TimeoutException:
-        return {"ok": False, "error": "Pi request timed out"}
+        return {"ok": False, "error": "Cortex request timed out"}
     except httpx.ConnectError:
-        return {"ok": False, "error": "Cannot connect to Pi"}
+        return {"ok": False, "error": "Cannot connect to Cortex"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

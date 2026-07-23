@@ -1324,7 +1324,7 @@ export function OverseerPage() {
   const handleImportSelected = async () => {
     if (selectedPaths.size === 0) return
     const paths = Array.from(selectedPaths)
-    setBusy(`Uploading ${paths.length} file(s) to Pi…`)
+    setBusy(`Uploading ${paths.length} file(s) to the cloud…`)
     setLastAction('')
     setError('')
     try {
@@ -1338,7 +1338,7 @@ export function OverseerPage() {
       })
       const c = r?.counts || {}
       setLastAction(
-        `Import: ${c.imported ?? 0} new, ${c.skipped ?? 0} already on Pi (dedup), ${c.failed ?? 0} failed (of ${c.requested ?? 0})`
+        `Import: ${c.imported ?? 0} new, ${c.skipped ?? 0} already in Cortex (dedup), ${c.failed ?? 0} failed (of ${c.requested ?? 0})`
       )
       setSelectedPaths(new Set())
       await refreshAll()
@@ -1384,7 +1384,7 @@ export function OverseerPage() {
   }
 
   const handleDeleteImport = async (id: string) => {
-    if (!confirm(`Delete import ${id}? The .jsonl on Pi will be removed.`)) return
+    if (!confirm(`Delete import ${id}? The stored .jsonl in the cloud will be removed.`)) return
     setBusy(`Deleting ${id}…`)
     setError('')
     try {
@@ -1693,7 +1693,7 @@ export function OverseerPage() {
             </button>
             <div className="ml-auto flex items-center gap-3 text-[11px]">
               <span className="text-text-muted">
-                <span className="text-text-primary font-medium">{imports.length}</span> on Pi
+                <span className="text-text-primary font-medium">{imports.length}</span> in Cortex
               </span>
               {scan && (
                 <>
@@ -1715,7 +1715,7 @@ export function OverseerPage() {
           {!scan && (
             <div className="border border-dashed border-border rounded-lg p-6 text-center text-xs text-text-muted">
               Scan to see local Claude Code sessions on this machine.
-              The Pi will hash them, mark which are already imported, and let
+              Cortex will hash them, mark which are already imported, and let
               you pick which new ones to upload.
               <div className="mt-2 text-[11px] text-text-muted/70">
                 Other sources (ChatGPT, etc.) come in via direct import paths
@@ -1793,7 +1793,7 @@ export function OverseerPage() {
                           )}
                           {knownCount > 0 && (
                             <span className="px-2 py-0.5 rounded-full bg-text-muted/10 text-text-muted/80 uppercase tracking-wide">
-                              {knownCount} on Pi
+                              {knownCount} in Cortex
                             </span>
                           )}
                           {newRows.length > 0 && (
@@ -1848,7 +1848,7 @@ export function OverseerPage() {
                                 </span>
                                 {known ? (
                                   <span className="shrink-0 text-[9px] uppercase tracking-wider text-text-muted/70">
-                                    on Pi
+                                    in Cortex
                                   </span>
                                 ) : (
                                   <span className="shrink-0 text-[9px] uppercase tracking-wider text-success font-semibold">

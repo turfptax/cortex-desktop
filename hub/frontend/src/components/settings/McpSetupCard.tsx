@@ -49,7 +49,7 @@ export function McpSetupCard() {
       </h2>
 
       <p className="text-sm text-text-secondary mb-4">
-        Connect Cortex to Claude Desktop or Claude Code for AI-powered interaction with your Pi.
+        Connect Cortex to Claude Desktop or Claude Code for AI-powered interaction with your Cortex memory.
       </p>
 
       {/* Step 1: Install cortex-mcp */}

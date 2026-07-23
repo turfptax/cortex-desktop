@@ -66,7 +66,7 @@ def test_plugin_call_timeout_maps_to_error(monkeypatch):
 
     monkeypatch.setattr(pi_client, "_client", make_client(handler))
     result = asyncio.run(pi_client.plugin_call("overseer", "GET", "/status"))
-    assert result == {"ok": False, "error": "Pi request timed out"}
+    assert result == {"ok": False, "error": "Cortex request timed out"}
 
 
 def test_plugin_call_connect_error_maps_to_error(monkeypatch):
@@ -75,7 +75,7 @@ def test_plugin_call_connect_error_maps_to_error(monkeypatch):
 
     monkeypatch.setattr(pi_client, "_client", make_client(handler))
     result = asyncio.run(pi_client.plugin_call("overseer", "GET", "/status"))
-    assert result == {"ok": False, "error": "Cannot connect to Pi"}
+    assert result == {"ok": False, "error": "Cannot connect to Cortex"}
 
 
 def test_plugin_call_http_error_is_caught(monkeypatch):
