@@ -225,6 +225,15 @@ def main():
     )
     server_thread.start()
 
+    # Cortex Agent CP1: the session watcher (docs/CORTEX_AGENT_PLAN.md
+    # section 3). Gated per cycle on config ingest_enabled, so toggling
+    # the key takes effect without a restart.
+    from cortex_local.ingester import run_loop as _ingest_loop
+    ingest_thread = threading.Thread(
+        target=_ingest_loop, args=(shutdown_event,), daemon=True,
+    )
+    ingest_thread.start()
+
     # Wait a moment for the server to start, then open browser
     if config.get("auto_open_browser", True):
         def _open_browser():

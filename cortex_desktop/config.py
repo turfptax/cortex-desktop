@@ -23,6 +23,13 @@ DEFAULT_CONFIG = {
     "auto_open_browser": True,
     "auto_start_daemon": False,
     "first_run": True,
+    # Cortex Agent CP1 (docs/CORTEX_AGENT_PLAN.md section 2.6 subset):
+    # the background session watcher.
+    "ingest_enabled": True,
+    "ingest_idle_minutes": 30,
+    "ingest_scan_interval_seconds": 300,
+    "ingest_max_per_cycle": 20,
+    "ingest_upload_delay_seconds": 3,
 }
 
 
