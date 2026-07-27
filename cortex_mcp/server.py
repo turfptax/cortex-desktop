@@ -301,12 +301,12 @@ def get_context() -> str:
     curated 30-second brief about Tory (who he is, what he's working
     on, what he's thinking about) that's actually useful at session
     boot. `get_context` returns 29 fields including a lot of
-    overseer-internal operational state (queue depths, sibling
+    curator-internal operational state (queue depths, sibling
     counters, gist source distribution, automation rollups) most
     consumers don't need.
 
     Use `get_context` when you specifically need to reason about the
-    Cortex system's plumbing — overseer's own queue, journal, import
+    Cortex system's plumbing — the curator's own queue, journal, import
     backlog, rollups, etc. Otherwise use `cortex_intro`.
 
     Working memory items carry `token` fields like "q:42" (question),
@@ -314,7 +314,7 @@ def get_context() -> str:
     "n:1" (future-overseer note), "t:5" (theme), "b:7" (blindspot),
     "j:1" (journal entry), "e:3" (episode), "dial:2" (dialectic),
     "nar:1" (temporal narrative), "hj:1" (human journal entry).
-    Pass any of these to cortex_overseer_detail to drill in.
+    Pass any of these to cortex_detail to drill in.
     """
     try:
         return send_command(_get_bridge_lazy(), "get_context", timeout=20)
@@ -328,7 +328,7 @@ def _overseer_plugin_call(method, route, payload=None, timeout=20):
     bridge = _get_bridge_lazy()
     fn = getattr(bridge, "plugin_call", None)
     if fn is None:
-        return None, ("Overseer routes need the WiFi bridge to the Pi "
+        return None, ("Cortex routes need the WiFi bridge to the Pi "
                       "(BLE/serial fallback can't reach plugin endpoints).")
     try:
         result = fn("overseer", method, route, payload, timeout=timeout)
@@ -342,8 +342,8 @@ def _overseer_plugin_call(method, route, payload=None, timeout=20):
 
 
 @mcp.tool()
-def cortex_overseer_detail(token: str) -> str:
-    """Drill into one item from the Overseer's working memory.
+def cortex_detail(token: str) -> str:
+    """Drill into one item from Cortex's working memory.
 
     Working memory (returned by get_context) carries breadth — it lists
     questions, patterns, drift, rollups, gists, themes, etc., but each
@@ -359,8 +359,8 @@ def cortex_overseer_detail(token: str) -> str:
       e:3     — episode
       t:5     — theme
       r:18    — automation rollup (per-project per-day digest)
-      n:1     — note from a prior overseer instance to future ones
-      j:1     — overseer journal entry (the thinking layer)
+      n:1     — note from a prior curator instance to future ones
+      j:1     — curator journal entry (the thinking layer)
       hj:8    — human journal entry (the user's own free-form/voice journal)
       nar:5   — temporal narrative (daily/weekly/monthly/yearly rollup)
       b:7     — known blindspot
@@ -387,6 +387,17 @@ def cortex_overseer_detail(token: str) -> str:
     if err:
         return "Error: {}".format(err)
     return _json.dumps(result, indent=2, default=str)
+
+
+# OPT-9 rename sweep (OPT_PLAN 3.5): `cortex_detail` is the primary
+# name. The old name stays registered as a compatibility alias so
+# connected clients don't break; it deprecates one release later.
+mcp.add_tool(
+    cortex_detail, name="cortex_overseer_detail",
+    description=(cortex_detail.__doc__ or "") + (
+        "\n\nDEPRECATED NAME: renamed to `cortex_detail`. This alias "
+        "responds identically; new integrations should call "
+        "`cortex_detail`."))
 
 
 @mcp.tool()
@@ -416,7 +427,7 @@ def cortex_intro(format: str = "markdown") -> str:
     demotes ops to a single sub-key.
 
     Drill tokens (`q:N`, `g:N`, `t:N`, `d:N`, `b:N`, `n:N`) in the
-    brief work with `cortex_overseer_detail` for the full row.
+    brief work with `cortex_detail` for the full row.
 
     Args:
         format: 'markdown' (default — render as readable doc) or
@@ -447,7 +458,7 @@ def cortex_search(
     caller_id: str = "",
     mode: str = "auto",
 ) -> str:
-    """Search across the Overseer's interpretive corpus - substring
+    """Search across Cortex's interpretive corpus - substring
     AND semantic (vector) in one call.
 
     mode='auto' (default): substring hits PLUS a `semantic` list of
@@ -469,17 +480,17 @@ def cortex_search(
       1. Call cortex_search("topic of interest") to discover what
          the corpus knows.
       2. Pick the most-promising hits by snippet + kind.
-      3. Pass the hit's `token` to cortex_overseer_detail for the
+      3. Pass the hit's `token` to cortex_detail for the
          full row + linked artifacts.
 
     This is NOT the right tool for:
       - Looking up notes (use notes_search — different table).
-      - Asking the overseer a question (use overseer_chat — that
+      - Asking Cortex a question (use cortex_chat — that
         renders working memory and runs Opus).
-      - Reading a specific known token (use cortex_overseer_detail
+      - Reading a specific known token (use cortex_detail
         — direct lookup, no search).
 
-    Each hit is recorded as a pull_event on the Pi so the overseer
+    Each hit is recorded as a pull_event on the Pi so the curator
     can see what external AIs are looking for. That signal is how
     gist prompts evolve.
 
@@ -495,7 +506,7 @@ def cortex_search(
         caller_id: Optional free-form id. Convention (2026-06-06,
             looper iter #2): if you're automation (a script, a
             looper iteration, a test harness), tag yourself so the
-            overseer's F1 adoption signal (caller_class =
+            curator's F1 adoption signal (caller_class =
             'organic-external') stays honest. Examples:
               'looper-iter5-cleanup'  → automation:looper
               'phase2-checkpoint'     → automation:bootstrap
@@ -550,10 +561,10 @@ def cortex_search(
 
 @mcp.tool()
 def cortex_sub_agents() -> str:
-    """List the Cortex Overseer's B/C sub-agents with their current
+    """List Cortex's B/C sub-agents with their current
     model tier, default tier, and per-agent invocation history.
 
-    Sub-agents are stateless helpers the overseer dispatches for
+    Sub-agents are stateless helpers the curator dispatches for
     judgment-call work (e.g. b_theme_check audits a theme's confidence
     calibration). Each runs at one of four tiers — flash (cheap), glm
     (Z.ai GLM-5.2: open-weights, ~Opus-class coding/agentic at ~1/6 the
@@ -639,7 +650,7 @@ def cortex_sub_agent_performance(
     + the model that actually ran.
 
     Use this when deciding whether to upgrade a sub-agent's tier.
-    Rule of thumb (per overseer's guidance): if avg rating is <3 over
+    Rule of thumb (per the curator's guidance): if avg rating is <3 over
     last 5 rated dispatches, consider promoting one tier. If avg is
     >=4, consider demoting to save cost.
 
@@ -670,15 +681,15 @@ def cortex_sub_agent_performance(
 
 
 @mcp.tool()
-def overseer_chat(message: str, timeout: int = 120) -> str:
-    """Chat directly with the Overseer. Returns its full reply.
+def cortex_chat(message: str, timeout: int = 120) -> str:
+    """Chat directly with Cortex. Returns its full reply.
 
-    This is the AI-conversation counterpart to ``cortex_overseer_detail``
-    (which is read-only graph drill-down). The Overseer is the long-lived
-    memory/reflection agent that runs on the Pi as the ``overseer`` plugin.
+    This is the AI-conversation counterpart to ``cortex_detail``
+    (which is read-only graph drill-down). The curator is the long-lived
+    memory/reflection agent that runs in the cloud as the ``overseer`` plugin.
     It reads your notes, sessions, and imported AI conversations and
     builds working memory + summaries + open questions + drift + themes
-    on top of them. ``overseer_chat`` sends a message to the chat endpoint
+    on top of them. ``cortex_chat`` sends a message to the chat endpoint
     (POST /plugins/overseer/chat), which renders the working-memory
     artifact, recent gists/themes/questions, and your message into a
     prompt and returns the model's reply.
@@ -689,31 +700,31 @@ def overseer_chat(message: str, timeout: int = 120) -> str:
     Daily call budget applies (currently 250/day, $5/day).
 
     When to use:
-      - To get a real-time react/synthesis from the overseer about
+      - To get a real-time react/synthesis from Cortex about
         something happening NOW. (Milestones, decisions, open questions,
         observations.)
-      - To ask the overseer what it remembers about a specific person,
+      - To ask Cortex what it remembers about a specific person,
         project, theme, or time period, anchored in its own analytical
         state (not just the raw notes).
       - To get it to draft an entry for ``future_overseer_notes`` or
         suggest schema changes to its own analytical surfaces — the
-        overseer has demonstrated capacity to self-reflect and propose
+        curator has demonstrated capacity to self-reflect and propose
         edits to its own context plumbing.
 
     When NOT to use:
       - To ask a generic LLM question. Use a normal LLM call; the
-        overseer's context prompt is heavy and a generic question
+        curator's context prompt is heavy and a generic question
         wastes the budget.
       - To do passive note-taking. Use ``send_note`` — it's free and
-        the overseer reads notes on its next ingest pass.
+        the curator reads notes on its next ingest pass.
       - To drill into a specific gist/theme/question by token — use
-        ``cortex_overseer_detail`` instead, it's a read-only DB lookup.
+        ``cortex_detail`` instead, it's a read-only DB lookup.
 
-    The overseer can take 15-60 seconds to reply (Opus + heavy context).
+    Cortex can take 15-60 seconds to reply (Opus + heavy context).
     Patience.
 
     Args:
-        message: Your message to the overseer. Free-form. The overseer
+        message: Your message to Cortex. Free-form. Cortex
             sees both this message and its assembled context.
         timeout: Max seconds to wait for a reply (default 120, hard
             cap 300).
@@ -743,6 +754,16 @@ def overseer_chat(message: str, timeout: int = 120) -> str:
     return reply
 
 
+# OPT-9 rename sweep (OPT_PLAN 3.5): `cortex_chat` is the primary name;
+# the old name stays as a compatibility alias, deprecated.
+mcp.add_tool(
+    cortex_chat, name="overseer_chat",
+    description=(cortex_chat.__doc__ or "") + (
+        "\n\nDEPRECATED NAME: renamed to `cortex_chat`. This alias "
+        "responds identically; new integrations should call "
+        "`cortex_chat`."))
+
+
 # ── Slice 9.3: sibling task dispatch tools ────────────────────────
 # These let the overseer dispatch work TO this Claude Code session.
 # Counterpart to overseer_chat (talk TO overseer). Pattern:
@@ -759,26 +780,26 @@ def overseer_chat(message: str, timeout: int = 120) -> str:
 # Auto-surface convention: at session start, any session with the cortex
 # MCP loaded should call sibling_pending() and, if there's queued work,
 # surface using the overseer's exact phrasing:
-#   "Overseer flagged this for review when you opened the session"
+#   "Cortex flagged this for review when you opened the session"
 # (Not notification register — handoff register. Distinction matters.)
 
 @mcp.tool()
 def sibling_pending(limit: int = 50) -> str:
-    """List sibling tasks the overseer has dispatched that are
+    """List sibling tasks the curator has dispatched that are
     waiting to be claimed.
 
-    Use at session start (or when prompted) to see what the overseer
+    Use at session start (or when prompted) to see what the curator
     has queued up for review. Tasks are typically judgment calls the
-    overseer couldn't resolve alone — "is my read of X overfitting,"
+    curator couldn't resolve alone — "is my read of X overfitting,"
     "does theme Y deserve [high] confidence given recent evidence,"
-    etc. Each task carries the prompt + context the overseer attached
+    etc. Each task carries the prompt + context the curator attached
     + the cost budget you should respect.
 
     Returns JSON list of {id, prompt, task_type, cost_budget_usd,
     created_at, created_by, context_json, ...} or "(no pending tasks)".
 
     Auto-surface phrasing (for first-message-of-session use):
-      "Overseer flagged this for review when you opened the session"
+      "Cortex flagged this for review when you opened the session"
     Treat as continuous-work-state, not inbox notification.
 
     Args:
@@ -838,15 +859,15 @@ def sibling_complete(task_id: int, result_text: str,
                      dispatch_quality_notes: str = "") -> str:
     """Submit a completed result for a sibling task.
 
-    The overseer will see the result on its next tick (or sooner if it
+    The curator will see the result on its next tick (or sooner if it
     polls sibling_recent). The result_text is stored permanently and
-    NEVER compacted, so future overseer instances can audit the
+    NEVER compacted, so future curator instances can audit the
     round-trip.
 
     Reciprocal grading is OPTIONAL but strongly encouraged. Pass a
-    dispatch_quality_rating (1-5) to rate the overseer's dispatch
-    quality back at it. Mitigates the "overseer rates only what it
-    already believed as valid" bias the overseer itself flagged when
+    dispatch_quality_rating (1-5) to rate the curator's dispatch
+    quality back at it. Mitigates the "the curator rates only what it
+    already believed as valid" bias the curator itself flagged when
     this surface was designed. Notes can be brief:
       1 = ambiguous / unanswerable as posed
       3 = workable but could have been scoped better
@@ -887,13 +908,13 @@ def sibling_reject(task_id: int, reason: str) -> str:
     Use when the task is out of scope, ambiguous beyond what one
     round-trip can resolve, would clearly exceed the cost budget, or
     isn't something a Claude Code session is the right surface for.
-    The reason text shows up in the overseer's next-tick read so it
+    The reason text shows up in the curator's next-tick read so it
     learns what kinds of asks aren't landing.
 
     Args:
         task_id: The id you would otherwise claim/complete.
         reason: Why you're skipping it. Be specific — this is how the
-            overseer calibrates future dispatches.
+            curator calibrates future dispatches.
     """
     import json as _json
     result, err = _overseer_plugin_call(
@@ -1730,7 +1751,7 @@ def _people_get(method, route, payload=None, timeout=15):
 
 @mcp.tool()
 def cortex_people_list(limit: int = 50) -> str:
-    """List people in the Overseer's memory, newest-interaction first.
+    """List people in Cortex's memory, newest-interaction first.
 
     Returns name + display_name + handles + expertise + linked
     projects (count). Use cortex_people_get for the full record on
@@ -1794,7 +1815,7 @@ def cortex_people_add(
     created_by_agent: str = "claude-code",
     created_by_session_id: str = "",
 ) -> str:
-    """Add a person to the Overseer's relationship memory.
+    """Add a person to Cortex's relationship memory.
 
     Idempotent on case-insensitive name — if someone with the same
     name already exists, returns the existing record with
@@ -1973,7 +1994,7 @@ def cortex_people_unlink_project(project: str, person_id: int) -> str:
 
 @mcp.tool()
 def cortex_people_stats() -> str:
-    """Cross-cutting stats on the Overseer's people memory.
+    """Cross-cutting stats on Cortex's people memory.
 
     Returns counts + signal pointers:
       total_people
