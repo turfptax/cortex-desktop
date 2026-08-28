@@ -1,5 +1,11 @@
 # CORTEX AGENT: the conversion plan
 
+> **SUPERSEDED 2026-08-28.** This plan targeted Cortex-Cloud, which was
+> retired in the 2026-08-11 backend succession (CortexGraph, Cosmos
+> Gremlin + Postgres/pgvector). CP1 shipped as v0.22.0 and served the
+> old corpus; every later checkpoint is void. The current spec of
+> record is CORTEX_GRAPH_INGESTOR_PLAN.md in this directory.
+
 Synthesized plan for the desktop team, 2026-07-24. Merges Design 1 (watcher engine + upload spine), Design 2 (tray + status UX), and Design 3 (conversion + release). Conflicts between the designs are resolved inline and marked RESOLUTION. Defects found in critique review are folded in and marked FIX where they change prior text. Hard rules: no em dashes anywhere in this document or in anything written from it; the repo forbids git add -A (stage files explicitly; scripts/video-annotator/ carries 17MB of untracked-adjacent Node artifacts); the deliverable of this plan is executed code, but this document is the spec of record.
 
 ---
