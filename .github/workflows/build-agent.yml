@@ -1,0 +1,73 @@
+name: Build Ingest Agent
+
+# The slim exe (cortex_agent + cortex-intake engine over MCP). Runs on
+# agent-v* tags and by hand. Needs the CORTEX_INTAKE_TOKEN secret (a PAT
+# with read access to turfptax/cortex-intake, which is private) until
+# that repo goes public.
+
+on:
+  push:
+    tags: ["agent-v*"]
+  workflow_dispatch:
+
+jobs:
+  build-agent:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: turfptax/cortex-intake
+          token: ${{ secrets.CORTEX_INTAKE_TOKEN }}
+          path: cortex-intake-src
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-agent.txt
+          pip install --no-deps ./cortex-intake-src
+          pip install pytest pyinstaller
+
+      - name: Test (engine contract, no graph deps)
+        run: |
+          pytest cortex-intake-src/tests/test_claude_time.py cortex-intake-src/tests/test_mcp_gateway.py -q
+          python -c "import cortex_agent.app, cortex_intake.mcp_gateway, cortex_intake.oauth"
+
+      - name: Build exe
+        run: pyinstaller cortex_agent.spec --noconfirm
+
+      - name: Version from tag
+        id: version
+        shell: bash
+        run: |
+          ref="${GITHUB_REF_NAME:-agent-v0.1.0}"
+          echo "version=${ref#agent-v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build installer
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DMyAppVersion=${{ steps.version.outputs.version }} agent-installer.iss
+
+      - name: Zip portable build
+        run: Compress-Archive -Path dist/CortexIngest -DestinationPath CortexIngest-windows-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cortex-ingest-agent
+          path: |
+            Output/CortexIngest-Setup-*.exe
+            CortexIngest-windows-x64.zip
+
+      - name: Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/agent-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          files: |
+            Output/CortexIngest-Setup-*.exe
+            CortexIngest-windows-x64.zip
