@@ -131,10 +131,25 @@ def tray_main(state: AgentState, shutdown: threading.Event) -> None:
                      None, enabled=False),
             MenuItem(lambda item: state.line(), None, enabled=False),
             MenuItem("Sweep now", on_sweep_now),
-            MenuItem("Open Cortex", on_open_cortex),
+            # default: a left-click on the tray icon opens the cloud UI.
+            # The agent renders no corpus content itself (guardrail G2);
+            # the website IS its face.
+            MenuItem("Open Cortex", on_open_cortex, default=True),
             MenuItem("Quit", on_quit),
         ),
     )
+
+    def refresh_tooltip() -> None:
+        # The hover answer to "is it working": a human line with a moving
+        # number (plan section 5.4). pystray lets the title change live.
+        while not shutdown.is_set():
+            try:
+                icon.title = "Cortex Ingest: " + state.line()
+            except Exception:  # noqa: BLE001 - cosmetic surface only
+                pass
+            shutdown.wait(15)
+
+    threading.Thread(target=refresh_tooltip, daemon=True).start()
     icon.run()
 
 
