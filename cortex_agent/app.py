@@ -67,13 +67,21 @@ class AgentState:
                 summary.get("parsed", 0), self.minutes_today)
 
 
+def graph_base() -> str:
+    """The graph to connect to: env beats the bundled default, so a fork
+    or a second owner points the same exe at their own Cortex."""
+    import os
+
+    return os.environ.get("CORTEX_GRAPH_URL", "").strip() or oauth.DEFAULT_BASE
+
+
 def ensure_connected(*, open_browser: bool = True) -> None:
     """First run: walk the loopback consent. Afterwards the refresh chain
     keeps itself alive as long as sweeps run inside 90 days."""
     if oauth.load_auth():
         return
     log.info("no connection on file; starting the one-time consent")
-    auth = oauth.first_run(open_browser=open_browser)
+    auth = oauth.first_run(graph_base(), open_browser=open_browser)
     log.info("connected to %s as client %s", auth["base_url"],
              auth["client_id"])
 
@@ -116,7 +124,34 @@ def tray_main(state: AgentState, shutdown: threading.Event) -> None:
 
     def on_open_cortex(icon, item):
         auth = oauth.load_auth() or {}
-        webbrowser.open(auth.get("base_url", oauth.DEFAULT_BASE) + "/ui")
+        webbrowser.open(auth.get("base_url", graph_base()) + "/ui")
+
+    def on_check_updates(icon, item):
+        def work():
+            import os
+
+            from cortex_agent import update
+
+            channel = os.environ.get("CORTEX_AGENT_CHANNEL", "stable")
+            try:
+                result = update.check(channel)
+            except Exception as exc:  # noqa: BLE001 - a click must answer
+                icon.notify("Update check failed: {}".format(
+                    str(exc)[:120]), "Cortex Ingest Agent")
+                return
+            if not result.get("update_available"):
+                icon.notify("You are current: v{} ({} channel)".format(
+                    result["current"], channel), "Cortex Ingest Agent")
+                return
+            if not result.get("installer_url"):
+                icon.notify("{} is out but has no installer asset yet"
+                            .format(result["latest"]), "Cortex Ingest Agent")
+                return
+            icon.notify("Downloading {}...".format(result["latest"]),
+                        "Cortex Ingest Agent")
+            update.download_and_launch(result["installer_url"])
+
+        threading.Thread(target=work, daemon=True).start()
 
     def on_quit(icon, item):
         shutdown.set()
@@ -135,6 +170,7 @@ def tray_main(state: AgentState, shutdown: threading.Event) -> None:
             # The agent renders no corpus content itself (guardrail G2);
             # the website IS its face.
             MenuItem("Open Cortex", on_open_cortex, default=True),
+            MenuItem("Check for updates", on_check_updates),
             MenuItem("Quit", on_quit),
         ),
     )

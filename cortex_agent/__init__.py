@@ -8,4 +8,4 @@ renders no corpus content and holds no database credentials.
 Spec of record: docs/CORTEX_GRAPH_INGESTOR_PLAN.md.
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"

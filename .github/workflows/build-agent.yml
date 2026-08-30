@@ -67,7 +67,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/agent-v')
         uses: softprops/action-gh-release@v2
         with:
-          prerelease: true
+          # channel convention: agent-v0.2.0 = stable, agent-v0.2.0-dev.1 =
+          # dev channel (prerelease); cortex_agent/update.py mirrors this.
+          prerelease: ${{ contains(github.ref_name, '-dev') }}
           files: |
             Output/CortexIngest-Setup-*.exe
             CortexIngest-windows-x64.zip
