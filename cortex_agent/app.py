@@ -4,6 +4,7 @@ Modes:
     CortexIngest.exe             tray mode: scheduled sweeps, status tooltip
     CortexIngest.exe --once      one sweep to stdout, no tray (smoke tests)
     CortexIngest.exe --connect   run the one-time OAuth consent and exit
+    CortexIngest.exe --check     read-only health check, written to the log
 
 The engine is cortex-intake (claude_time sweep + McpGateway); this shell
 only schedules it, shows its pulse in the tray, and bootstraps consent on
@@ -19,6 +20,7 @@ import logging
 import sys
 import threading
 import time
+import urllib.request
 import webbrowser
 
 from cortex_intake import oauth
@@ -147,9 +149,23 @@ def tray_main(state: AgentState, shutdown: threading.Event) -> None:
                 icon.notify("{} is out but has no installer asset yet"
                             .format(result["latest"]), "Cortex Ingest Agent")
                 return
+            if result.get("refused"):
+                icon.notify("{} is out, not installing: {}".format(
+                    result["latest"], result["refused"]),
+                    "Cortex Ingest Agent")
+                return
             icon.notify("Downloading {}...".format(result["latest"]),
                         "Cortex Ingest Agent")
-            update.download_and_launch(result["installer_url"])
+            try:
+                update.download_and_launch(result)
+            except update.UpdateRefused as exc:
+                log.warning("update refused: %s", exc)
+                icon.notify("Update refused: {}".format(str(exc)[:120]),
+                            "Cortex Ingest Agent")
+            except Exception as exc:  # noqa: BLE001 - a click must answer
+                log.exception("update failed")
+                icon.notify("Update failed: {}".format(str(exc)[:120]),
+                            "Cortex Ingest Agent")
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -189,6 +205,60 @@ def tray_main(state: AgentState, shutdown: threading.Event) -> None:
     icon.run()
 
 
+def health_check() -> dict:
+    """Read-only: OAuth metadata and the update feed over the OS verifier,
+    then a dry-run sweep over MCP (one settings_get; no minutes, episode or
+    state written). A grant due for refresh skips the MCP leg instead of
+    rotating it, so a check never moves the refresh chain."""
+    import os
+
+    from cortex_agent import update
+
+    report: dict = {"version": __version__, "ok": True}
+
+    def leg(name, work):
+        try:
+            report[name] = work()
+        except Exception as exc:  # noqa: BLE001 - report every leg
+            report[name] = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+            report["ok"] = False
+
+    def metadata() -> dict:
+        url = (graph_base().rstrip("/")
+               + "/.well-known/oauth-authorization-server")
+        with urllib.request.urlopen(url, timeout=15,
+                                    context=oauth.tls_context()) as response:
+            meta = json.loads(response.read().decode("utf-8"))
+        return {"issuer": meta.get("issuer"),
+                "token_endpoint": meta.get("token_endpoint")}
+
+    def capture() -> dict:
+        auth = oauth.load_auth()
+        if not auth:
+            raise oauth.AuthError("not connected")
+        left = int(auth.get("expires_at", 0)) - time.time()
+        if left < oauth.SKEW_SECONDS:
+            return {"skipped": "grant is due for refresh; left to the agent"}
+        summary = sweep(build_mcp_gateway(), dry_run=True)
+        return {"grant_days_left": round(left / 86400, 1),
+                "parsed": summary.get("parsed"),
+                "skipped": summary.get("skipped"),
+                "minutes_pending": summary.get("minutes_logged"),
+                "unlinked": len(summary.get("unlinked", []))}
+
+    def updates() -> dict:
+        channel = os.environ.get("CORTEX_AGENT_CHANNEL", "stable")
+        result = update.check(channel)
+        return {key: result[key] for key in
+                ("latest", "update_available", "refused", "note")
+                if key in result}
+
+    leg("oauth_metadata", metadata)
+    leg("capture_dry_run", capture)
+    leg("update_feed", updates)
+    return report
+
+
 def _hide_console() -> None:
     if sys.platform == "win32":
         try:
@@ -208,11 +278,19 @@ def main() -> int:
                         help="run the one-time consent and exit")
     parser.add_argument("--no-browser", action="store_true",
                         help="print the consent URL instead of opening it")
+    parser.add_argument("--check", action="store_true",
+                        help="read-only health check, then exit")
     args = parser.parse_args()
 
-    console = bool(args.once or args.connect)
+    console = bool(args.once or args.connect or args.check)
     setup_logging(console=console)
     log.info("Cortex Ingest Agent v%s starting", __version__)
+
+    if args.check:
+        report = health_check()
+        log.info("check: %s", json.dumps(report, default=str))
+        print(json.dumps(report, indent=2, default=str))
+        return 0 if report["ok"] else 1
 
     if args.connect:
         auth = oauth.first_run(open_browser=not args.no_browser)

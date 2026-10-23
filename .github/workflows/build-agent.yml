@@ -36,7 +36,8 @@ jobs:
 
       - name: Test (engine contract, no graph deps)
         run: |
-          pytest cortex-intake-src/tests/test_claude_time.py cortex-intake-src/tests/test_mcp_gateway.py -q
+          pytest cortex-intake-src/tests/test_claude_time.py cortex-intake-src/tests/test_mcp_gateway.py cortex-intake-src/tests/test_oauth_tls.py -q
+          pytest tests/test_agent_update.py tests/test_agent_tls.py -q
           python -c "import cortex_agent.app, cortex_intake.mcp_gateway, cortex_intake.oauth"
 
       - name: Build exe
@@ -56,6 +57,27 @@ jobs:
       - name: Zip portable build
         run: Compress-Archive -Path dist/CortexIngest -DestinationPath CortexIngest-windows-x64.zip
 
+      # The agent installs nothing without agent-release.json signed by a
+      # key pinned in cortex_agent/update.py. With no signing secret the
+      # release goes up as a DRAFT: sign it offline with
+      # scripts/sign_agent_release.py, upload both files, then publish.
+      - name: Sign the release manifest (tags only)
+        id: sign
+        if: startsWith(github.ref, 'refs/tags/agent-v')
+        shell: bash
+        env:
+          AGENT_RELEASE_SIGNING_KEY: ${{ secrets.AGENT_RELEASE_SIGNING_KEY }}
+          AGENT_RELEASE_KEY_PASSPHRASE: ${{ secrets.AGENT_RELEASE_KEY_PASSPHRASE }}
+        run: |
+          if [ -z "$AGENT_RELEASE_SIGNING_KEY" ]; then
+            echo "::warning::no AGENT_RELEASE_SIGNING_KEY; the release stays a draft until signed offline"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python scripts/sign_agent_release.py sign --tag "$GITHUB_REF_NAME" --out-dir Output Output/CortexIngest-Setup-*.exe CortexIngest-windows-x64.zip
+          python scripts/sign_agent_release.py verify --dir Output Output/CortexIngest-Setup-*.exe CortexIngest-windows-x64.zip
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@v4
         with:
           name: cortex-ingest-agent
@@ -70,6 +92,9 @@ jobs:
           # channel convention: agent-v0.2.0 = stable, agent-v0.2.0-dev.1 =
           # dev channel (prerelease); cortex_agent/update.py mirrors this.
           prerelease: ${{ contains(github.ref_name, '-dev') }}
+          draft: ${{ steps.sign.outputs.signed != 'true' }}
           files: |
             Output/CortexIngest-Setup-*.exe
             CortexIngest-windows-x64.zip
+            Output/agent-release.json
+            Output/agent-release.json.sig
