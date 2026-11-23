@@ -15,6 +15,12 @@ a = Analysis(
         # even when only the client half runs (learned on the first build).
         "tkinter", "fastapi", "pydantic_settings",
         "cortexgraph", "gremlin_python", "sqlalchemy", "psycopg",
+        # Build and test tools the import graph reaches only through
+        # optional paths (anyio's pytest runner, the httpx command line
+        # client). They shipped in the first builds; nothing in the agent
+        # runs them, and every bundled package is one more to keep patched.
+        "pytest", "_pytest", "pygments",
+        "setuptools", "_distutils_hack", "pkg_resources", "distutils",
     ],
     noarchive=False,
 )

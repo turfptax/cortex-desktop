@@ -1,7 +1,10 @@
 # Runtime deps of the Cortex Ingest Agent (the slim exe).
 # cortex-intake itself is installed separately with --no-deps (its
 # cortexgraph dependency is DirectGateway-only; the agent speaks MCP).
+#
+# This file is the loose input. Builds install the exact, hashed set in
+# requirements-agent.lock.txt (how to refresh it: docs/AGENT_BUILD.md).
 pystray>=0.19
-pillow>=10
-mcp>=2.0,<3
+pillow>=13
+mcp>=2.2,<3
 httpx>=0.27
