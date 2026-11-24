@@ -260,7 +260,7 @@ The Overseer page (top-level sidebar tab) has these inner tabs:
 ## Build & CI/CD
 
 - **GitHub Actions**: `.github/workflows/build-release.yml`
-  - Triggers on push to master (build only) or tag push (build + release)
+  - Triggers on a `v*` tag push (build + release) or a manual run (build only); it no longer runs on pushes to master
   - Windows runner, Python 3.12, Node 20
   - Builds: frontend (npm) -> exe (PyInstaller) -> installer (Inno Setup)
 - **Branch protection**: master requires `build` status check, no force pushes

@@ -1,9 +1,12 @@
 name: Build & Release
 
+# The Hub build runs on version tags and on a manual run only. It used to
+# run on every push to master, which turned master red whenever a pinned
+# download went stale, even on commits that never touch the Hub.
 on:
   push:
-    branches: [master]
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
